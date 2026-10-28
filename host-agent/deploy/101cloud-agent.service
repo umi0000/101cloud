@@ -1,0 +1,25 @@
+[Unit]
+Description=101cloud Incus host agent
+After=network.target incus.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/hostagent -config /etc/101cloud-agent/agent.json
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=25s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

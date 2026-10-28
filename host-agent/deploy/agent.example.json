@@ -1,0 +1,9 @@
+{
+  "listen": "127.0.0.1:8443",
+  "incus_socket": "/var/lib/incus/unix.socket",
+  "token_file": "token",
+  "tls": {
+    "cert": "server.crt",
+    "key": "server.key"
+  }
+}
