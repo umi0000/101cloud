@@ -248,6 +248,41 @@ Content-Type: application/json
 
 **在线换卡不结束旧 CUDA context。** 旧任务可能继续占旧卡，新进程使用新卡；不能仅看配置就释放名额或结束记账。失败也不保证旧挂载已恢复。Agent 目前不提供强杀 GPU 进程、整卡 reset、显存硬配额或计费 API。
 
+### 5.4 `POST /agent/v1/network/ip-probe`
+
+在**运行 Agent 的网络命名空间**内，通过指定网卡检测单个直连 IPv4 是否有 ARP 冲突。无需 Incus 在线；仍须 HTTPS 和节点 Token。接口不会分配IP、配置网卡、修改路由/邻居表、预留地址或扫描整个子网。
+
+```http
+POST /agent/v1/network/ip-probe
+Content-Type: application/json
+```
+
+```json
+{"interface":"ens18","address":"192.168.0.112"}
+```
+
+两个字段都必填：`interface` 必须是本节点实际可用的以太网接口；`address` 必须是该接口直连网段中的单个 IPv4，不接受域名、CIDR、IPv6、组播或网络/广播地址。点对点前缀的边界按其实际语义处理。请求体上限4 KiB，拒绝重复/未知字段、多JSON对象及额外查询参数，不允许调用方任意增加探测时长或次数。
+
+| 字段 | 含义 |
+| --- | --- |
+| `interface` / `address` | 实际探测目标 |
+| `status` | occupied / no_conflict_detected / unknown |
+| `available` | 分别为 false / true / null；必须结合status，不把null转成true |
+| `responders` | 冲突回应数组，每项为mac和source；MAC去重且有上限 |
+| `reason` | 可选的结果或失败原因 |
+| `warning` | 提醒本次结果不构成地址预留或DHCP安全保证 |
+| `error` / `message` | HTTP错误时的机器代码和说明（参数解析错误仍用通用错误对象） |
+
+发现本机已配置该地址时直接返回occupied；其他情况下在约3秒窗口内发送3次源IP为0.0.0.0的ARP探测，检测目标地址回应或其他设备对同一地址的并发探测。不会只因ping不通就认定空闲，也不依赖现有ARP缓存。它不是包含地址宣告和保留的完整地址分配协议。
+
+业务结果occupied和no_conflict_detected返回200。平台不支持返回501；缺少原始套接字权限、链路无法确认或探测执行失败返回未知及相应错误；超时返回504。每个Agent最多4次并发探测，饱和时503 `probe_busy`，不无限排队。无效接口/地址返回400；错误和取消不会返回available=true。
+
+**available=true只表示本次未发现冲突**，不是“可以无条件分配”：设备可能关机、不回复ARP，交换机/VLAN/代理ARP也影响结果，地址还可能已被DHCP或其他后端保留。选择VLAN时要指定正确的逻辑接口；通过路由访问的远端地址不适用本探测。
+
+推荐后端先在数据库事务中预留候选IP → 调用Agent探测 → 无冲突后创建实例并核验地址生效；冲突则放弃该候选，未知则停止自动交付。必须同时将平台地址范围与外部DHCP池隔离。该接口不替代后端IPAM。
+
+Linux实现不依赖arping命令，使用AF_PACKET原始套接字，需CAP_NET_RAW。Go网卡发现还需AF_NETLINK。随附systemd单元已允许这两类地址族；升级时要一起更新单元、daemon-reload并重启Agent，不能只换二进制。非root专用用户需要管理员授予相应能力；不要为此关闭安全模块或给用户开放宿主机命令执行接口。
+
 ## 6. 实例常用接口
 
 以下表格路径均以 `/1.0` 开头；项目参数按需附加。

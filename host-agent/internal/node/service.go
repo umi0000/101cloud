@@ -6,6 +6,8 @@
 // and average_load_percent (null when any GPU load is unknown or no GPUs exist).
 // GET /agent/v1/health returns {"status":"ok","incus":true,"server_name":"..."}
 // after a live Incus GetServer call, or HTTP 503 when Incus is unavailable.
+// POST /agent/v1/network/ip-probe accepts one interface/address IPv4 probe.
+// Observations do not reserve the address or guarantee DHCP safety.
 // PUT /agent/v1/instances/{name}/gpu?project=default accepts
 // {"gpu_uuids": ["GPU-..."], "allow_live": false}. An empty UUID array removes
 // only local agent-gpu-N devices. Other GPU devices and inherited GPU profiles
@@ -44,11 +46,13 @@ const (
 	updateTimeout  = 2 * time.Minute
 )
 
-// Service exposes node-local Incus resource discovery and UUID-based GPU configuration.
+// Service exposes node-local Incus resources, GPU configuration and IPv4 conflict probing.
 // The caller must authenticate and authorize the trusted backend before invoking it.
 type Service struct {
 	socketPath   string
 	gpuCollector func(context.Context, *api.Resources) ([]GPUInfo, *float64)
+	ipProber     func(context.Context, IPProbeRequest) (IPProbeResult, error)
+	ipProbeSlots chan struct{}
 	mu           sync.Mutex
 	locks        map[instanceKey]*instanceLock
 }
@@ -75,6 +79,8 @@ func New(socketPath string) (*Service, error) {
 	return &Service{
 		socketPath:   socketPath,
 		gpuCollector: collectGPUs,
+		ipProber:     probeIPv4,
+		ipProbeSlots: make(chan struct{}, maxConcurrentIPProbes),
 		locks:        make(map[instanceKey]*instanceLock),
 	}, nil
 }
@@ -116,6 +122,12 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.resources(w, r)
+		return
+	case "/agent/v1/network/ip-probe":
+		if !requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.probeIP(w, r)
 		return
 	}
 	const prefix = "/agent/v1/instances/"

@@ -100,8 +100,11 @@ defer response.Body.Close()
 | `GET /agent/v1/health` | 实时检查 Incus 连通性，不允许匿名访问 |
 | `GET /agent/v1/resources` | 完整 `server_resources`、所有 GPU 型号与指标 `gpus`、节点综合平均负载 `average_load_percent` |
 | `PUT /agent/v1/instances/{name}/gpu?project=default` | 使用 UUID 配置 GPU，PCI 解析留在本机 |
+| `POST /agent/v1/network/ip-probe` | 在指定网卡上探测单个直连 IPv4 的 ARP 冲突，不分配、不预留地址 |
 
 GPU 指标由宿主机 `nvidia-smi` 采集。每卡综合负载为 GPU 利用率与显存占用率的等权平均，节点负载为所有卡分数的等权平均；采样失败用 null 和错误说明表示，不作为空闲。它不是历史时间平均，也不保证仍有足够显存。字段和计算示例见使用指南第 5.2 节。
+
+IP 探测请求为 `{"interface":"ens18","address":"192.168.0.112"}`。结果区分发现占用、未发现冲突和未知；`available: true` 仅表示本次未发现冲突，不保证离线设备、DHCP或其他后端没有保留该地址。后端必须维护地址池和并发预留。仅 Linux 支持真实 ARP 探测，需 `CAP_NET_RAW`；更新部署时也要更新 systemd 单元，允许 `AF_PACKET` 和网卡发现所需的 `AF_NETLINK`。不能只替换二进制而沿用旧的地址族限制。详见使用指南第 5.4 节。
 
 原生 API 的版本与扩展以节点 Incus 为准。请求超时不等于操作失败，后端应保存 operation ID 并核对状态，不能盲目重复创建或释放资源。跨节点迁移仍需后端编排连接地址、认证和失败恢复。
 
