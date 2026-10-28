@@ -15,6 +15,8 @@
 
 **一份节点连接配置拥有完整节点管理能力。** 普通成员不能直接访问 Agent，后端必须先校验业务权限。Agent 不会替后端限制成员只能操作自己的实例，也不限制原生 API 调用者只能使用 UUID GPU 接口。
 
+工作室正常业务默认使用局域网独立 IP，不默认采用 Incus NAT 子网。后端创建实例时应明确指定局域网网卡和首次启动前的静态地址；第 8 节 NAT 桥仅是可选网络示例。当前已验证的同网段 macvlan 配置见第 14 节。
+
 ## 2. 安装、初始化和启动
 
 ### 2.1 前提与构建
@@ -502,6 +504,70 @@ Content-Type: application/json
 - [exec 协议说明（固定版本）](https://github.com/lxc/incus/blob/v6.0.5/doc/instance-exec.md)
 - [项目 README](../README.md)
 
-本文接口路径和请求字段已按 Incus 规范核对。本次未在真实服务器执行实例创建、NAT、备份恢复或 GPU 操作。所有生产变更须由管理员评估资源与数据风险；本项目不会因编写指南自行 SSH。
+上述指南编写时只核对协议和本地测试；后续经用户授权进行的真实节点验收见第 13 节。生产变更须由管理员评估资源与数据风险，未经授权不 SSH。
 
 GPU 负载接口另已通过竞态测试及实际 Agent 进程烟测：用本地协议/驱动命令夹具验证 UUID 匹配、型号、每卡 60%/40% 与节点平均 50%，以及命令失败时保留硬件信息、返回 null 与错误。该验证不代表真实 NVIDIA 硬件采样；本次未 SSH。
+
+## 13. 真实节点验收：192.168.0.111
+
+2026-10-28 经用户授权部署。宿主机 Ubuntu 26.04、Incus 6.0.5、x86_64；Agent 安装于 `/usr/local/bin/hostagent`，状态目录 `/etc/101cloud-agent`，systemd 服务 `101cloud-agent` 已启用，HTTPS 地址 `https://192.168.0.111:8443`。连接材料仅保存在节点受保护的 `connection.json`，不在文档记录 Token。
+
+SSH 用于部署 Agent、检查宿主机前提及只读诊断；所有实例、镜像、存储 API 和容器内 exec 均通过认证 Host Agent，没有使用 Incus CLI 或绕过 Agent 直连 Incus socket。
+
+| 项目 | 实测结果 |
+| --- | --- |
+| 实例 | `agent-ubuntu24-gpu-test`，default 项目，非特权，当前保留运行 |
+| 系统 | Ubuntu 24.04.5 LTS cloud 镜像；cloud-init done、无错误 |
+| CPU | 配置 4 核；进程 CPU affinity 数量实测为 4 |
+| 内存 | cgroup memory.max = 4294967296 字节（4 GiB） |
+| 根盘 | 既有 Btrfs default 池，API 实测 quota total = 8589934592 字节（8 GiB） |
+| 配额边界 | 1 MiB 分配成功；在已有数据基础上申请 8 GiB 返回 EDQUOT；测试文件已清理 |
+| GPU | RTX 2080 Ti，UUID `GPU-10877bdd-fb45-d0d1-6014-5d0b1d81e4a4`，由 UUID 接口配置 |
+| CUDA | 实际分配内存并启动 sm_75 内核；1024 个结果全部为 130，PASS；容器可用 CUDA GPU 数量为 1 |
+| systemd | running，失败服务 0；容器重启后 systemd 与 CUDA 再次通过 |
+| 网络 | incusbr0 DHCP 地址 10.218.143.23/24，网关/DNS 与宿主 Agent 可达；外部 TCP 超时，待处理转发策略 |
+| 既有实例 | `test` 仍在运行，未更改其配置 |
+
+重启 operation 成功只表示容器已启动，不表示 D-Bus 就绪。验收中曾立即执行 systemctl 得到 bus 不存在，随后等待 `/run/systemd/private` 出现并等待系统就绪，再验证为 running；后端应有服务就绪阶段。
+
+本机使用旁路代理与 Fake-IP，默认网关是 192.168.0.2；DNS 返回 198.18.x.x 属预期。只读诊断另发现 Docker 设置 IPv4 FORWARD policy DROP，现有链只放行 Docker bridge，没有 incusbr0 的新出站规则；Incus 独立 nftables 链中的 accept 不能覆盖另一条基础链的 DROP。目前未修改 DNS、网关、旁路代理或防火墙；出网修复需单独确认最小放行策略。不得把 Fake-IP 当成 DNS 配错而切公共 DNS 绕过代理。
+
+用户随后明确选择“先不改防火墙”。本次验收保留该出网限制，不添加转发规则、不修改旁路代理；Agent 和测试实例保留运行，其他资源规格、systemd 与 CUDA 项均已通过。
+
+## 14. 局域网独立IP实例：192.168.0.112
+
+2026-10-28 按用户要求新建 `agent-ubuntu24-gpu-lan112`，不替换第 13 节的 NAT 测试容器。创建前从 ens18 发出 3 次 ARP 探测，未收到地址占用回应；这不等于已经在 DHCP 服务器配置保留，长期使用须确保该地址不被动态分配。
+
+| 项目 | 配置及实测 |
+| --- | --- |
+| 地址 | 192.168.0.112/24，cloud-init 首次启动前传入静态配置 |
+| NIC | macvlan，parent=ens18，name=eth0；不使用 incusbr0 |
+| 网关 / DNS | 192.168.0.2 / 223.5.5.5，沿用节点旁路网络 |
+| 规格 | Ubuntu 24.04.5 cloud，非特权，4核、4 GiB、Btrfs根盘配额8 GiB |
+| 资源限制 | CPU affinity=4、memory.max=4294967296、卷 quota total=8589934592；超额分配返回EDQUOT，测试文件已清理 |
+| GPU | UUID接口绑定RTX 2080 Ti；与原测试容器可共享同一物理卡，不代表独占或显存分区 |
+| 系统 | cloud-init done无错误；systemd running、失败服务0 |
+| 计算 | 真实CUDA内核1024个结果全部为130，PASS |
+| 局域网 | 工作站ping 3次全部成功 |
+| 出网 | archive.ubuntu.com解析到Fake-IP 198.18.0.54，Ubuntu镜像站和百度HTTPS均返回200 |
+| 重启 | 通过Agent重启后，静态地址、网关、systemd和CUDA复验通过 |
+
+所有实例创建、GPU分配、重启和容器内测试均经 Host Agent。没有修改宿主机网口、路由、Docker防火墙或旁路代理，也没有使用Incus CLI。既有 `test` 和 `agent-ubuntu24-gpu-test` 仍运行。
+
+macvlan 默认隔离父宿主机与子接口，不能以宿主机直连容器失败判定局域网不可达；本次使用独立工作站验证。当前宿主机是虚拟机，已实际验证该环境允许此额外MAC，不据此保证其他上层虚拟交换机也允许。
+
+## 15. 新实例首次APT对照：192.168.0.113
+
+另经用户要求通过 Agent 新建 `agent-ubuntu24-gpu-lan113`，同一 Ubuntu24 cloud 镜像、4核、4 GiB、Btrfs 8 GiB硬配额、RTX 2080 Ti、systemd running、macvlan ens18，静态地址192.168.0.113/24。创建前ARP探测无冲突，既有容器未改动。
+
+没有预先更新索引或修改源、代理、APT超时/重试参数。使用登录Shell执行 `apt update`，首次下载10.0 MB、约8.19秒完成，退出码0，保持镜像默认archive.ubuntu.com/security.ubuntu.com源，不是112上用户配置的清华源。外层90秒期限未触发；该次Agent exec未分配PTY，不代表已覆盖用户实际终端通道。CPU亲和性4、内存cgroup4 GiB、8 GiB超额EDQUOT及真实CUDA1024个结果全部通过。容器保留运行；这个成功结果不能解释112用户终端的历史卡点。
+
+## 16. 真实SSH下APT挂起：已确认的终端差异
+
+随后按用户授权直接密码SSH到192.168.0.113，复现默认 `apt update` 在下载前挂起。进程链为 apt → Ubuntu Pro的APT Pre-Invoke钩子 → `systemctl start --no-block apt-news.service esm-cache.service` → `systemd-tty-ask-password-agent --watch`。内核日志与PID核对确认systemctl发送TERM被该容器AppArmor策略拒绝；父进程停在do_wait，密码辅助进程停在poll。
+
+仅从宿主机结束自有诊断产生的密码辅助进程，原apt立刻继续并退出0，验证了阻塞链条。无PTY的Agent exec不会触发同样的终端密码代理路径，因此之前Agent执行成功不能证明SSH正常；不能把原因归咎于下载40 MB索引、Fake-IP或软件源。
+
+用户先授权临时设置 `kernel.apparmor_restrict_unprivileged_unconfined=0`，仅重新SSH无效，因此恢复1。再次获准后临时设0，并通过Host Agent仅重启113以重建现有上下文。之后真实SSH、分配PTY、不加APT特殊参数的 `apt update` 在2.88秒内退出0，无需手工结束helper；重启后的真实CUDA计算仍PASS。112及其他容器没有重启，不能声称其SSH问题已修复。
+
+当前宿主机该运行时参数为0，未写sysctl持久配置；没有关闭整个AppArmor，未修改 `kernel.apparmor_restrict_unprivileged_userns`，未禁用APT沙箱或删除Ubuntu Pro钩子，也未换源、改DNS或代理。宿主机重启后参数可能恢复，长期策略须单独决定。Ubuntu24来宾并非在所有Ubuntu26宿主机交互路径都免受该限制影响；正式验收必须包含真实SSH/PTY，而不能只用非交互exec。

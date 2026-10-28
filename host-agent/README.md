@@ -136,6 +136,62 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/hostagent-linux-amd64 ./cm
 
 本地测试与协议烟测不代替真实节点验收。未经明确授权，不 SSH，不在服务器安装或启动 Agent；真实 Incus 实例、备份恢复和 NVIDIA 计算需在获得授权后验收。
 
+## Ubuntu 宿主机 AppArmor 兼容性与持久化
+
+### 适用情况
+
+Ubuntu 25.04/25.10/26.04 宿主机上，Incus 非特权容器可能出现真实 SSH/PTY 内 `apt update` 挂起，但无终端的 Agent exec 可以成功的情况。已实测 Ubuntu 26.04 宿主机、Incus 6.0.5、Ubuntu 24.04 容器：APT 的 Ubuntu Pro 前置钩子启动 `systemctl`，其终止 `systemd-tty-ask-password-agent` 的信号被 AppArmor 拒绝，导致更新在下载前等待。
+
+不能只凭 apt 慢就套用此方案。应先检查进程链与宿主机内核日志，确认 `apparmor="DENIED"`、`operation="signal"`、`comm="systemctl"` 和相关容器标签；网络、软件源、锁等待等其他问题需分别排查。Agent 不会自动修改下述参数。
+
+Ubuntu 24.04 **宿主机**通常默认不启用这一项额外限制，因此可作为候选基线，但不保证所有更新、加固配置或内核/Incus组合均无此问题。仅把容器系统换为 Ubuntu 24.04 不足以规避宿主机限制。我们尚未在 Ubuntu 24.04 宿主机上完成同等验收。
+
+### 检查与持久化
+
+以下命令在 **Ubuntu 宿主机**执行，不是在容器中执行；先记录原值：
+
+```bash
+sysctl kernel.apparmor_restrict_unprivileged_unconfined
+sysctl kernel.apparmor_restrict_unprivileged_userns
+```
+
+确认接受下面的安全取舍后，创建独立配置并只加载此文件：
+
+```bash
+sudo tee /etc/sysctl.d/99-incus-apparmor-compat.conf >/dev/null <<'EOF'
+# Compatibility for Incus with Ubuntu's extra AppArmor restrictions.
+kernel.apparmor_restrict_unprivileged_unconfined = 0
+EOF
+
+sudo sysctl -p /etc/sysctl.d/99-incus-apparmor-compat.conf
+sysctl kernel.apparmor_restrict_unprivileged_unconfined
+```
+
+预期输出 `kernel.apparmor_restrict_unprivileged_unconfined = 0`。系统启动时会加载该配置；如其他 sysctl 配置也设置了同一项，需要检查加载顺序，避免后加载的文件覆盖回 1。不要顺带将 `kernel.apparmor_restrict_unprivileged_userns` 设为 0；本次验证中它始终保持 1。
+
+### 现有容器与验收
+
+仅修改运行时参数、重新 SSH，不一定刷新既有容器的安全上下文。本次在参数为 0 时，**通过 Host Agent 仅重启受影响容器**后，真实 SSH 下普通 `apt update` 才恢复，2.88 秒退出 0；systemd 与 CUDA 复验通过。
+
+重启使用 Agent 代理的原生接口 `PUT /1.0/instances/{name}/state?project=default`，请求体为 `{"action":"restart","timeout":30,"force":false,"stateful":false}`。应等待异步操作成功及 systemd 就绪，再用真实 SSH/PTY 验证；不能仅用非交互 exec 判定修复。重启会中断该容器的会话和任务，须先确认可停机，不要批量重启其他实例。仅重启 Agent 服务不会替代容器重启。
+
+如果运行时参数已经是 0、受影响容器也已重启验证，写入持久配置本身不需要再次重启容器或宿主机。
+
+### 安全影响与回退
+
+设为 0 **不是关闭整个 AppArmor**，也不取消非特权容器、UID/GID映射、seccomp、capabilities或资源配额。但它会在整台宿主机范围取消一层针对低权限 unconfined 进程切换 AppArmor profile 的额外防绕过限制，不只影响某一个容器。仍保持 userns 开关为 1，不等于这层防绕过能力没有减弱。多人可执行任意代码的平台应明确评估该取舍，不能把它描述成无安全影响的配置。
+
+长期应验证兼容的内核、AppArmor和Incus版本组合，不能未经测试承诺升级一定修复。原理和上游讨论见 [Ubuntu 安全团队说明](https://discourse.ubuntu.com/t/understanding-apparmor-user-namespace-restriction/58007)、[Ubuntu 缺陷报告](https://bugs.launchpad.net/bugs/2109394)。
+
+若该文件确实由上述步骤新建、且没有加入其他自定义项，可以这样撤销；运行时值应恢复为你事先记录的原值，下面以原值 1 为例：
+
+```bash
+sudo rm /etc/sysctl.d/99-incus-apparmor-compat.conf
+sudo sysctl -w kernel.apparmor_restrict_unprivileged_unconfined=1
+```
+
+回退可能重新触发兼容性问题，也不能把已有进程的上下文恢复视为即时完成；需安排受影响容器的重启与复验。不要删除其他系统或管理员提供的 sysctl 文件。本节只是人工操作指南，Agent 初始化和启动不会自动执行这些变更。
+
 ## 本地验证记录
 
 已通过全包竞态测试、`go vet`、构建与 Linux amd64 交叉构建。实际执行了初始化、重复初始化拒绝和配置预检；运行真实 Agent 与 Go 后端客户端，通过导出的连接文件访问 health、原生实例 API 和 WebSocket。错误 Token 返回 401，错误指纹在发送 HTTP 请求前被拒绝，Token 未转发到 Unix socket 上游。Incus 上游使用本地协议测试服务，不代表本次已在真实 Incus/GPU 节点部署或验收。
