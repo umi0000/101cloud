@@ -70,11 +70,11 @@ func readResolvedDNS(ctx context.Context, interfaces []NetworkInterface) (System
 	if err := object.CallWithContext(ctx, "org.freedesktop.DBus.Properties.Get", dbus.FlagNoAutoStart, "org.freedesktop.resolve1.Manager", "DNS").Store(&dnsVariant); err != nil {
 		return SystemDNS{}, nil, fmt.Errorf("systemd-resolved DNS unavailable: %w", err)
 	}
-	var servers []resolvedDNSServer
 	if dnsVariant.Signature().String() != "a(iiay)" {
 		return SystemDNS{}, nil, fmt.Errorf("systemd-resolved DNS has unexpected signature %s", dnsVariant.Signature())
 	}
-	if err := dbus.Store([]interface{}{dnsVariant.Value()}, &servers); err != nil {
+	servers, err := decodeResolvedServers(dnsVariant.Value())
+	if err != nil {
 		return SystemDNS{}, nil, fmt.Errorf("systemd-resolved DNS decoding: %w", err)
 	}
 
@@ -85,8 +85,11 @@ func readResolvedDNS(ctx context.Context, interfaces []NetworkInterface) (System
 		domainsErr = fmt.Errorf("systemd-resolved search domains unavailable: %w", err)
 	} else if domainsVariant.Signature().String() != "a(isb)" {
 		domainsErr = fmt.Errorf("systemd-resolved Domains has unexpected signature %s", domainsVariant.Signature())
-	} else if err := dbus.Store([]interface{}{domainsVariant.Value()}, &domains); err != nil {
-		domainsErr = fmt.Errorf("systemd-resolved Domains decoding: %w", err)
+	} else {
+		domains, domainsErr = decodeResolvedDomains(domainsVariant.Value())
+		if domainsErr != nil {
+			domainsErr = fmt.Errorf("systemd-resolved Domains decoding: %w", domainsErr)
+		}
 	}
 	system, links := decodeResolvedDNS(interfaces, servers, domains)
 	if domainsErr != nil {

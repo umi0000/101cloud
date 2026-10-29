@@ -56,6 +56,16 @@ func Run(ctx context.Context, c config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	defer base.Close()
+	settings, err := c.MetricsSettings()
+	if err != nil {
+		return err
+	}
+	metricsCtx, metricsCancel := context.WithCancel(ctx)
+	defer metricsCancel()
+	if err := nodes.StartMetrics(metricsCtx, time.Duration(settings.IntervalSeconds)*time.Second, time.Duration(settings.TimeoutSeconds)*time.Second); err != nil {
+		return err
+	}
 	listener := &trackedListener{Listener: base, conns: make(map[*trackedConn]struct{})}
 	defer listener.closeConnections()
 	done := make(chan error, 1)

@@ -56,6 +56,8 @@ type Service struct {
 	networkCollector func(context.Context) NetworkInfo
 	ipProber         func(context.Context, IPProbeRequest) (IPProbeResult, error)
 	ipProbeSlots     chan struct{}
+	metricsMu        sync.RWMutex
+	metrics          *metricsSampler
 	mu               sync.Mutex
 	locks            map[instanceKey]*instanceLock
 }
@@ -115,6 +117,12 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
 	switch r.URL.Path {
+	case "/agent/v1/instances/metrics":
+		s.metricsAPI(w, r, false)
+		return
+	case "/agent/v1/instances/metrics/samples":
+		s.metricsAPI(w, r, true)
+		return
 	case "/agent/v1/health":
 		if !requireMethod(w, r, http.MethodGet) {
 			return

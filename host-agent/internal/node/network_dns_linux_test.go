@@ -101,12 +101,12 @@ func TestResolvedDBusTupleDecoding(t *testing.T) {
 		[]interface{}{int32(0), int32(unix.AF_INET), []byte{192, 0, 2, 53}},
 		[]interface{}{int32(2), int32(unix.AF_INET6), netip.MustParseAddr("fe80::53").AsSlice()},
 	}
-	var servers []resolvedDNSServer
-	if err := dbus.Store([]interface{}{value}, &servers); err != nil {
+	servers, err := decodeResolvedServers(value)
+	if err != nil {
 		t.Fatal(err)
 	}
-	var domains []resolvedDNSDomain
-	if err := dbus.Store([]interface{}{[]interface{}{[]interface{}{int32(2), "corp.test", false}}}, &domains); err != nil {
+	domains, err := decodeResolvedDomains([]interface{}{[]interface{}{int32(2), "corp.test", false}})
+	if err != nil {
 		t.Fatal(err)
 	}
 	system, links := decodeResolvedDNS([]NetworkInterface{{Index: 2, Name: "eth0"}}, servers, domains)

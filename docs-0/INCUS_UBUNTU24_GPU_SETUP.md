@@ -208,6 +208,13 @@ nvidia-smi -L
 
 **一句话：宿主机装驱动、Incus 和 NVIDIA 容器库；创建时声明显卡和网络；容器内只配置 SSH 与应用。当前实例的这些步骤均已完成。**
 
+补充：
+修复opencl(可持久化)
+容器内执行
+```bash
+printf '%s\n' 'libnvidia-opencl.so.1' \
+  > /etc/OpenCL/vendors/nvidia.icd
+```
 ## 1. 最终结果
 
 在用户已重装为 Ubuntu 的 `192.168.1.99` 上完成了 Incus 系统容器验证。原先的 PVE/CT 101 记录属于旧环境，不能把旧教程直接用在当前主机上。

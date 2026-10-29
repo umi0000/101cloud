@@ -12,15 +12,33 @@ import (
 
 // Config contains node transport settings, not user permissions or billing rules.
 type Config struct {
-	Listen      string `json:"listen"`
-	IncusSocket string `json:"incus_socket"`
-	TokenFile   string `json:"token_file"`
-	TLS         TLS    `json:"tls"`
+	Listen      string         `json:"listen"`
+	IncusSocket string         `json:"incus_socket"`
+	TokenFile   string         `json:"token_file"`
+	TLS         TLS            `json:"tls"`
+	Metrics     *MetricsConfig `json:"metrics,omitempty"`
 }
 
 type TLS struct {
 	Cert string `json:"cert"`
 	Key  string `json:"key"`
+}
+
+// MetricsConfig controls observation cadence, not billing or idle policies.
+type MetricsConfig struct {
+	IntervalSeconds int `json:"interval_seconds"`
+	TimeoutSeconds  int `json:"timeout_seconds"`
+}
+
+func (c Config) MetricsSettings() (MetricsConfig, error) {
+	m := MetricsConfig{IntervalSeconds: 5, TimeoutSeconds: 4}
+	if c.Metrics != nil {
+		m = *c.Metrics
+	}
+	if m.IntervalSeconds < 1 || m.IntervalSeconds > 60 || m.TimeoutSeconds < 1 || m.TimeoutSeconds > 30 {
+		return m, errors.New("metrics interval_seconds must be 1..60 and timeout_seconds 1..30")
+	}
+	return m, nil
 }
 
 func Load(path string) (Config, error) {
@@ -61,6 +79,9 @@ func Load(path string) (Config, error) {
 		if !filepath.IsAbs(*p) {
 			*p = filepath.Join(filepath.Dir(absolute), *p)
 		}
+	}
+	if _, err := c.MetricsSettings(); err != nil {
+		return c, err
 	}
 	return c, nil
 }

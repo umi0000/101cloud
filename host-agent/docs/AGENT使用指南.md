@@ -336,6 +336,121 @@ Content-Type: application/json
 
 Linux实现不依赖arping命令，使用AF_PACKET原始套接字，需CAP_NET_RAW。Go网卡发现还需AF_NETLINK。随附systemd单元已允许这两类地址族；升级时要一起更新单元、daemon-reload并重启Agent，不能只换二进制。非root专用用户需要管理员授予相应能力；不要为此关闭安全模块或给用户开放宿主机命令执行接口。
 
+### 5.5 容器级负载：`GET /agent/v1/instances/metrics`
+
+```http
+GET /agent/v1/instances/metrics?project=default
+GET /agent/v1/instances/metrics?project=*
+```
+
+沿用节点HTTPS/Token认证。默认只返回default项目，`project=*`返回本节点全部项目，适合后端内部采集；不能直接将全部实例数据转给普通成员。Agent始终按本节点所有项目建立归属关系，过滤参数只影响公开输出，不把其他项目的进程误认为空闲。集群远端成员的PID不会当作本机PID。
+
+这是后台连续采样缓存，不是请求来了才测一次。配置可省略，默认间隔5秒、每次采集期限4秒；也可在agent.json加入：
+
+```json
+{"metrics":{"interval_seconds":5,"timeout_seconds":4}}
+```
+
+interval_seconds范围1–60，timeout_seconds范围1–30；配置变化重启Agent生效。采样不并发重入，实际时间窗在响应中返回，不能假定每个点恰好相差5秒。采集是只读的，不会自动关机、释放、换卡，也不会将指标或进程明细写到文件。
+
+| 顶层字段 | 含义 |
+| --- | --- |
+| `schema_version` | 当前为1，后端遇未知协议版本不能盲目入库 |
+| `agent_boot_id` | 每次Agent启动随机生成的UUID，不是PID或宿主机标识 |
+| `sample_sequence` | 本次启动内递增序号，后端用于去重 |
+| `collected_at` | 快照时间，UTC；不等于每个底层读数原子同时发生 |
+| `window_start_at` / `window_end_at` / `window_seconds` | 观察窗口，UTC微秒；首个窗口为0，不构造历史 |
+| `collection_duration_seconds` | 本次采集耗时，可用于评估时序偏差 |
+| `collection_complete` / `collection_errors` | 实例枚举是否完整及安全错误码，不含进程路径/参数 |
+| `stale` | 当前缓存是否已超出新鲜度期限；不能用于自动动作 |
+| `instances` | 按项目过滤后的实例聚合列表 |
+| `quality` | 全节点汇总质量；包括其他实例，不等于目标实例的独立质量 |
+| `anonymous` | 未归属上下文、设备引用、近期活动的匿名计数，不含进程标识 |
+
+每个实例包含project、name、uuid、type、state、started_at，以及：
+
+| 字段 | 含义 |
+| --- | --- |
+| `cpu.usage_ns` | 实例累计CPU时间，不能直接当百分比 |
+| `cpu.allocated_ns_per_second` | 分配容量；1核对应每秒1e9纳秒 |
+| `cpu.collected_at` / `cpu.window_seconds` | CPU计数器自己的观测时刻/差分窗，不受慢GPU调用污染 |
+| `cpu.delta_ns` / `used_cores` | 有效窗内CPU增量及平均使用核数 |
+| `cpu.allocation_percent` | 相对分配容量的使用率；首次、重启、计数倒退、缺测或跨规格变更时可为null |
+| `memory.usage_bytes` / `limit_bytes` / `peak_bytes` | 内存用量、有效上限、运行生命周期峰值；未知不是0 |
+| `gpus` | 配置与实际观察GPU的并集；会包含已不在配置中但仍被旧任务占用的卡 |
+| `gpu_state` | in_use / idle_candidate / unknown / not_attached |
+| `quality.complete` | 指标观察是否完整；缺失可选利用率也会使其为false |
+| `quality.attribution_complete` | 上下文归属、设备引用及必要库存是否完整，独立于可选利用率是否有样本 |
+
+每个gpus对象包含uuid、configured、observed、process_count、referencing_process_count、used_memory_bytes、sm_utilization_percent、utilization_method、collected_at、state和quality。process_count是去重的GPU进程数，不是CUDA context对象数量；与引用进程数不能相加。configured表示配置中确认的绑定，observed表示观察到实际占用或活动。观察不完整时false不能解释为确定没有占用，后端应结合quality保存未知。
+
+GPU显存是NVML报告的归属进程显存合计；compute/graphics同PID去重，不作为显存硬配额或独占物理页计量。SM利用率是各归属进程最新有效样本之和并封顶100，方法名为`sum_latest_process_sm_percent_capped_100_approximate`，是近似活动指标，不是保证的算力份额。无样本/不支持/归属不明用null，不能伪装为0。
+
+**隐私：**Agent内部使用宿主PID、cgroup、启动标识和设备引用判断归属，公开API和历史表不含PID、命令行、进程名、可执行文件/用户文件路径。嵌套容器按外层Incus实例归属；进程退出、PID复用、权限不足、设备变化、MPS/MIG或无法可靠归属会保守降级。近期活动样本即使已无当前进程，也不能被当成空闲；无法可靠归属时增加匿名活动计数并阻止idle_candidate。Agent应作为宿主机服务运行；不能把普通容器内的/proc当作宿主PID视图。专用账户仅有Incus socket权限不代表能读取所有必要进程信息，缺权限会返回unknown，不会自行提权或放宽宿主安全策略。
+
+#### 状态与自动化边界
+
+- `in_use`：有明确上下文、设备引用或可归属活动证据，即使SM利用率为0也可能仍在使用。
+- `idle_candidate`：本次完整观察未发现使用/引用，是候选，不是已经释放、也不是原子操作授权。可在SM缺样本时出现，但必须有完整的独立占用证据。
+- `unknown`：信息缺失/陈旧/不完整，不能自动当作空闲。关机实例可能无法继续验证原运行进程身份，因此不强行报0。
+- `not_attached`：在完整观察下没有配置绑定，也没有旧卡残留证据。
+
+停止实例、换卡或重建后，不能把新旧CPU计数器拼接；跨分配容量变化的窗口不使用新容量错误归一化。内存peak_bytes是生命周期峰值，不是最近一分钟峰值。前端应分指标处理null和缺测，不能因GPU不支持某项指标而抹掉有效CPU/内存值，也不能把unknown画成0%。
+
+上下文统计与设备引用完整性分开处理：已验证当前GPU进程归属时，process_count、used_memory_bytes及可用的近似SM值可以非null，同时quality.attribution_complete仍为false。例如通用GPU控制设备引用无法定位到某张卡时，referencing_process_count保持null，并带gpu_reference_scan_incomplete/gpu_references_unresolved原因；这不能授权空闲释放，也不能抹掉已确认的负载统计。容器边界取内核cgroup挂载根，兼容systemd把PID 1放在init.scope、服务放在同级system.slice的情况。
+
+自动释放/空闲换卡的策略由后端决定，阈值、窗口和用户开关不在Agent写死。后端必须检查frame新鲜度、collection_complete以及**目标实例/目标卡**的attribution_complete和状态，而不是只看全节点汇总quality。连续候选也不能保证捕获所有采样间的短任务：实际动作前需串行化、核对当前配置/占用，动作后复核；旧卡残留就继续保留原分配名额，必要时走获准的停机回收。现有GPU配置API并未因该指标接口而变成原子“安全释放”事务。
+
+忙碌任务不做无感换卡。热插拔只改变设备入口，CUDA上下文、模型显存不会迁移；新程序或重新初始化后的程序才可使用新卡，已有应用还可能缓存设备信息。指标不用于按利用率收费，计费仍按配置/使用权持有时间。
+
+#### 缓存与错误
+
+采样器未启动/首点未完成返回503 `metrics_warming_up`。实例枚举不完整或最新快照过期时，latest返回503并保留快照/质量标记；不能把空列表当作所有实例已停止。底层GPU不支持但基本实例枚举成功时可以返回200及部分指标、null和质量说明。快照超过`2 × interval_seconds + timeout_seconds`视为stale。非Linux无法提供宿主Linux进程/GPU归属，明确降级，不模拟正常数据。
+
+### 5.6 增量采集：`GET /agent/v1/instances/metrics/samples`
+
+```http
+GET /agent/v1/instances/metrics/samples?project=*&after_sequence=0&limit=32
+```
+
+后续请求带响应的agent_boot_id与next_sequence：
+
+```http
+GET /agent/v1/instances/metrics/samples?project=*&agent_boot_id=11111111-1111-4111-8111-111111111111&after_sequence=12&limit=32
+```
+
+UUID和序号仅示例，应替换为实际返回值。后端建议以project=*集中采集；按项目分别采集时必须使用独立游标。参数只允许project、agent_boot_id、after_sequence、limit；不允许重复参数，limit范围1–120。非零after_sequence必须带启动ID。
+
+返回schema_version、agent_boot_id、oldest_available_sequence、newest_sequence、next_sequence、gap、stale和samples数组。每个sample与latest的快照字段一致，但新鲜度通过批次stale与每个点collected_at判断。Agent只保留120个不可变内存快照，默认约10分钟；没有本地磁盘历史库。它用于短断连补采，不代替MySQL。
+
+启动ID变化返回409 `metrics_agent_restarted`，后端显式开启新一代游标，不能拼接CPU差分。序号超前返回400。所需历史已被覆盖时gap=true（首次请求0而序号1已丢失也如此），后端记录缺测范围，不能填0。缓存陈旧时返回503，不继续自动操作。重复读取同一快照使用同一个boot/sequence，不能按每次HTTP请求时间生成重复数据。
+
+补采历史点按其原采集时间和当时质量入库，不因接收时已过去几分钟就篡改成0或新的当前点。相反，历史idle_candidate不能触发当前释放/换卡：自动动作必须再次取得目标实例的新鲜观察并核对当前状态，不能重放过去的候选事件。
+
+### 5.7 MySQL长期历史与多粒度图表
+
+新库使用 [初始化脚本](../../backend/sql/init.sql)。已存在原业务表的库使用 [指标增量升级](../../backend/sql/migrations/20261029_instance_metrics.sql)，先备份并选择正确数据库，只执行一次；不要对已有库重新运行整个初始化脚本。没有示例数据或默认管理员。
+
+| 表 | 职责 |
+| --- | --- |
+| `instance_metric_samples` | 实例明细点、CPU累计/增量与独立时间窗、内存及质量 |
+| `instance_gpu_metric_samples` | 每个点的每卡配置/观察标记、匿名数量、显存和近似利用率 |
+| `instance_metric_rollups` | 按bucket_seconds汇总CPU/内存、有效时长、加权和与观测峰值 |
+| `instance_gpu_metric_rollups` | 每卡对应粒度的有效时长、利用率/显存加权和及观测峰值 |
+| `node_metric_cursors` | node+project_scope的启动ID/序号游标，与明细入库同事务推进 |
+
+**边界：本次实现Agent采样与SQL结构，没有实现尚未开发的业务后端采集器、历史查询API、定时聚合或前端图表。** 后续后端负责：按实例UUID匹配业务归属 → 写入/去重原始点 → 同事务推进游标 → 依配置汇总、保留和清理。原始点唯一键包含node、agent_boot_id、sample_sequence和instance_id；不要只按实例名匹配删除后重建的实例。历史node是采样时位置，不复合绑定实例当前node，避免指标历史额外阻止迁移。
+
+所有时间转UTC微秒，CPU独立cpu_sampled_at/cpu_window_seconds不能用慢GPU的frame窗口代替；首次/重启没有CPU差分则为null。按CPU实际窗口计算CPU有效时长，按各自观察窗口切分到统计桶。覆盖时间取时间窗并集并裁到桶边界，不能把重叠窗口的秒数相加。支持按分钟、小时、天等配置bucket_seconds，但MySQL不自动生成汇总。
+
+- 平均使用核数：有效CPU增量纳秒之和 / 1e9 / CPU有效秒数。
+- 相对配置使用率的时间平均：cpu_utilization_pct_seconds / cpu_allocation_valid_seconds；如果选择容量加权，则用同一已知分配子集的cpu_normalized_usage_delta_ns / 1e9 / allocated_cpu_seconds × 100，不能混用不同有效子集。
+- 内存与GPU显存平均：bytes×seconds加权和 / 对应有效秒数。内存百分比使用成对已知usage/limit的memory_utilization_pct_seconds / memory_utilization_valid_seconds，并保留观测峰值。缺失limit的区间不参与，不能把不同有效时间范围的使用量和上限直接相除。
+- GPU SM平均：utilization_pct_seconds / utilization_valid_seconds；有效秒数0时返回null，不返回0。
+- 更粗粒度要合并sum/valid_seconds与峰值，不能AVG(已经算过的平均值)。内存桶峰值取本桶内观测到的usage最大值，不能重复使用实例生命周期peak作为每小时峰值。采样间未捕获的瞬时峰值不能声称已测到。
+
+进程统计只保留数量/峰值，不存原始PID或命令。取不到精细支持类别时保存unknown，不把null硬解释为unsupported或空闲。每个指标独立有效时长，coverage和unknown_count用于前端显示缺测。保留粒度/天数由后端配置；未配置清理会持续增长，不能误以为DDL自带保留任务。删除raw GPU子记录后再删raw实例点，汇总可以采用不同保留期。这里的历史是负载观测，不是pt计费账本。
+
 ## 6. 实例常用接口
 
 以下表格路径均以 `/1.0` 开头；项目参数按需附加。
@@ -659,3 +774,15 @@ macvlan 默认隔离父宿主机与子接口，不能以宿主机直连容器失
 用户先授权临时设置 `kernel.apparmor_restrict_unprivileged_unconfined=0`，仅重新SSH无效，因此恢复1。再次获准后临时设0，并通过Host Agent仅重启113以重建现有上下文。之后真实SSH、分配PTY、不加APT特殊参数的 `apt update` 在2.88秒内退出0，无需手工结束helper；重启后的真实CUDA计算仍PASS。112及其他容器没有重启，不能声称其SSH问题已修复。
 
 当前宿主机该运行时参数为0，未写sysctl持久配置；没有关闭整个AppArmor，未修改 `kernel.apparmor_restrict_unprivileged_userns`，未禁用APT沙箱或删除Ubuntu Pro钩子，也未换源、改DNS或代理。宿主机重启后参数可能恢复，长期策略须单独决定。Ubuntu24来宾并非在所有Ubuntu26宿主机交互路径都免受该限制影响；正式验收必须包含真实SSH/PTY，而不能只用非交互exec。
+
+## 17. 容器指标验收范围
+
+此前只读验收通过本地竞态/静态检查、Linux amd64/arm64无CGO构建以及Linux上的监控、NVML reader和node测试。覆盖共享卡独立归属、旧卡残留、PID复用/退出、短进程及非SM活动、CPU重启/容量变化/观测时间、缺失数据、隐私和缓存游标；当时只读检查CPU/内存及GPU空闲候选，未启动GPU负载。
+
+同时修复Linux回归暴露的resolved D-Bus元组解码问题，以及旧Incus报告未创建设备的可选DRM control节点导致库存永远不完整的问题。权限错误仍明确未知，不以跳过错误假装完整。
+
+此前MySQL 8.4.11临时库通过37表全新初始化、已有32表增量升级、采样幂等/快照外键/缺少CPU窗口/零有效时长不可伪造均值等约束验证，事务回滚并删除该临时库。
+
+2026-10-29后续实测在192.168.0.111升级正式Agent并保留原凭据，复用MySQL、初始化空业务库。通过Agent创建隔离GPU容器、运行限时CUDA负载，修复真实systemd兄弟cgroup归属及通用控制引用抹掉已知统计的问题。最终部署版本实测进程数1、显存220MiB、近似SM利用率95%；停止负载后为idle_candidate且进程数/显存均为0，最后停止了测试容器，原实例状态不变。共享GPU同时繁忙仍由回归夹具覆盖，不宣称本次已实测多个容器并发负载。
+
+临时采集任务在隔离库101cloud_metrics_accept_fe25c31b保留150条实例样本、150条GPU样本、各1条日报汇总和1条游标。实际重放批次验证去重，保留12条进程数NULL，汇总排除缺测的有效时长分母；3个Agent启动流保留独立幂等身份。业务库101cloud仅有37张空表，未混入验收数据。测试程序已清理，Agent与MySQL继续运行；没有长期后端采集服务，历史库不会自动更新。升级备份在节点/var/lib/101cloud-agent-backups/fe25c31b。详细接口与入库分工见第5.5–5.7节。

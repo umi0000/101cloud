@@ -101,6 +101,8 @@ defer response.Body.Close()
 | `GET /agent/v1/resources` | 完整硬件、GPU负载，以及各接口IP/网段/默认路由/DNS的 `network_interfaces`、`system_dns`、`network_errors` |
 | `PUT /agent/v1/instances/{name}/gpu?project=default` | 使用 UUID 配置 GPU，PCI 解析留在本机 |
 | `POST /agent/v1/network/ip-probe` | 在指定网卡上探测单个直连 IPv4 的 ARP 冲突，不分配、不预留地址 |
+| `GET /agent/v1/instances/metrics?project=default` | 连续采样的实例CPU/内存与隐私安全GPU归属聚合，含新鲜度和质量 |
+| `GET /agent/v1/instances/metrics/samples` | 有界内存快照增量补采，按Agent启动ID/序号去重，显式报告重启和缺口 |
 
 GPU 指标由宿主机 `nvidia-smi` 采集。每卡综合负载为 GPU 利用率与显存占用率的等权平均，节点负载为所有卡分数的等权平均；采样失败用 null 和错误说明表示，不作为空闲。它不是历史时间平均，也不保证仍有足够显存。字段和计算示例见使用指南第 5.2 节。
 
@@ -110,7 +112,17 @@ IP 探测请求为 `{"interface":"ens18","address":"192.168.0.112"}`。结果区
 
 原生 API 的版本与扩展以节点 Incus 为准。请求超时不等于操作失败，后端应保存 operation ID 并核对状态，不能盲目重复创建或释放资源。跨节点迁移仍需后端编排连接地址、认证和失败恢复。
 
-GPU 请求：
+### 容器负载与隐私
+
+Agent默认每5秒只读采样，采集期限4秒；可通过可选 `metrics` 配置的 `interval_seconds`（1–60）和 `timeout_seconds`（1–30）调整。原配置省略此项仍可启动。仅保留最近120个不可变内存快照，不写临时JSON或本地历史库。慢客户端不会持有采样锁阻塞采集。
+
+CPU用累计计数差分和独立观测时间窗，首次/重启/缺测不构造差分；跨容量变化的窗口保留使用核数但归一化百分比为null，不拿GPU耗时当CPU窗口。GPU在Linux amd64/arm64上无CGO动态读取NVML，内部关联宿主PID/cgroup与设备引用，公开只返回每实例/每卡的统计值及匿名数量，不返回PID、命令行、进程名或路径。配置与实际观察取并集，可看到换卡后留在旧卡上的占用。进程复用、短任务已退出但仍有未归属活动、MPS/MIG/权限或驱动不支持均保守降级，不把无样本当0。
+
+`in_use / idle_candidate / unknown / not_attached` 是观察状态，不会自动释放或换卡。后端策略需用户开启、连续有效窗口及操作前后核对；`idle_candidate`不是原子安全释放授权，CUDA上下文不会迁移。SM利用率是进程样本聚合的近似值，不是算力份额或计费依据。Stopped实例可能因缺少原进程身份而unknown，不强行填0。必须在宿主PID/cgroup/device视图中运行；非root仅有Incus权限不保证有完整进程观测权限。
+
+历史存储新增5张MySQL表（实例/GPU明细、实例/GPU汇总、采集游标），支持可配置bucket_seconds、独立有效时长、加权和/观测峰值及缺测。新库用 [init.sql](../backend/sql/init.sql)，已有库用 [指标升级脚本](../backend/sql/migrations/20261029_instance_metrics.sql)。本次没有实现尚未开发的业务后端入库器、历史查询服务或前端图表；DDL不会自动收集、聚合或清理历史。详细参数、隐私边界、计费与指标区别见使用指南第5.5–5.7节。
+
+### GPU UUID配置
 
 ```json
 {
@@ -199,4 +211,16 @@ sudo sysctl -w kernel.apparmor_restrict_unprivileged_unconfined=1
 
 ## 本地验证记录
 
-已通过全包竞态测试、`go vet`、构建与 Linux amd64 交叉构建。实际执行了初始化、重复初始化拒绝和配置预检；运行真实 Agent 与 Go 后端客户端，通过导出的连接文件访问 health、原生实例 API 和 WebSocket。错误 Token 返回 401，错误指纹在发送 HTTP 请求前被拒绝，Token 未转发到 Unix socket 上游。Incus 上游使用本地协议测试服务，不代表本次已在真实 Incus/GPU 节点部署或验收。
+早期协议验收通过全包竞态测试、`go vet`、构建与Linux amd64交叉构建，执行了初始化、重复初始化拒绝和配置预检；使用真实Agent与Go后端客户端，通过导出的连接文件访问health、原生实例API和WebSocket。错误Token返回401，错误指纹在发送HTTP请求前被拒绝，Token未转发到Unix socket上游。该阶段Incus上游为本地协议测试服务；后续真实节点部署和GPU负载验收见下文。
+
+### 容器指标验收记录
+
+此前的只读验收通过全包竞态/静态检查、无CGO Linux amd64/arm64构建，以及Linux上的monitor、GPU reader、node回归测试；当时没有启动GPU负载。以下为后续真实负载验收结果。
+
+此前MySQL 8.4.11临时库验证了37表初始化、原32表增量升级、幂等键、历史快照外键、CPU窗口和缺测/汇总约束，验证库已删除。
+
+2026-10-29在192.168.0.111升级了正式Agent，保留原证书与Token；复用运行中的MySQL 8.4.11并初始化37表空业务库101cloud。真实CUDA负载暴露并修复systemd的init.scope与system.slice兄弟层级归属问题：使用内核cgroup挂载根确定容器边界，不再把PID 1的叶子组当成整个容器。另将上下文归属与设备引用完整性分开，保留已确认的进程数/显存/SM统计，但通用控制设备引用仍阻止空闲释放。
+
+隔离容器agent-gpu-metrics-accept-fe25c31b实测GPU进程数1、显存220MiB、近似SM利用率95–96%；停止负载后回到idle_candidate、进程数0、显存0，最后已停止测试容器，未启停原有实例。最终代码通过全包竞态测试、go vet、Linux amd64/arm64构建及真实Linux monitor回归；最终部署产物再次验证了繁忙到空闲转换及公开响应隐私。
+
+临时采集任务把真实数据保留在101cloud_metrics_accept_fe25c31b：150条实例样本、150条GPU样本、各1条日报汇总、1条增量游标；包含3个Agent启动流及12条进程数未知的样本。重复写入相同批次不增加样本或改变指标，未知值保持NULL，汇总按有效时长加权，不用未知点补零。正式业务库不写入验收业务数据。本次没有实现或部署长期后端采集器，采样验收结束后不会持续写MySQL；该库用于回看验收结果。升级备份保存在节点/var/lib/101cloud-agent-backups/fe25c31b，临时测试程序已移除。

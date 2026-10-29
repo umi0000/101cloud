@@ -3,6 +3,7 @@ module 101cloud/hostagent
 go 1.24.0
 
 require (
+	github.com/ebitengine/purego v0.8.4
 	github.com/godbus/dbus/v5 v5.1.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/lxc/incus/v6 v6.0.5

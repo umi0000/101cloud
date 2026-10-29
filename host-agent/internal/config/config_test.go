@@ -41,3 +41,16 @@ func TestCertificatePathsResolveAgainstConfigurationDirectory(t *testing.T) {
 		t.Fatalf("paths do not follow config directory: %+v", c.TLS)
 	}
 }
+
+func TestMetricsSettingsRejectsUnboundedOrDisabledSampling(t *testing.T) {
+	for _, settings := range []MetricsConfig{{0, 4}, {61, 4}, {5, 0}, {5, 31}, {-1, 1}} {
+		if _, err := (Config{Metrics: &settings}).MetricsSettings(); err == nil {
+			t.Fatalf("accepted invalid metrics settings: %+v", settings)
+		}
+	}
+	for _, settings := range []MetricsConfig{{1, 1}, {60, 30}} {
+		if _, err := (Config{Metrics: &settings}).MetricsSettings(); err != nil {
+			t.Fatalf("rejected supported boundary: %+v: %v", settings, err)
+		}
+	}
+}
