@@ -167,6 +167,9 @@ GET /agent/v1/resources
 | `server_resources` | Incus 完整硬件资源对象：CPU、内存、GPU、网络、存储等，取决于版本 |
 | `gpus` | 所有 Incus 枚举的 GPU，每卡包含型号、UUID/PCI 和可用的运行指标，不限于 NVIDIA 卡 |
 | `average_load_percent` | 所有 GPU 综合负载的算术平均，0–100；任一卡负载未知或无卡时为 null |
+| `network_interfaces` | 所有本机接口的地址、网段、默认路由及可确定归属的DNS，包括物理与虚拟接口 |
+| `system_dns` | 系统级DNS、stub解析器、搜索域及来源；不是所有网卡DNS的混合列表 |
+| `network_errors` | 网络枚举或默认路由采集的问题；部分失败不删除已获得的硬件/GPU/接口数据 |
 
 每卡字段：`model`、`uuid`、`pci_address`、`utilization_percent`、`memory_used_mib`、`memory_total_mib`、`memory_utilization_percent`、`load_percent`，采集失败时另有 `error`。非 NVIDIA 卡可能没有 UUID；UUID 分卡接口仍仅支持 NVIDIA。旧的 `nvidia_gpus` 字段已移除，后端改读 `gpus`。
 
@@ -201,6 +204,56 @@ GET /agent/v1/resources
 驱动命令有 5 秒期限；型号优先从采集结果读取，否则保留 Incus 硬件信息。缺工具、超时、无效数据或不支持的厂商不会伪装成 0%：相应指标为 null，并说明错误；已有硬件信息仍返回 HTTP 200。任何卡负载未知时节点平均也为 null，避免只对正常卡求平均而低估节点负载。没有卡时 `gpus` 为 []，平均为 null。
 
 这不是空闲/独占保证或显存硬配额。平均分可能掩盖单卡显存耗尽；调度仍需逐卡检查健康状态、剩余显存、已预留名额和业务额度。后端选择 UUID，Agent 在配置时重新解析当前节点 PCI。
+
+#### 网卡网络信息
+
+每个 `network_interfaces` 对象包含：
+
+| 字段 | 含义 |
+| --- | --- |
+| `index` / `name` | 系统接口索引和名称，如ens18、incusbr0、VLAN、veth或lo |
+| `mac` / `mtu` | MAC和MTU；loopback等接口MAC可为空 |
+| `up` / `loopback` | 管理状态是否UP、是否回环，不等于外网可达 |
+| `addresses[]` | 每个IPv4/IPv6的family、address、prefix_length、netmask、network |
+| `default_routes[]` | 默认路由候选，含family、gateway、metric、table、weight；不擅自挑一个网关 |
+| `dns` | 此接口的servers、source和可选error，不能将未知DNS当作空闲配置 |
+| `error` | 可选，接口地址采集问题 |
+
+示例仅展示新增网络部分，不是节点实时测量结果：
+
+```json
+{
+  "network_interfaces": [
+    {
+      "index": 2,
+      "name": "ens18",
+      "mac": "bc:24:11:41:15:77",
+      "mtu": 1500,
+      "up": true,
+      "loopback": false,
+      "addresses": [
+        {"family":"ipv4","address":"192.168.0.111","prefix_length":24,"netmask":"255.255.255.0","network":"192.168.0.0/24"}
+      ],
+      "default_routes": [
+        {"family":"ipv4","gateway":"192.168.0.2","metric":100,"table":254,"weight":1}
+      ],
+      "dns":{"servers":["223.5.5.5"],"source":"systemd-resolved"}
+    }
+  ],
+  "system_dns":{"servers":[],"stub_servers":[],"search_domains":[],"source":"systemd-resolved"},
+  "network_errors":[]
+}
+```
+
+接口地址取自本机真实配置，网段按地址前缀计算，不按IP地址类别猜掩码。Linux默认路由采集需要iproute2的`ip`命令，通过JSON读取IPv4/IPv6和路由表信息；命令执行受期限和输出上限约束。网卡可有多个地址和默认路由，ECMP下一跳按各接口分别返回；gateway为空可表示直连默认路由，不自动猜成网段中的`.1`。table用于区分main及策略路由表，weight是多路径权重；这些候选不构成对完整`ip rule`选路结果的保证。
+
+DNS优先通过本机systemd-resolved的D-Bus查询，按接口索引关联，不解析本地化终端文本。resolved的全局index=0项放入`system_dns`，其他项只放对应接口；全局servers为空不代表所有接口没有DNS。resolved不可用时，系统级可后备读取resolv.conf；只有确认是resolved stub时才尝试其上游文件。loopback解析器仅列为stub_servers，不作为可直接给新容器使用的upstream；未能确定归属的接口DNS保持unavailable并给出error，不把全局DNS复制到所有网卡。
+
+系统级DNS来源包括systemd-resolved、resolv.conf、systemd-resolved-resolv.conf或unavailable；需结合error判断后备/未知状态。resolved的search_domains仅包含全局非route-only域，不把其他网卡搜索域归给当前网卡。非Linux仍可返回Go可枚举的接口地址，但Linux路由/resolved能力不可用会明确报告，不伪装成空网关或配置成功。返回的是配置观察，不保证DNS可解析或链路可达。IPv6链路本地DNS若带`%接口名`，后端必须按目标容器接口重新解释scope，不能把宿主接口名照搬进去。
+
+**供创建实例参考，而非自动生成完整套餐网络配置。** 后端先选定管理员允许的接口、网络模式和地址池；绝不能把宿主机address原样分给容器，不能从整个network网段推断所有地址可用。网关须结合表、metric、旁路代理和管理员策略选择；DNS缺失则要求明确配置。候选IP仍需数据库预留及第5.4节的冲突探测，且与外部DHCP地址池隔离。该信息接口不修改任何网卡、路由或DNS。
+
+这些基本字段不等于复制完整的split DNS、DNS-over-TLS或策略路由规则，后端仍须使用管理员确认的网络模板。本次在本地实际运行HTTPS资源接口，验证了真实网卡地址、前缀/掩码计算和明确的平台限制；路由解析及文件DNS后备通过本地测试，Linux专属代码及测试已交叉编译。未进行新的Linux路由/resolved实机验收，未SSH、未启动远端测试容器，也未替换现有Agent。
 
 ### 5.3 `PUT /agent/v1/instances/{name}/gpu?project=default`
 

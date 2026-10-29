@@ -4,6 +4,8 @@
 //
 // GET /agent/v1/resources returns complete server_resources, every GPU in gpus,
 // and average_load_percent (null when any GPU load is unknown or no GPUs exist).
+// network_interfaces, system_dns and network_errors describe local address,
+// default-route and DNS configuration without inferring an allocatable IP pool.
 // GET /agent/v1/health returns {"status":"ok","incus":true,"server_name":"..."}
 // after a live Incus GetServer call, or HTTP 503 when Incus is unavailable.
 // POST /agent/v1/network/ip-probe accepts one interface/address IPv4 probe.
@@ -49,12 +51,13 @@ const (
 // Service exposes node-local Incus resources, GPU configuration and IPv4 conflict probing.
 // The caller must authenticate and authorize the trusted backend before invoking it.
 type Service struct {
-	socketPath   string
-	gpuCollector func(context.Context, *api.Resources) ([]GPUInfo, *float64)
-	ipProber     func(context.Context, IPProbeRequest) (IPProbeResult, error)
-	ipProbeSlots chan struct{}
-	mu           sync.Mutex
-	locks        map[instanceKey]*instanceLock
+	socketPath       string
+	gpuCollector     func(context.Context, *api.Resources) ([]GPUInfo, *float64)
+	networkCollector func(context.Context) NetworkInfo
+	ipProber         func(context.Context, IPProbeRequest) (IPProbeResult, error)
+	ipProbeSlots     chan struct{}
+	mu               sync.Mutex
+	locks            map[instanceKey]*instanceLock
 }
 
 type instanceKey struct {
@@ -77,11 +80,12 @@ func New(socketPath string) (*Service, error) {
 		return nil, fmt.Errorf("Incus socket path must be absolute")
 	}
 	return &Service{
-		socketPath:   socketPath,
-		gpuCollector: collectGPUs,
-		ipProber:     probeIPv4,
-		ipProbeSlots: make(chan struct{}, maxConcurrentIPProbes),
-		locks:        make(map[instanceKey]*instanceLock),
+		socketPath:       socketPath,
+		gpuCollector:     collectGPUs,
+		networkCollector: collectNetwork,
+		ipProber:         probeIPv4,
+		ipProbeSlots:     make(chan struct{}, maxConcurrentIPProbes),
+		locks:            make(map[instanceKey]*instanceLock),
 	}, nil
 }
 
@@ -190,12 +194,26 @@ func (s *Service) resources(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "incus_resources_failed", err.Error())
 		return
 	}
-	gpus, averageLoad := s.gpuCollector(ctx, resources)
+	var gpus []GPUInfo
+	var averageLoad *float64
+	var gpuDone sync.WaitGroup
+	gpuDone.Add(1)
+	go func() {
+		defer gpuDone.Done()
+		gpus, averageLoad = s.gpuCollector(ctx, resources)
+	}()
+	networkCtx, networkCancel := context.WithTimeout(ctx, 5*time.Second)
+	network := s.networkCollector(networkCtx)
+	networkCancel()
+	gpuDone.Wait()
 	writeJSON(w, http.StatusOK, struct {
-		ServerResources    *api.Resources `json:"server_resources"`
-		GPUs               []GPUInfo      `json:"gpus"`
-		AverageLoadPercent *float64       `json:"average_load_percent"`
-	}{resources, gpus, averageLoad})
+		ServerResources    *api.Resources     `json:"server_resources"`
+		GPUs               []GPUInfo          `json:"gpus"`
+		AverageLoadPercent *float64           `json:"average_load_percent"`
+		NetworkInterfaces  []NetworkInterface `json:"network_interfaces"`
+		SystemDNS          SystemDNS          `json:"system_dns"`
+		NetworkErrors      []string           `json:"network_errors"`
+	}{resources, gpus, averageLoad, network.Interfaces, network.SystemDNS, network.Errors})
 }
 
 func requestProject(r *http.Request) (string, error) {

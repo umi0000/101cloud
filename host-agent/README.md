@@ -98,11 +98,13 @@ defer response.Body.Close()
 | --- | --- |
 | `/`、`/1.0`、`/1.0/*` | 完整 Incus 原生 API，含实例、项目、网络、存储、镜像、备份、操作、事件、exec/控制台 WebSocket 和 SFTP Upgrade |
 | `GET /agent/v1/health` | 实时检查 Incus 连通性，不允许匿名访问 |
-| `GET /agent/v1/resources` | 完整 `server_resources`、所有 GPU 型号与指标 `gpus`、节点综合平均负载 `average_load_percent` |
+| `GET /agent/v1/resources` | 完整硬件、GPU负载，以及各接口IP/网段/默认路由/DNS的 `network_interfaces`、`system_dns`、`network_errors` |
 | `PUT /agent/v1/instances/{name}/gpu?project=default` | 使用 UUID 配置 GPU，PCI 解析留在本机 |
 | `POST /agent/v1/network/ip-probe` | 在指定网卡上探测单个直连 IPv4 的 ARP 冲突，不分配、不预留地址 |
 
 GPU 指标由宿主机 `nvidia-smi` 采集。每卡综合负载为 GPU 利用率与显存占用率的等权平均，节点负载为所有卡分数的等权平均；采样失败用 null 和错误说明表示，不作为空闲。它不是历史时间平均，也不保证仍有足够显存。字段和计算示例见使用指南第 5.2 节。
+
+网络资源按接口索引和名称关联，不把一张卡的网关或DNS混给其他网卡。默认路由保留IPv4/IPv6、表、metric和ECMP权重；DNS区分resolved per-link、全局配置与本机stub，无法确定时报告错误。Linux路由需iproute2，resolved通过本机D-Bus查询，缺失时保留系统级文件后备但不猜per-link归属。后端可据此选择网卡和网络模板，但不能复制宿主IP或从网段推断可分配地址池。详见使用指南第5.2节。
 
 IP 探测请求为 `{"interface":"ens18","address":"192.168.0.112"}`。结果区分发现占用、未发现冲突和未知；`available: true` 仅表示本次未发现冲突，不保证离线设备、DHCP或其他后端没有保留该地址。后端必须维护地址池和并发预留。仅 Linux 支持真实 ARP 探测，需 `CAP_NET_RAW`；更新部署时也要更新 systemd 单元，允许 `AF_PACKET` 和网卡发现所需的 `AF_NETLINK`。不能只替换二进制而沿用旧的地址族限制。详见使用指南第 5.4 节。
 
