@@ -118,5 +118,8 @@ type Snapshot struct {
 	CollectedAt time.Time         `json:"collected_at"`
 	Instances   []InstanceMetrics `json:"instances"`
 	Quality     Quality           `json:"quality"`
-	Anonymous   AnonymousCounts   `json:"anonymous"`
+	// HostQuality captures node-wide evidence before per-instance quality merges.
+	// Complete attribution is not a claim that GPUs are idle.
+	HostQuality Quality         `json:"host_quality"`
+	Anonymous   AnonymousCounts `json:"anonymous"`
 }

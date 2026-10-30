@@ -12348,7 +12348,7 @@
         "additionalProperties": false
       },
       "PublicTaskError": {
-        "description": "Explicitly public safe error only. Resource amounts in details are decimal strings, never floating-point numbers; no raw upstream output or parameters.",
+        "description": "Explicitly public safe error only. Resource amounts in details are decimal strings, never floating-point numbers; no raw upstream output or parameters. For unknown deletion tasks, gpu_reclamation_unverified means native deletion is confirmed but independent post-deletion GPU evidence is not: details include stage=delete.verify_reclamation, safe reason, native_deletion_confirmed=true, resource_reservations_released=false and a Chinese action. Keep all reservations and reconcile the original task; do not issue another DELETE. No raw GPU process data is exposed.",
         "type": "object",
         "properties": {
           "code": { "type": "string" },
@@ -12427,6 +12427,7 @@
             ]
           },
           "phase": {
+            "description": "Deletion progresses through delete.native, delete.verify_reclamation and delete.finalize. GPU evidence waits up to about 95 seconds for an explicitly complete host-attributed sample whose collection started after native absence confirmation. A verification failure remains unknown, not an assertion that native deletion failed.",
             "anyOf": [
               {
                 "type": "string"

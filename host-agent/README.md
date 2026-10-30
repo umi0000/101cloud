@@ -118,6 +118,10 @@ Agent默认每5秒只读采样，采集期限4秒；可通过可选 `metrics` �
 
 CPU用累计计数差分和独立观测时间窗，首次/重启/缺测不构造差分；跨容量变化的窗口保留使用核数但归一化百分比为null，不拿GPU耗时当CPU窗口。GPU在Linux amd64/arm64上无CGO动态读取NVML，内部关联宿主PID/cgroup与设备引用，公开只返回每实例/每卡的统计值及匿名数量，不返回PID、命令行、进程名或路径。配置与实际观察取并集，可看到换卡后留在旧卡上的占用。进程复用、短任务已退出但仍有未归属活动、MPS/MIG/权限或驱动不支持均保守降级，不把无样本当0。
 
+指标快照新增顶层 `host_quality`（`complete`、`attribution_complete`、`reasons`），保留实例行合并前的全节点扫描、上下文归属、设备引用和库存质量；原 `quality` 仍汇总全部实例，包括缺少PID的Stopped实例。因此无关Stopped实例可使 `quality.attribution_complete=false`，但不会单独使 `host_quality.attribution_complete=false`。权限/扫描限额、未归属上下文或近期活动、未知设备引用、MIG归属不全、库存缺失、取消或陈旧采样仍会阻止宿主归属完整；仅缺失可选利用率可使 `complete=false` 而不否定 `attribution_complete`。宿主归属完整不表示GPU空闲。
+
+顶层 `collection_started_at` 为实例/设备输入采集开始前记录的时间，UTC、微秒精度，覆盖后续GPU采样；它不是CPU窗口起点，也不能用 `collected_at` 减耗时替代。当前快照和历史samples都保留该字段，项目过滤不改变这两个宿主字段。原生删除已确认完成后的资源回收须使用 `collection_started_at` 严格晚于完成时间的新鲜、`collection_complete=true`、完整实例列表快照，并要求 `host_quality.attribution_complete` 显式为true、按目标身份核对实例确实缺席；字段缺失/未知不能授权释放，不能仅凭汇总质量或不存在某行释放。
+
 `in_use / idle_candidate / unknown / not_attached` 是观察状态，不会自动释放或换卡。后端策略需用户开启、连续有效窗口及操作前后核对；`idle_candidate`不是原子安全释放授权，CUDA上下文不会迁移。SM利用率是进程样本聚合的近似值，不是算力份额或计费依据。Stopped实例可能因缺少原进程身份而unknown，不强行填0。必须在宿主PID/cgroup/device视图中运行；非root仅有Incus权限不保证有完整进程观测权限。
 
 历史存储新增5张MySQL表（实例/GPU明细、实例/GPU汇总、采集游标），支持可配置bucket_seconds、独立有效时长、加权和/观测峰值及缺测。新库用 [init.sql](../backend/sql/init.sql)，已有库用 [指标升级脚本](../backend/sql/migrations/20261029_instance_metrics.sql)。本次没有实现尚未开发的业务后端入库器、历史查询服务或前端图表；DDL不会自动收集、聚合或清理历史。详细参数、隐私边界、计费与指标区别见使用指南第5.5–5.7节。

@@ -1,6 +1,7 @@
 package node
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"101cloud/hostagent/internal/monitor"
+	"101cloud/hostagent/internal/monitor/gpu"
 )
 
 const metricsTestBoot = "11111111-1111-4111-8111-111111111111"
@@ -21,7 +23,7 @@ func metricsTestService(t *testing.T) *Service {
 	now := time.Now().UTC()
 	frames := make([]metricsFrame, 3)
 	for i := range frames {
-		frames[i] = metricsFrame{Snapshot: monitor.Snapshot{CollectedAt: now, Instances: []monitor.InstanceMetrics{{Project: "default", Name: "first", UUID: "instance-a"}, {Project: "tenant", Name: "second", UUID: "instance-b"}}}, AgentBootID: metricsTestBoot, SchemaVersion: 1, SampleSequence: uint64(i + 5), WindowStart: now.Add(-time.Second), WindowEnd: now, WindowSeconds: 1, CollectionComplete: true, CollectionErrors: []string{}}
+		frames[i] = metricsFrame{Snapshot: monitor.Snapshot{CollectedAt: now, Instances: []monitor.InstanceMetrics{{Project: "default", Name: "first", UUID: "instance-a"}, {Project: "tenant", Name: "second", UUID: "instance-b"}}, Quality: monitor.Quality{Reasons: []string{"instance_attribution_unknown"}}, HostQuality: monitor.Quality{Complete: true, AttributionComplete: true, Reasons: []string{}}}, AgentBootID: metricsTestBoot, SchemaVersion: 1, SampleSequence: uint64(i + 5), WindowStart: now.Add(-time.Second), WindowEnd: now, WindowSeconds: 1, CollectionComplete: true, CollectionErrors: []string{}, CollectionStartedAt: now.Add(-100 * time.Millisecond).Truncate(time.Microsecond)}
 	}
 	s.metrics = &metricsSampler{bootID: metricsTestBoot, interval: time.Second, timeLimit: time.Second, history: frames, count: 3, next: 0, sequence: 7}
 	return s
@@ -46,11 +48,23 @@ func TestMetricsProjectAndCursorBoundaries(t *testing.T) {
 	if status != 200 || len(instances) != 1 || instances[0].Project != "tenant" {
 		t.Fatalf("project filter leaked instances: %d %+v", status, instances)
 	}
+	var hostQuality monitor.Quality
+	if err := json.Unmarshal(payload["host_quality"], &hostQuality); err != nil {
+		t.Fatal(err)
+	}
+	if !hostQuality.AttributionComplete || !hostQuality.Complete {
+		t.Fatalf("project filtering replaced independent host quality: %s", payload["host_quality"])
+	}
 	status, payload = call("/agent/v1/instances/metrics/samples?project=*&agent_boot_id=" + metricsTestBoot + "&after_sequence=4&limit=2")
 	var samples []metricsFrame
 	_ = json.Unmarshal(payload["samples"], &samples)
 	if status != 200 || len(samples) != 2 || samples[0].SampleSequence != 5 || samples[1].SampleSequence != 6 || string(payload["next_sequence"]) != "6" || string(payload["gap"]) != "false" {
 		t.Fatalf("cursor lost or repeated samples: %d %s", status, payload)
+	}
+	for _, sample := range samples {
+		if !sample.HostQuality.Complete || !sample.HostQuality.AttributionComplete || sample.Quality.AttributionComplete || sample.CollectionStartedAt.IsZero() {
+			t.Fatalf("history lost separate host evidence or collection start: %+v", sample)
+		}
 	}
 	status, payload = call("/agent/v1/instances/metrics/samples?after_sequence=0")
 	if status != 200 || string(payload["gap"]) != "true" {
@@ -144,5 +158,129 @@ func TestMetricsConfiguredGPUSelection(t *testing.T) {
 	ids, problem = metricsConfiguredGPUs(devices, resources)
 	if len(ids) != 0 || problem != "gpu_configuration_unresolved" {
 		t.Fatal("unsupported GPU type must not look unattached")
+	}
+}
+
+type metricsFixtureReader func(context.Context, uint64) (gpu.Sample, error)
+
+func (r metricsFixtureReader) Query(ctx context.Context, cursor uint64) (gpu.Sample, error) {
+	return r(ctx, cursor)
+}
+
+func TestMetricsCollectionStartPrecedesInputAndGPUCollection(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	inputEntered := make(chan time.Time, 1)
+	allowInput := make(chan struct{})
+	queryEntered := make(chan time.Time, 1)
+	nextInput := make(chan struct{})
+	done := make(chan struct{})
+	reader := metricsFixtureReader(func(context.Context, uint64) (gpu.Sample, error) {
+		now := time.Now()
+		queryEntered <- now
+		return gpu.Sample{CollectedAt: now, Devices: []gpu.Device{{UUID: "GPU-a", ComputeSupported: true, GraphicsSupported: true, AttributionComplete: true}}}, nil
+	})
+	engine := monitor.NewEngine(monitor.Options{Reader: reader, ProcRoot: t.TempDir()})
+	calls := 0
+	m := &metricsSampler{
+		bootID: metricsTestBoot, interval: time.Millisecond, timeLimit: time.Second,
+		history: make([]metricsFrame, 2), engine: engine,
+		input: func(sampleCtx context.Context) metricsInput {
+			calls++
+			if calls == 1 {
+				inputEntered <- time.Now()
+				select {
+				case <-allowInput:
+				case <-sampleCtx.Done():
+				}
+			} else {
+				close(nextInput)
+				<-sampleCtx.Done()
+			}
+			return metricsInput{Complete: true, Errors: []string{}, Inventory: []monitor.GPUDevice{{UUID: "GPU-a", Rdevs: []uint64{123456}}}, Instances: []monitor.Instance{{Project: "tenant", Name: "stopped", UUID: "instance-a", Type: "container", State: "Stopped"}, {Project: "other", Name: "other", UUID: "instance-b", Type: "container", State: "Stopped"}}}
+		},
+	}
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Error("metrics sampler did not stop")
+		}
+	})
+	beforeRun := time.Now().UTC().Truncate(time.Microsecond)
+	go func() {
+		defer close(done)
+		m.run(ctx)
+	}()
+	var inputAt time.Time
+	select {
+	case inputAt = <-inputEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("input collection did not start")
+	}
+	// Hold native input collection across a real interval so a timestamp taken
+	// at engine sampling or frame publication cannot pass as the collection start.
+	timer := time.NewTimer(5 * time.Millisecond)
+	defer timer.Stop()
+	<-timer.C
+	close(allowInput)
+	var queryAt time.Time
+	select {
+	case queryAt = <-queryEntered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("GPU collection did not start")
+	}
+	select {
+	case <-nextInput:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first snapshot was not published")
+	}
+	s, err := New("/nonexistent/incus.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.metrics = m
+	var firstStart time.Time
+	for _, path := range []string{
+		"/agent/v1/instances/metrics?project=tenant",
+		"/agent/v1/instances/metrics?project=*",
+		"/agent/v1/instances/metrics/samples?project=tenant",
+		"/agent/v1/instances/metrics/samples?project=*",
+	} {
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("fresh snapshot unavailable at %s: %d %s", path, w.Code, w.Body)
+		}
+		var payload struct {
+			metricsFrame
+			Samples []metricsFrame `json:"samples"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		frame := payload.metricsFrame
+		if payload.Samples != nil {
+			if len(payload.Samples) != 1 {
+				t.Fatalf("unexpected history: %s", w.Body)
+			}
+			frame = payload.Samples[0]
+		}
+		start := frame.CollectionStartedAt
+		if start.IsZero() || start.Before(beforeRun) || start.After(inputAt.UTC().Truncate(time.Microsecond)) || !start.Before(queryAt.UTC().Truncate(time.Microsecond)) || start.After(frame.CollectedAt) || start.Nanosecond()%1000 != 0 || start.Location() != time.UTC {
+			t.Fatalf("collection start does not bound actual input and GPU sampling: start=%s before=%s input=%s query=%s frame=%s", start, beforeRun, inputAt, queryAt, w.Body)
+		}
+		if firstStart.IsZero() {
+			firstStart = start
+		} else if !start.Equal(firstStart) {
+			t.Fatalf("latest/history/project filtering changed collection start: %s", w.Body)
+		}
+		wantInstances := 1
+		if path[len(path)-1] == '*' {
+			wantInstances = 2
+		}
+		if len(frame.Instances) != wantInstances {
+			t.Fatalf("project filtering changed: %s", w.Body)
+		}
 	}
 }

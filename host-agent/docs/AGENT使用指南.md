@@ -360,11 +360,13 @@ interval_seconds范围1–60，timeout_seconds范围1–30；配置变化重启A
 | `sample_sequence` | 本次启动内递增序号，后端用于去重 |
 | `collected_at` | 快照时间，UTC；不等于每个底层读数原子同时发生 |
 | `window_start_at` / `window_end_at` / `window_seconds` | 观察窗口，UTC微秒；首个窗口为0，不构造历史 |
+| `collection_started_at` | 本次实例/设备输入采集开始前记录的UTC微秒时间；涵盖后续GPU采样，不是观察窗口起点 |
 | `collection_duration_seconds` | 本次采集耗时，可用于评估时序偏差 |
 | `collection_complete` / `collection_errors` | 实例枚举是否完整及安全错误码，不含进程路径/参数 |
 | `stale` | 当前缓存是否已超出新鲜度期限；不能用于自动动作 |
 | `instances` | 按项目过滤后的实例聚合列表 |
 | `quality` | 全节点汇总质量；包括其他实例，不等于目标实例的独立质量 |
+| `host_quality` | 实例行合并前的全节点证据质量：`complete`、`attribution_complete`、`reasons`；不因无关Stopped实例缺PID而降级，不表示GPU空闲 |
 | `anonymous` | 未归属上下文、设备引用、近期活动的匿名计数，不含进程标识 |
 
 每个实例包含project、name、uuid、type、state、started_at，以及：
@@ -398,6 +400,10 @@ GPU显存是NVML报告的归属进程显存合计；compute/graphics同PID去重
 停止实例、换卡或重建后，不能把新旧CPU计数器拼接；跨分配容量变化的窗口不使用新容量错误归一化。内存peak_bytes是生命周期峰值，不是最近一分钟峰值。前端应分指标处理null和缺测，不能因GPU不支持某项指标而抹掉有效CPU/内存值，也不能把unknown画成0%。
 
 上下文统计与设备引用完整性分开处理：已验证当前GPU进程归属时，process_count、used_memory_bytes及可用的近似SM值可以非null，同时quality.attribution_complete仍为false。例如通用GPU控制设备引用无法定位到某张卡时，referencing_process_count保持null，并带gpu_reference_scan_incomplete/gpu_references_unresolved原因；这不能授权空闲释放，也不能抹掉已确认的负载统计。容器边界取内核cgroup挂载根，兼容systemd把PID 1放在init.scope、服务放在同级system.slice的情况。
+
+`host_quality` 保留宿主进程扫描、上下文归属、FD设备引用、实例/设备库存、取消、新鲜度、MIG及匿名活动不确定性检查；它不放宽这些检查。与实例行一样，仅缺失可选利用率可使其 `complete=false` 而 `attribution_complete=true`。顶层原 `quality` 仍合并所有实例行，Stopped实例的 `instance_attribution_unknown` 不应被解释为宿主扫描失败；项目过滤只裁剪实例行，不重算这两个质量对象，也不改变 `collection_started_at`，历史samples使用同一字段。
+
+原生删除已确认完成后的资源回收，应读取完整实例列表，核对目标身份确实缺席；必须同时要求快照新鲜、`collection_complete=true`、`host_quality.attribution_complete` 显式为true，且 `collection_started_at` 严格晚于确认完成时间，避免发布于删除之后但实际采集始于删除之前的旧证据。字段缺失/未知、不完整或过期均不能授权释放。该删除后核对与仍存在实例的空闲策略不同；宿主归属完整本身不证明目标卡空闲，也不是跳过原生操作确认的授权。
 
 自动释放/空闲换卡的策略由后端决定，阈值、窗口和用户开关不在Agent写死。后端必须检查frame新鲜度、collection_complete以及**目标实例/目标卡**的attribution_complete和状态，而不是只看全节点汇总quality。连续候选也不能保证捕获所有采样间的短任务：实际动作前需串行化、核对当前配置/占用，动作后复核；旧卡残留就继续保留原分配名额，必要时走获准的停机回收。现有GPU配置API并未因该指标接口而变成原子“安全释放”事务。
 

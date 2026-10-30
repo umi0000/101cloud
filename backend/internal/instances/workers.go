@@ -1195,8 +1195,18 @@ func runDelete(ctx context.Context, a *platform.App, j platform.Job) error {
 		}
 		return workerUnknown(ctx, a, j, r, err)
 	}
-	// Instance removal alone is insufficient evidence of GPU process reclamation.
-	if err = workerDeletedGPUs(ctx, a, r); err != nil {
+	// A cached frame collected before this confirmation cannot authorize release.
+	confirmedAt := a.Time()
+	if err = a.Step(ctx, j, "delete.verify_reclamation", "", "running"); err != nil {
+		return workerUnknown(ctx, a, j, r, err)
+	}
+	if err = workerDeletedGPUs(ctx, a, r, confirmedAt); err != nil {
+		return workerUnknown(ctx, a, j, r, err)
+	}
+	if err = a.Step(ctx, j, "delete.verify_reclamation", "", "succeeded"); err != nil {
+		return workerUnknown(ctx, a, j, r, err)
+	}
+	if err = a.Step(ctx, j, "delete.finalize", "", "running"); err != nil {
 		return workerUnknown(ctx, a, j, r, err)
 	}
 	err = a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
@@ -1222,36 +1232,97 @@ func runDelete(ctx context.Context, a *platform.App, j platform.Job) error {
 	if err != nil {
 		return workerUnknown(ctx, a, j, r, err)
 	}
+	if err = a.Step(ctx, j, "delete.finalize", "", "succeeded"); err != nil {
+		return workerUnknown(ctx, a, j, r, err)
+	}
 	return a.TaskResult(ctx, j, platform.Row{"instance_id": strconv.FormatUint(j.InstanceID, 10), "observed_state": "deleted"})
 }
-func workerDeletedGPUs(ctx context.Context, a *platform.App, r platform.Row) error {
+func workerDeletedGPUs(ctx context.Context, a *platform.App, r platform.Row, confirmedAt time.Time) error {
 	var count int64
 	if err := a.DB.WithContext(ctx).Table("gpu_allocations").Where("instance_id = ? AND active_slot = 1", r["id"]).Count(&count).Error; err != nil {
-		return err
+		return workerGPUReclamationError("allocation_inventory_unavailable")
 	}
 	if count == 0 {
 		return nil
 	}
-	frame, err := a.Agent(ctx, platform.Uint(r["node_id"]), http.MethodGet, "/agent/v1/instances/metrics?project="+url.QueryEscape(platform.Text(r["project_name"])), nil)
-	if err != nil {
-		return err
+	// Allow one full 60-second collection interval and a 30-second collection,
+	// with polling margin. The deadline also bounds agent requests and respects
+	// cancellation; retries only read evidence, never replay the native DELETE.
+	waitCtx, cancel := context.WithTimeout(ctx, 95*time.Second)
+	defer cancel()
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+	reason := "metrics_unavailable"
+	for {
+		if waitCtx.Err() != nil {
+			return workerGPUReclamationError(reason)
+		}
+		frame, err := a.Agent(waitCtx, platform.Uint(r["node_id"]), http.MethodGet, "/agent/v1/instances/metrics?project=*", nil)
+		if err != nil {
+			reason = "metrics_unavailable"
+		} else {
+			reason = workerDeletedGPUFrame(frame, r, confirmedAt, a.Time())
+			if reason == "" {
+				return nil
+			}
+		}
+		select {
+		case <-waitCtx.Done():
+			return workerGPUReclamationError(reason)
+		case <-tick.C:
+		}
 	}
-	quality := object(frame["quality"])
-	collected := platform.Stamp(frame["collected_at"])
-	if collected.IsZero() || a.Time().Sub(collected) > 30*time.Second || collected.After(a.Time().Add(5*time.Second)) || platform.Bool(frame["stale"]) || !platform.Bool(frame["collection_complete"]) || !platform.Bool(quality["attribution_complete"]) {
-		return errors.New("GPU reclamation observation is incomplete or stale")
+}
+
+func workerGPUReclamationError(reason string) error {
+	return platform.EDetails(409, "gpu_reclamation_unverified", "原生实例已删除，但 GPU 回收证据尚未确认；IP、GPU、配额及计费预留仍保留。", platform.Row{
+		"stage": "delete.verify_reclamation", "reason": reason, "native_deletion_confirmed": true, "resource_reservations_released": false,
+		"action": "请管理员检查节点监控采集是否完整且时间同步，等待删除后的完整新样本，再对原任务执行对账；请勿重复删除或手工释放预留。",
+	})
+}
+
+// Host attribution covers process/context/reference and device inventory integrity.
+// Per-instance quality may be unknown for unrelated stopped instances; neither it
+// nor host-wide GPU idleness is the reclamation condition for this deleted target.
+func workerDeletedGPUFrame(frame map[string]any, r platform.Row, confirmedAt, now time.Time) string {
+	started, startErr := time.Parse(time.RFC3339Nano, platform.Text(frame["collection_started_at"]))
+	collected, collectedErr := time.Parse(time.RFC3339Nano, platform.Text(frame["collected_at"]))
+	if startErr != nil || collectedErr != nil || started.IsZero() || collected.IsZero() || collected.Before(started) || collected.After(now.Add(5*time.Second)) {
+		return "invalid_collection_time"
+	}
+	if !started.After(confirmedAt) {
+		return "collection_predates_deletion"
+	}
+	if now.Sub(collected) > 30*time.Second || frame["stale"] != false {
+		return "stale_collection"
+	}
+	if frame["collection_complete"] != true {
+		return "incomplete_inventory"
+	}
+	if object(frame["host_quality"])["attribution_complete"] != true {
+		return "incomplete_host_attribution"
 	}
 	items, ok := frame["instances"].([]any)
 	if !ok {
-		return errors.New("GPU reclamation enumeration missing")
+		return "missing_instance_inventory"
+	}
+	uuid, name, project := platform.Text(r["incus_uuid"]), platform.Text(r["incus_name"]), platform.Text(r["project_name"])
+	if uuid == "" || name == "" || project == "" {
+		return "missing_target_identity"
 	}
 	for _, item := range items {
 		m := object(item)
-		if platform.Text(m["uuid"]) == platform.Text(r["incus_uuid"]) {
-			return errors.New("deleted instance retains an observed process boundary")
+		itemUUID, uuidOK := m["uuid"].(string)
+		itemName, nameOK := m["name"].(string)
+		itemProject, projectOK := m["project"].(string)
+		if !uuidOK || !nameOK || !projectOK || itemUUID == "" || itemName == "" || itemProject == "" {
+			return "incomplete_instance_identity"
+		}
+		if itemUUID == uuid || (itemName == name && itemProject == project) {
+			return "target_still_observed"
 		}
 	}
-	return nil
+	return ""
 }
 
 func runImport(ctx context.Context, a *platform.App, j platform.Job) error {

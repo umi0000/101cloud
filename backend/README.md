@@ -262,7 +262,12 @@ curl -f https://cloud.example.com/api/v1/health/ready
 | 创建409 | 额度、显式配额、节点容量、GPU名额、IP和政策版本 |
 | 节点无法接入 | CIDR允许范围、网络可达、Token和固定指纹；不跳过证书校验 |
 | 任务unknown | 查询原任务并让管理员核对，不重复创建或直接释放预留资源 |
+| 删除任务unknown / gpu_reclamation_unverified | 原生删除已确认但 GPU 证据不足；检查 Agent 新字段、采集完整性及节点时间，等待删除后新样本再管理员对账，不重复 DELETE 或手工释放 IP/GPU |
 | 控制台无法连接 | WebSocket反代、会话ready状态、Origin及进程亲和性 |
+
+GPU 实例删除先确认原生消失，再最多等待约 95 秒的独立监控证据：`collection_started_at` 必须晚于删除确认，`collected_at` 新鲜度不超过 30 秒，库存完整、实例数组显式存在、目标 UUID/项目+名称全部缺席，且顶层 `host_quality.attribution_complete` 必须显式为 true。该 host_quality 保留节点归属完整性，不因其他停止实例的逐实例未知而误判，也不把未知上下文或设备引用当安全。旧 Agent 缺字段时保留全部预留；先升级 Agent，再对原任务核对。没有活动 GPU 分配不等待指标。通过后 IP/GPU、用量与配额终态原子提交；没有持久删除意图不能仅凭消失释放。详见接口文档第 9 节。
+
+删除回归沿用固定证书 TLS 节点 fixture 与连接内 MySQL 临时表，需 `CLOUD_TEST_MYSQL_DSN` 指向可创建临时表的测试 MySQL（按既有约定使用已迁移测试库）；无该变量时 MySQL 用例跳过。用例覆盖删除前缓存到删除后新样本、过期 operation 404/无 ID 意图的对账不重放、重复处理、证据不足保留全部资源及无 GPU 跳过指标。正向等待约 1 秒/场景，负向用调用方 300ms 上下文测试取消，不等待生产 95 秒上限；不代表真实 GPU 硬件验收。
 
 完整架构、配置边界和本地验收记录见 [后端设计方案](后端设计方案.md)。本地协议验收不替代真实 KVM 启动、多GPU驱动热调整及VGA硬件验收；上线前需在获准的测试节点验证。
 

@@ -26,7 +26,7 @@ import (
 
 // Every fixture table is connection-local: no persistent rows, quotas or nodes
 // are altered even when the test DSN points at an existing migrated test database.
-func creationCleanupDB(t *testing.T) (*gorm.DB, *platform.App, platform.Job, platform.Row, *atomic.Int64) {
+func creationCleanupDB(t *testing.T, handlers ...http.Handler) (*gorm.DB, *platform.App, platform.Job, platform.Row, *atomic.Int64) {
 	t.Helper()
 	dsn := os.Getenv("CLOUD_TEST_MYSQL_DSN")
 	if dsn == "" {
@@ -47,21 +47,22 @@ func creationCleanupDB(t *testing.T) (*gorm.DB, *platform.App, platform.Job, pla
 	}
 	t.Cleanup(func() { tx.Rollback() })
 	definitions := map[string]string{
-		"credit_accounts":       "id BIGINT PRIMARY KEY,user_id BIGINT,status VARCHAR(24),version BIGINT DEFAULT 0,revision BIGINT DEFAULT 0",
+		"credit_accounts":       "id BIGINT PRIMARY KEY,user_id BIGINT,status VARCHAR(24),credit_policy_version_id BIGINT DEFAULT 1,version BIGINT DEFAULT 0,revision BIGINT DEFAULT 0",
 		"credit_buckets":        "id BIGINT PRIMARY KEY,account_id BIGINT,remaining_pt DECIMAL(20,6),reserved_pt DECIMAL(20,6),version BIGINT DEFAULT 0,revision BIGINT DEFAULT 0",
 		"credit_ledger":         "id BIGINT AUTO_INCREMENT PRIMARY KEY,account_id BIGINT,bucket_id BIGINT,business_key VARCHAR(191) UNIQUE,entry_type VARCHAR(24),amount_delta_pt DECIMAL(20,6),reserved_delta_pt DECIMAL(20,6),remaining_after_pt DECIMAL(20,6),reserved_after_pt DECIMAL(20,6),reservation_id BIGINT",
 		"credit_reservations":   "id BIGINT PRIMARY KEY,account_id BIGINT,session_id BIGINT,bucket_id BIGINT,reserved_pt DECIMAL(20,6),settled_pt DECIMAL(20,6),released_pt DECIMAL(20,6),status VARCHAR(24),closed_at DATETIME(6),revision BIGINT DEFAULT 0",
 		"usage_sessions":        "id BIGINT PRIMARY KEY,account_id BIGINT,user_id BIGINT,node_id BIGINT,instance_id BIGINT,charge_kind VARCHAR(24),metering_state VARCHAR(24),status VARCHAR(24),metered_microseconds BIGINT DEFAULT 0,cumulative_expected_pt DECIMAL(20,6) DEFAULT 0,started_at DATETIME(6),last_settled_at DATETIME(6),ended_at DATETIME(6),revision BIGINT DEFAULT 0",
 		"usage_charges":         "id BIGINT PRIMARY KEY,session_id BIGINT",
-		"tasks":                 "id BIGINT PRIMARY KEY,task_type VARCHAR(64),user_id BIGINT,node_id BIGINT,instance_id BIGINT,status VARCHAR(24),phase VARCHAR(64),lease_owner VARCHAR(128),lease_generation BIGINT,lease_until DATETIME(6),result_redacted JSON,revision BIGINT DEFAULT 0",
-		"task_steps":            "id BIGINT AUTO_INCREMENT PRIMARY KEY,task_id BIGINT,step_key VARCHAR(128),attempt BIGINT,status VARCHAR(24),operation_id VARCHAR(128),parameters_redacted JSON,result_redacted JSON,started_at DATETIME(6),finished_at DATETIME(6),UNIQUE(task_id,step_key,attempt)",
+		"tasks":                 "id BIGINT PRIMARY KEY,task_type VARCHAR(64),user_id BIGINT,node_id BIGINT,instance_id BIGINT,status VARCHAR(24),phase VARCHAR(64),parameters_redacted JSON,error_code VARCHAR(64),finished_at DATETIME(6),lease_owner VARCHAR(128),lease_generation BIGINT,lease_until DATETIME(6),result_redacted JSON,revision BIGINT DEFAULT 0",
+		"task_steps":            "id BIGINT AUTO_INCREMENT PRIMARY KEY,task_id BIGINT,step_key VARCHAR(128),attempt BIGINT,status VARCHAR(24),operation_id VARCHAR(128),node_id BIGINT,project_name VARCHAR(64),parameters_redacted JSON,result_redacted JSON,started_at DATETIME(6),finished_at DATETIME(6),UNIQUE(task_id,step_key,attempt)",
 		"instances":             "id BIGINT PRIMARY KEY,user_id BIGINT,node_id BIGINT,project_name VARCHAR(64),incus_name VARCHAR(64),incus_uuid VARCHAR(64),image_type VARCHAR(24),image_id BIGINT,image_fingerprint VARCHAR(64),architecture VARCHAR(24),vcpus BIGINT,memory_bytes BIGINT,disk_bytes BIGINT,storage_pool VARCHAR(64),desired_state VARCHAR(24),observed_state VARCHAR(24),provisioning_state VARCHAR(24),observed_at DATETIME(6),deleted_at DATETIME(6),incus_config_snapshot JSON,revision BIGINT DEFAULT 0",
 		"ip_addresses":          "id BIGINT PRIMARY KEY,instance_id BIGINT,node_id BIGINT,node_network_binding_id BIGINT,network_pool_id BIGINT,address_family INT,address BLOB,status VARCHAR(24),reservation_task_id BIGINT,reserved_at DATETIME(6),reservation_expires_at DATETIME(6),bound_at DATETIME(6),revision BIGINT DEFAULT 0",
-		"gpu_allocations":       "id BIGINT PRIMARY KEY,instance_id BIGINT,user_id BIGINT,node_id BIGINT,status VARCHAR(24),active_slot INT,configured BOOL DEFAULT FALSE,observed BOOL DEFAULT FALSE,attached_at DATETIME(6),released_at DATETIME(6),release_reason VARCHAR(255),release_verified BOOL DEFAULT FALSE,last_verified_at DATETIME(6),revision BIGINT DEFAULT 0",
-		"nodes":                 "id BIGINT PRIMARY KEY,agent_endpoint VARCHAR(255),token_ciphertext BLOB,server_cert_sha256 BLOB",
+		"gpu_allocations":       "id BIGINT PRIMARY KEY,instance_id BIGINT,user_id BIGINT,node_id BIGINT,status VARCHAR(24),active_slot INT GENERATED ALWAYS AS (CASE WHEN status IN ('reserved','attaching','active','releasing','unknown') THEN 1 ELSE NULL END) STORED,configured BOOL DEFAULT FALSE,observed BOOL DEFAULT FALSE,attached_at DATETIME(6),released_at DATETIME(6),release_reason VARCHAR(255),release_verified BOOL DEFAULT FALSE,last_verified_at DATETIME(6),revision BIGINT DEFAULT 0",
+		"nodes":                 "id BIGINT PRIMARY KEY,agent_endpoint VARCHAR(255),token_ciphertext BLOB,server_cert_sha256 BLOB,default_project_name VARCHAR(64) DEFAULT 'default'",
 		"node_network_bindings": "id BIGINT PRIMARY KEY,node_id BIGINT,project_name VARCHAR(64),status VARCHAR(24),validation_status VARCHAR(24),mode VARCHAR(24),parent_interface VARCHAR(64),mtu INT",
 		"network_pools":         "id BIGINT PRIMARY KEY,prefix_length INT,dns_servers JSON,gateway BLOB",
 		"images":                "id BIGINT PRIMARY KEY,source_type VARCHAR(24)",
+		"policy_versions":       "id BIGINT PRIMARY KEY,kind VARCHAR(24),source_id BIGINT,status VARCHAR(24),effective_at DATETIME(6),config JSON",
 	}
 	for table, definition := range definitions {
 		if err = tx.Exec("CREATE TEMPORARY TABLE `" + table + "` (" + definition + ") ENGINE=InnoDB").Error; err != nil {
@@ -69,7 +70,7 @@ func creationCleanupDB(t *testing.T) (*gorm.DB, *platform.App, platform.Job, pla
 		}
 	}
 	mutations := &atomic.Int64{}
-	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			mutations.Add(1)
 			http.Error(w, "unexpected mutation", 500)
@@ -85,6 +86,10 @@ func creationCleanupDB(t *testing.T) (*gorm.DB, *platform.App, platform.Job, pla
 			_ = json.NewEncoder(w).Encode(platform.Row{"metadata": platform.Row{}})
 		}
 	}))
+	if len(handlers) > 0 {
+		handler = handlers[0]
+	}
+	server := httptest.NewUnstartedServer(handler)
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -115,10 +120,11 @@ func creationCleanupDB(t *testing.T) (*gorm.DB, *platform.App, platform.Job, pla
 		"usage_sessions":        {{"id": 1, "account_id": 7, "user_id": 2, "node_id": 1, "instance_id": 15, "charge_kind": "base_compute", "metering_state": "held", "status": "active", "started_at": at, "last_settled_at": at}, {"id": 2, "account_id": 7, "user_id": 2, "node_id": 1, "instance_id": 15, "charge_kind": "storage", "metering_state": "running", "status": "active", "started_at": at, "last_settled_at": at}},
 		"credit_reservations":   {{"id": 1, "account_id": 7, "session_id": 1, "bucket_id": 1, "reserved_pt": "1.000000", "settled_pt": "0", "released_pt": "0", "status": "held"}, {"id": 2, "account_id": 7, "session_id": 2, "bucket_id": 1, "reserved_pt": "1.000000", "settled_pt": "0", "released_pt": "0", "status": "held"}},
 		"ip_addresses":          {{"id": 1, "instance_id": 15, "node_id": 1, "node_network_binding_id": 1, "network_pool_id": 1, "address_family": 4, "address": []byte{10, 0, 0, 2}, "status": "reserved", "reservation_task_id": 43, "reserved_at": at}},
-		"gpu_allocations":       {{"id": 1, "instance_id": 15, "user_id": 2, "node_id": 1, "status": "reserved", "active_slot": 1}},
+		"gpu_allocations":       {{"id": 1, "instance_id": 15, "user_id": 2, "node_id": 1, "status": "reserved"}},
 		"node_network_bindings": {{"id": 1, "node_id": 1, "project_name": "default", "status": "active", "validation_status": "verified", "mode": "bridge", "parent_interface": "br0"}},
 		"network_pools":         {{"id": 1, "prefix_length": 24, "dns_servers": "[]"}},
 		"images":                {{"id": 1, "source_type": "local"}},
+		"policy_versions":       {{"id": 1, "kind": "credit", "source_id": 1, "status": "active", "effective_at": at.Add(-time.Hour), "config": "{}"}},
 	}
 	for table, records := range seeds {
 		for _, record := range records {

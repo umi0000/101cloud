@@ -649,3 +649,112 @@ func TestFreshActivityNeedsStableIdentityEvenWithCurrentContext(t *testing.T) {
 		t.Fatalf("stable activity was not attributed: %+v", second)
 	}
 }
+
+func TestSnapshotHostQualitySeparatesStoppedRowsFromHostUncertainty(t *testing.T) {
+	requireLinux(t)
+	for _, mode := range []string{"complete", "optional_utilization_missing", "control_fd", "fd_scan", "anonymous_context", "anonymous_activity", "process_scan", "process_limit", "fd_limit", "instance_inventory", "device_inventory", "gpu_inventory", "mig_context_inventory", "cancelled", "query_failed", "stale"} {
+		t.Run(mode, func(t *testing.T) {
+			now := time.Unix(1800000000, 0)
+			root := t.TempDir()
+			fixtureProcess(t, root, 101, "/instances/live", 11)
+			device := completeDevice("GPU-a", now)
+			device.Utilization = []gpu.UtilizationSample{{PID: 999, TimestampMicros: uint64(now.UnixMicro())}}
+			reader := &fixtureReader{sample: gpu.Sample{CollectedAt: now, Devices: []gpu.Device{device}}}
+			engine := fixtureEngine(t, root, reader, &now)
+			inputs := []Instance{
+				{Project: "live-project", Name: "live", UUID: "live-id", Type: "container", State: "Running", InitPID: 101, ConfiguredGPUs: []string{"GPU-a"}},
+				{Project: "other-project", Name: "unrelated-stopped", UUID: "stopped-id", Type: "container", State: "Stopped", ConfiguredGPUs: []string{"GPU-a"}},
+			}
+			ctx := context.Background()
+			reason := ""
+			switch mode {
+			case "optional_utilization_missing":
+				reader.sample.Devices[0].Utilization = nil
+				reason = "gpu_utilization_unknown"
+			case "control_fd":
+				if err := os.Symlink("/dev/null", filepath.Join(root, "101", "fd", "4")); err != nil {
+					t.Fatal(err)
+				}
+				info, err := os.Stat("/dev/null")
+				if err != nil {
+					t.Fatal(err)
+				}
+				number, ok := deviceNumber(info)
+				if !ok {
+					t.Fatal("missing control device identity")
+				}
+				engine.controlDevices[number] = true
+				reason = "gpu_references_unresolved"
+			case "fd_scan":
+				if err := os.Remove(filepath.Join(root, "101", "fd")); err != nil {
+					t.Fatal(err)
+				}
+				reason = "gpu_reference_scan_incomplete"
+			case "anonymous_context":
+				reader.sample.Devices[0].Contexts = []gpu.Process{{PID: 999}}
+				reason = "unattributed_gpu_contexts"
+			case "anonymous_activity":
+				reader.sample.Devices[0].Utilization[0].Activity = true
+				reason = "unattributed_gpu_activity"
+			case "process_scan":
+				fixtureProcess(t, root, 301, "/host", 31)
+				if err := os.Remove(filepath.Join(root, "301", "cgroup")); err != nil {
+					t.Fatal(err)
+				}
+				reason = "process_scan_incomplete"
+			case "process_limit":
+				engine.maxProcesses = 1
+				reason = "process_scan_incomplete"
+			case "fd_limit":
+				engine.maxFDs = 0
+				reason = "gpu_reference_scan_incomplete"
+			case "instance_inventory":
+				engine.SetCollectionComplete(false)
+				reason = "instance_inventory_incomplete"
+			case "device_inventory":
+				engine.SetInventory(nil)
+				reason = "device_inventory_incomplete"
+			case "gpu_inventory":
+				reader.sample.Devices = nil
+				reason = "gpu_inventory_unavailable"
+			case "mig_context_inventory":
+				reader.sample.Devices[0].AttributionComplete = false
+				reason = "gpu_attribution_incomplete"
+			case "cancelled":
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+				reason = "collection_cancelled"
+			case "query_failed":
+				reader.err = errors.New("unavailable")
+				reason = "gpu_collection_failed"
+			case "stale":
+				reader.sample.CollectedAt = now.Add(-time.Minute)
+				reason = "gpu_sample_stale"
+			}
+			payload, err := json.Marshal(engine.Sample(ctx, inputs))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var snapshot Snapshot
+			if err := json.Unmarshal(payload, &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.Quality.AttributionComplete || snapshot.Instances[1].Quality.AttributionComplete || snapshot.Instances[1].GPUState != "unknown" {
+				t.Fatalf("stopped instance uncertainty was erased: %s", payload)
+			}
+			wantHostAttribution := mode == "complete" || mode == "optional_utilization_missing"
+			if snapshot.HostQuality.AttributionComplete != wantHostAttribution || snapshot.HostQuality.Complete != (mode == "complete") {
+				t.Fatalf("host evidence was weakened or polluted by row quality: %s", payload)
+			}
+			if reason != "" && !strings.Contains(strings.Join(snapshot.HostQuality.Reasons, ","), reason) {
+				t.Fatalf("host uncertainty reason %q missing: %s", reason, payload)
+			}
+			for _, hostReason := range snapshot.HostQuality.Reasons {
+				if hostReason == "instance_attribution_unknown" {
+					t.Fatalf("stopped row reason escaped into host evidence: %s", payload)
+				}
+			}
+		})
+	}
+}

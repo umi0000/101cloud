@@ -26,6 +26,7 @@ type metricsFrame struct {
 	WindowSeconds             float64   `json:"window_seconds"`
 	CollectionComplete        bool      `json:"collection_complete"`
 	CollectionErrors          []string  `json:"collection_errors"`
+	CollectionStartedAt       time.Time `json:"collection_started_at"`
 	CollectionDurationSeconds float64   `json:"collection_duration_seconds"`
 }
 
@@ -104,7 +105,7 @@ func (m *metricsSampler) run(ctx context.Context) {
 		seconds := float64(end.Sub(begin).Microseconds()) / 1e6
 		m.mu.Lock()
 		m.sequence++
-		frame := metricsFrame{Snapshot: snapshot, SchemaVersion: 1, AgentBootID: m.bootID, SampleSequence: m.sequence, WindowStart: begin, WindowEnd: end, WindowSeconds: seconds, CollectionComplete: complete, CollectionErrors: input.Errors, CollectionDurationSeconds: time.Since(started).Seconds()}
+		frame := metricsFrame{Snapshot: snapshot, SchemaVersion: 1, AgentBootID: m.bootID, SampleSequence: m.sequence, WindowStart: begin, WindowEnd: end, WindowSeconds: seconds, CollectionComplete: complete, CollectionErrors: input.Errors, CollectionStartedAt: started.UTC().Truncate(time.Microsecond), CollectionDurationSeconds: time.Since(started).Seconds()}
 		m.history[m.next] = frame
 		m.next = (m.next + 1) % len(m.history)
 		if m.count < len(m.history) {

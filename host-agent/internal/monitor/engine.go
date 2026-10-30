@@ -199,7 +199,7 @@ func (e *Engine) Sample(ctx context.Context, instances []Instance) Snapshot {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	now := e.now()
-	out := Snapshot{CollectedAt: now, Instances: make([]InstanceMetrics, len(instances)), Quality: quality()}
+	out := Snapshot{CollectedAt: now, Instances: make([]InstanceMetrics, len(instances)), Quality: quality(), HostQuality: quality()}
 	proc := procSnapshot{records: make(map[uint32]processRecord), roots: make(map[int]processRecord), references: make(map[int]map[string]int)}
 	if supportsProcessAttribution() {
 		proc = e.scanProcesses(ctx, instances)
@@ -332,6 +332,7 @@ func (e *Engine) Sample(ctx context.Context, instances []Instance) Snapshot {
 	}
 	nextCPU := make(map[string]cpuBaseline, len(instances))
 	hostQuality := out.Quality
+	out.HostQuality = hostQuality
 	for i, instance := range instances {
 		row := InstanceMetrics{Project: instance.Project, Name: instance.Name, UUID: instance.UUID, Type: instance.Type, State: instance.State, StartedAt: instance.StartedAt, GPUs: []GPUMetrics{}, GPUState: "unknown", Quality: quality()}
 		row.CPU = e.cpu(instance, now, proc.roots[i].start, nextCPU)
