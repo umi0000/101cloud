@@ -2,8 +2,14 @@ package instances
 
 import (
 	"101cloud/backend/internal/platform"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
 func requireCode(t *testing.T, err error, code string) {
@@ -92,5 +98,69 @@ func TestImportUUIDListsPreserveStringIdentity(t *testing.T) {
 	ids := rows([]string{"GPU-one", "GPU-two"})
 	if len(ids) != 2 || ids[0] != "GPU-one" || ids[1] != "GPU-two" {
 		t.Fatalf("lost imported GPU identities: %v", ids)
+	}
+}
+
+func TestGPURequestRejectsExternalControlReasons(t *testing.T) {
+	decode := func(body string, target any) error {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+		return platform.Decode(c, target)
+	}
+	var request GPURequest
+	if err := decode(`{"count":1,"model":"A100","access_mode":"shared","max_hourly_pt":"1.000000"}`, &request); err != nil {
+		t.Fatalf("reasonless GPU request rejected: %v", err)
+	}
+	for _, reason := range []string{"administrator note", "automatic_gpu_idle", "automatic_gpu_rebalance", "credit-enforcement:1"} {
+		t.Run(reason, func(t *testing.T) {
+			payload, err := json.Marshal(map[string]any{"count": 1, "reason": reason})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var direct GPURequest
+			requireCode(t, decode(string(payload), &direct), "validation_failed")
+			var nested Spec
+			requireCode(t, decode(`{"gpu":`+string(payload)+`}`, &nested), "validation_failed")
+		})
+	}
+	request.Reason = "automatic_gpu_rebalance"
+	payload, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err = json.Unmarshal(payload, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := fields["reason"]; exists {
+		t.Fatalf("internal control reason leaked into public GPU configuration: %s", payload)
+	}
+}
+
+func TestAdminGPUPolicyAcceptsNoOperationReason(t *testing.T) {
+	for _, body := range []string{
+		`{"idle":{"enabled":false,"timeout_seconds":1800,"action":"detach_gpu"},"rebalance":{"enabled":false,"allow_live":false,"max_hourly_pt":"1.000000"}}`,
+		`{"idle":{},"rebalance":{},"reason":"automatic_gpu_rebalance"}`,
+	} {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodPut, "/", strings.NewReader(body))
+		var input adminGPUPolicyInput
+		err := platform.Decode(c, &input)
+		if strings.Contains(body, `"reason"`) {
+			requireCode(t, err, "validation_failed")
+		} else if err != nil {
+			t.Fatalf("reasonless administrator GPU policy rejected: %v", err)
+		}
+	}
+}
+
+func TestCustomRequestAndReviewTextRemainRequired(t *testing.T) {
+	for _, text := range []string{"", "   ", strings.Repeat("界", 4001)} {
+		requireCode(t, requestReason(text), "invalid_request")
+	}
+	for _, text := range []string{"A member's requested workload", "Approved for the requested workload", strings.Repeat("界", 4000)} {
+		if err := requestReason(text); err != nil {
+			t.Fatalf("valid business text rejected: %v", err)
+		}
 	}
 }

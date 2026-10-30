@@ -110,21 +110,14 @@ func RegisterConsole(a *platform.App, user, admin *gin.RouterGroup) {
 
 func (s *consoleService) create(c *gin.Context) (any, error) {
 	var req struct {
-		Kind   string `json:"kind"`
-		Cols   int    `json:"cols"`
-		Rows   int    `json:"rows"`
-		Reason string `json:"reason"`
+		Kind string `json:"kind"`
+		Cols int    `json:"cols"`
+		Rows int    `json:"rows"`
 	}
 	if err := platform.Decode(c, &req); err != nil {
 		return nil, err
 	}
 	admin := c.GetBool("admin")
-	if admin && (strings.TrimSpace(req.Reason) == "" || len(req.Reason) > 1000) {
-		return nil, platform.E(400, "reason_required", "管理员操作必须提供原因，最多1000字节")
-	}
-	if !admin && req.Reason != "" {
-		return nil, platform.E(400, "invalid_field", "用户会话不接受reason")
-	}
 	if req.Kind != "terminal" && req.Kind != "serial" && req.Kind != "vga" {
 		return nil, platform.E(400, "invalid_kind", "无效控制台类型")
 	}
@@ -191,7 +184,7 @@ func (s *consoleService) create(c *gin.Context) (any, error) {
 	}
 	row.PrepareTaskID = &taskID
 	if admin {
-		if err = platform.Audit(c.Request.Context(), db, u.ID, taskID, id, "console.create", map[string]any{"session_id": row.ID, "kind": req.Kind, "reason": req.Reason}); err != nil {
+		if err = platform.Audit(c.Request.Context(), db, u.ID, taskID, id, "console.create", map[string]any{"session_id": row.ID, "kind": req.Kind}); err != nil {
 			return nil, err
 		}
 	}

@@ -13,13 +13,13 @@ import (
 	"time"
 )
 
-func createInstance(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64, spec Spec, custom bool, versions map[string]string, reason string) (platform.Row, error) {
-	return admitCreate(ctx, a, db, owner, spec, custom, versions, reason, nil)
+func createInstance(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64, spec Spec, custom bool, versions map[string]string) (platform.Row, error) {
+	return admitCreate(ctx, a, db, owner, spec, custom, versions, nil)
 }
 func reserveImported(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64, spec Spec, native platform.Row) (platform.Row, error) {
-	return admitCreate(ctx, a, db, owner, spec, true, nil, "Imported existing instance", native)
+	return admitCreate(ctx, a, db, owner, spec, true, nil, native)
 }
-func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64, spec Spec, custom bool, versions map[string]string, reason string, native platform.Row) (platform.Row, error) {
+func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64, spec Spec, custom bool, versions map[string]string, native platform.Row) (platform.Row, error) {
 	if e := lockOwnerAccount(db, owner); e != nil {
 		return nil, e
 	}
@@ -184,7 +184,8 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 	if custom {
 		product, billingMode = "custom", "admin_exempt"
 	}
-	r := platform.Row{"user_id": owner, "node_id": nodeID, "image_id": imageID, "instance_plan_id": nil, "logical_name": spec.Name, "project_name": binding["project_name"], "incus_name": incusName, "image_type": spec.InstanceType, "architecture": image["architecture"], "image_fingerprint": image["fingerprint"], "vcpus": spec.Resources.VCPUs, "memory_bytes": memory, "disk_bytes": disk, "storage_pool": node["default_storage_pool"], "pricing_version_id": pricingID, "cpu_hourly_pt": pricing["cpu_hourly_pt"], "memory_gib_hourly_pt": pricing["memory_gib_hourly_pt"], "disk_gib_hourly_pt": pricing["disk_gib_hourly_pt"], "credit_policy_version_id": creditID, "billing_mode": billingMode, "desired_state": "running", "observed_state": "pending", "provisioning_state": "pending", "auto_release_gpu": false, "auto_rebind_gpu": false, "idle_policy_version_id": idleID, "max_gpu_hourly_pt": spec.GPU.MaxHourlyPT, "init_template_version_id": nil, "init_parameters": jsonText(spec.InitParameters), "incus_config_snapshot": "{}", "product_type": product, "allowed_user_actions": jsonText(allowed), "gpu_user_permissions": jsonText(permissions), "custom_reason": reason, "policy_versions": jsonText(versions), "gpu_policy": jsonText(platform.Row{"idle": platform.Row{"enabled": false, "timeout_seconds": 1800, "action": "detach_gpu"}, "rebalance": platform.Row{"enabled": false, "allow_live": false, "max_hourly_pt": spec.GPU.MaxHourlyPT}}), "revision": 1, "created_at": a.Time(), "updated_at": a.Time()}
+	// custom_reason is retained for historic records; new provisioning stores no operation reason.
+	r := platform.Row{"user_id": owner, "node_id": nodeID, "image_id": imageID, "instance_plan_id": nil, "logical_name": spec.Name, "project_name": binding["project_name"], "incus_name": incusName, "image_type": spec.InstanceType, "architecture": image["architecture"], "image_fingerprint": image["fingerprint"], "vcpus": spec.Resources.VCPUs, "memory_bytes": memory, "disk_bytes": disk, "storage_pool": node["default_storage_pool"], "pricing_version_id": pricingID, "cpu_hourly_pt": pricing["cpu_hourly_pt"], "memory_gib_hourly_pt": pricing["memory_gib_hourly_pt"], "disk_gib_hourly_pt": pricing["disk_gib_hourly_pt"], "credit_policy_version_id": creditID, "billing_mode": billingMode, "desired_state": "running", "observed_state": "pending", "provisioning_state": "pending", "auto_release_gpu": false, "auto_rebind_gpu": false, "idle_policy_version_id": idleID, "max_gpu_hourly_pt": spec.GPU.MaxHourlyPT, "init_template_version_id": nil, "init_parameters": jsonText(spec.InitParameters), "incus_config_snapshot": "{}", "product_type": product, "allowed_user_actions": jsonText(allowed), "gpu_user_permissions": jsonText(permissions), "custom_reason": nil, "policy_versions": jsonText(versions), "gpu_policy": jsonText(platform.Row{"idle": platform.Row{"enabled": false, "timeout_seconds": 1800, "action": "detach_gpu"}, "rebalance": platform.Row{"enabled": false, "allow_live": false, "max_hourly_pt": spec.GPU.MaxHourlyPT}}), "revision": 1, "created_at": a.Time(), "updated_at": a.Time()}
 	if !custom {
 		r["instance_plan_id"] = plan["id"]
 	}
@@ -272,7 +273,7 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 		}
 		return r, nil
 	}
-	task, e := platform.Enqueue(db, "instance.create", owner, nodeID, id, true, platform.Row{"reason": reason})
+	task, e := platform.Enqueue(db, "instance.create", owner, nodeID, id, true, platform.Row{})
 	if e != nil {
 		return nil, e
 	}

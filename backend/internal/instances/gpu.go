@@ -71,9 +71,6 @@ func registerGPU(a *platform.App, user, admin *gin.RouterGroup) {
 				if !c.GetBool("admin") && len(in.FixedUUIDs) > 0 {
 					return nil, bad("Fixed UUID selection is administrator-only")
 				}
-				if c.GetBool("admin") && strings.TrimSpace(in.Reason) == "" {
-					return nil, bad("Administrator reason is required")
-				}
 				ids := make([]uint64, 0, len(in.AllocationIDs))
 				for _, s := range in.AllocationIDs {
 					id, e := platform.IDString(s)
@@ -88,7 +85,7 @@ func registerGPU(a *platform.App, user, admin *gin.RouterGroup) {
 				case "attach":
 					out, e = queueGPU(c.Request.Context(), a, db, r, "attach", ids, in)
 				case "detach":
-					out, e = QueueGPUDetach(c.Request.Context(), a, db, platform.Uint(r["id"]), platform.Uint(r["user_id"]), ids, in.AllowLive, in.Reason)
+					out, e = QueueGPUDetach(c.Request.Context(), a, db, platform.Uint(r["id"]), platform.Uint(r["user_id"]), ids, in.AllowLive, "")
 				case "rebind":
 					out, e = queueGPU(c.Request.Context(), a, db, r, "rebind", ids, in)
 				}
@@ -230,14 +227,22 @@ func queueGPU(ctx context.Context, a *platform.App, db *gorm.DB, r platform.Row,
 		}
 	}
 	if len(ids) > 0 {
-		if e = db.Table("gpu_allocations").Where("id IN ?", ids).Updates(platform.Row{"status": "releasing", "release_requested_at": a.Time(), "release_reason": in.Reason, "revision": gorm.Expr("revision+1")}).Error; e != nil {
+		var reason any
+		if in.Reason != "" {
+			reason = in.Reason
+		}
+		if e = db.Table("gpu_allocations").Where("id IN ?", ids).Updates(platform.Row{"status": "releasing", "release_requested_at": a.Time(), "release_reason": reason, "revision": gorm.Expr("revision+1")}).Error; e != nil {
 			return nil, e
 		}
 	}
 	if e = db.Table("instances").Where("id=?", r["id"]).UpdateColumn("revision", gorm.Expr("revision+1")).Error; e != nil {
 		return nil, e
 	}
-	return platform.Enqueue(db, "instance.gpu", platform.Uint(r["user_id"]), platform.Uint(r["node_id"]), platform.Uint(r["id"]), true, platform.Row{"action": action, "allocation_ids": ids, "target_ids": target, "allow_live": in.AllowLive, "reason": in.Reason})
+	params := platform.Row{"action": action, "allocation_ids": ids, "target_ids": target, "allow_live": in.AllowLive}
+	if in.Reason != "" {
+		params["reason"] = in.Reason
+	}
+	return platform.Enqueue(db, "instance.gpu", platform.Uint(r["user_id"]), platform.Uint(r["node_id"]), platform.Uint(r["id"]), true, params)
 }
 func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.Row, in GPURequest, old []platform.Row) ([]uint64, error) {
 	max, e := decimal.NewFromString(in.MaxHourlyPT)

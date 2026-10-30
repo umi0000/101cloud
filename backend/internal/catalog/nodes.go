@@ -180,13 +180,12 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 	admin.PUT("/nodes/:id/connection", platform.Handle(func(c *gin.Context) (any, error) {
 		var in struct {
 			Connection *nodeConnection `json:"connection"`
-			Reason     string          `json:"reason"`
 		}
 		if err := platform.Decode(c, &in); err != nil {
 			return nil, err
 		}
-		if in.Connection == nil || !textValid(in.Reason, 2000) {
-			return nil, invalid("connection and reason are required")
+		if in.Connection == nil {
+			return nil, invalid("connection is required")
 		}
 		id, err := platform.ID(c, "id")
 		if err != nil {
@@ -221,20 +220,19 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 		if err := requiredBody(c); err != nil {
 			return nil, err
 		}
-		return nodeQueue(c, a, false, "")
+		return nodeQueue(c, a, false)
 	}))
 	admin.POST("/nodes/:id/drain", platform.Handle(func(c *gin.Context) (any, error) {
 		var in struct {
-			Mode   string `json:"mode"`
-			Reason string `json:"reason"`
+			Mode string `json:"mode"`
 		}
 		if err := platform.Decode(c, &in); err != nil {
 			return nil, err
 		}
-		if in.Mode != "prevent_new_allocations" || !textValid(in.Reason, 2000) {
-			return nil, invalid("mode must be prevent_new_allocations and reason is required")
+		if in.Mode != "prevent_new_allocations" {
+			return nil, invalid("mode must be prevent_new_allocations")
 		}
-		return nodeQueue(c, a, true, in.Reason)
+		return nodeQueue(c, a, true)
 	}))
 	admin.GET("/nodes/:id/resources", platform.Handle(func(c *gin.Context) (any, error) {
 		r, e := detail(c, a, "nodes")
@@ -494,7 +492,7 @@ func nodeQuality(r platform.Row) string {
 	}
 	return "cached"
 }
-func nodeQueue(c *gin.Context, a *platform.App, drain bool, reason string) (any, error) {
+func nodeQueue(c *gin.Context, a *platform.App, drain bool) (any, error) {
 	id, e := platform.ID(c, "id")
 	if e != nil {
 		return nil, e
@@ -511,7 +509,6 @@ func nodeQueue(c *gin.Context, a *platform.App, drain bool, reason string) (any,
 		}
 		kind = "node.drain"
 		params["mode"] = "prevent_new_allocations"
-		params["reason"] = reason
 	}
 	task, e := platform.Enqueue(platform.DB(c, a), kind, platform.Current(c).ID, id, 0, false, params)
 	if e != nil {

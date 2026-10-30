@@ -375,14 +375,8 @@ func registerPolicies(a *platform.App, g *gin.RouterGroup) {
 				changes["status"] = "active"
 				changes["effective_at"] = t
 			} else {
-				var b struct {
-					Reason string `json:"reason"`
-				}
-				if e = platform.Decode(c, &b); e != nil {
+				if e = platform.Decode(c, &struct{}{}); e != nil {
 					return nil, e
-				}
-				if strings.TrimSpace(b.Reason) == "" {
-					return nil, invalid("reason is required")
 				}
 				if platform.Text(r["status"]) != "active" {
 					return nil, conflict("invalid_state", "only an active version can be retired")

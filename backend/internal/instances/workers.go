@@ -1151,7 +1151,6 @@ func runImport(ctx context.Context, a *platform.App, j platform.Job) error {
 		Owner    string `json:"owner_user_id"`
 		UUID     string `json:"incus_uuid"`
 		Approved Spec   `json:"approved_config"`
-		Reason   string `json:"reason"`
 	}
 	if err := json.Unmarshal(j.Parameters, &p); err != nil {
 		return err
@@ -1325,7 +1324,7 @@ func runImport(ctx context.Context, a *platform.App, j platform.Job) error {
 		if e := workerLinkImport(a, db, j, rootID, platform.Uint(imported["id"])); e != nil {
 			return e
 		}
-		return platform.Audit(ctx, db, 0, j.ID, platform.Uint(imported["id"]), "instance.import", platform.Row{"reason": p.Reason, "incus_uuid": p.UUID, "owner_user_id": strconv.FormatUint(owner, 10)})
+		return platform.Audit(ctx, db, 0, j.ID, platform.Uint(imported["id"]), "instance.import", platform.Row{"incus_uuid": p.UUID, "owner_user_id": strconv.FormatUint(owner, 10)})
 	})
 	if err != nil {
 		return err

@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"strings"
 	"time"
 
 	"101cloud/backend/internal/platform"
@@ -191,13 +190,9 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 	admin.PATCH("/credit-accounts/:id", platform.Handle(func(c *gin.Context) (any, error) {
 		var input struct {
 			PolicyID string `json:"policy_version_id"`
-			Reason   string `json:"reason"`
 		}
 		if e := platform.Decode(c, &input); e != nil {
 			return nil, e
-		}
-		if strings.TrimSpace(input.Reason) == "" {
-			return nil, invalid("reason is required")
 		}
 		id, e := requireID(c)
 		if e != nil {
@@ -253,7 +248,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		if e != nil {
 			return nil, e
 		}
-		if e = platform.Audit(c.Request.Context(), db, platform.Current(c).ID, 0, 0, "credit.policy_changed", row{"account_id": sid(ac["id"]), "policy_version_id": input.PolicyID, "reason": input.Reason}); e != nil {
+		if e = platform.Audit(c.Request.Context(), db, platform.Current(c).ID, 0, 0, "credit.policy_changed", row{"account_id": sid(ac["id"]), "policy_version_id": input.PolicyID}); e != nil {
 			return nil, e
 		}
 		return accountDTO(db, ac)
@@ -261,7 +256,6 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 	admin.POST("/credit-accounts/:id/adjustments", platform.Handle(func(c *gin.Context) (any, error) {
 		var b struct {
 			Amount  string  `json:"amount_pt"`
-			Reason  string  `json:"reason"`
 			Expires *string `json:"expires_at"`
 		}
 		if e := platform.Decode(c, &b); e != nil {
@@ -271,8 +265,8 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		if e != nil {
 			return nil, e
 		}
-		if value.IsZero() || strings.TrimSpace(b.Reason) == "" {
-			return nil, invalid("nonzero amount and reason are required")
+		if value.IsZero() {
+			return nil, invalid("nonzero amount is required")
 		}
 		id, e := requireID(c)
 		if e != nil {
@@ -314,7 +308,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 			for _, bucket := range bs {
 				v := decimal.Min(need, dec(bucket["remaining_pt"]).Sub(dec(bucket["reserved_pt"])))
 				if v.IsPositive() {
-					if e = mutateBucket(db, bucket, key, "adjust", v.Neg(), decimal.Zero, row{"actor_user_id": platform.Current(c).ID, "metadata_redacted": jsonValue(row{"reason": b.Reason})}); e != nil {
+					if e = mutateBucket(db, bucket, key, "adjust", v.Neg(), decimal.Zero, row{"actor_user_id": platform.Current(c).ID}); e != nil {
 						return nil, e
 					}
 					need = need.Sub(v)
@@ -328,7 +322,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		if e != nil {
 			return nil, e
 		}
-		if e = platform.Audit(c.Request.Context(), db, platform.Current(c).ID, 0, 0, "credit.adjustment", row{"account_id": sid(ac["id"]), "amount_pt": money(value), "reason": b.Reason}); e != nil {
+		if e = platform.Audit(c.Request.Context(), db, platform.Current(c).ID, 0, 0, "credit.adjustment", row{"account_id": sid(ac["id"]), "amount_pt": money(value)}); e != nil {
 			return nil, e
 		}
 		if e = restore(db, ac, now()); e != nil {
@@ -392,14 +386,8 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		return platform.ListMap(c, a, q, []string{"status"}, publicItem)
 	}))
 	admin.POST("/redemption-codes/:id/disable", platform.Handle(func(c *gin.Context) (any, error) {
-		var b struct {
-			Reason string `json:"reason"`
-		}
-		if e := platform.Decode(c, &b); e != nil {
+		if e := platform.Decode(c, &struct{}{}); e != nil {
 			return nil, e
-		}
-		if strings.TrimSpace(b.Reason) == "" {
-			return nil, invalid("reason is required")
 		}
 		id, e := requireID(c)
 		if e != nil {

@@ -395,7 +395,7 @@ func registerRequests(a *platform.App, user, admin *gin.RouterGroup) {
 		if e != nil {
 			return nil, e
 		}
-		out, e := createInstance(c.Request.Context(), a, platform.DB(c, a), owner, approvedSpec(platform.Text(r["name"]), in.ApprovedConfig), true, nil, in.ReviewNote)
+		out, e := createInstance(c.Request.Context(), a, platform.DB(c, a), owner, approvedSpec(platform.Text(r["name"]), in.ApprovedConfig), true, nil)
 		if e != nil {
 			return nil, e
 		}
@@ -415,16 +415,12 @@ func registerRequests(a *platform.App, user, admin *gin.RouterGroup) {
 			OwnerUserID    string               `json:"owner_user_id"`
 			Name           string               `json:"name"`
 			ApprovedConfig customApprovedConfig `json:"approved_config"`
-			Reason         string               `json:"reason"`
 		}
 		if e := platform.Decode(c, &in); e != nil {
 			return nil, e
 		}
 		if !requestText(in.Name, 128) {
 			return nil, bad("name must contain 1–128 characters")
-		}
-		if e := requestReason(in.Reason); e != nil {
-			return nil, e
 		}
 		if e := validateApproved(c, a, in.ApprovedConfig); e != nil {
 			return nil, e
@@ -433,7 +429,7 @@ func registerRequests(a *platform.App, user, admin *gin.RouterGroup) {
 		if e != nil {
 			return nil, e
 		}
-		out, e := createInstance(c.Request.Context(), a, platform.DB(c, a), owner, approvedSpec(in.Name, in.ApprovedConfig), true, nil, in.Reason)
+		out, e := createInstance(c.Request.Context(), a, platform.DB(c, a), owner, approvedSpec(in.Name, in.ApprovedConfig), true, nil)
 		if e != nil {
 			return nil, e
 		}
@@ -445,16 +441,12 @@ func registerRequests(a *platform.App, user, admin *gin.RouterGroup) {
 			IncusUUID      string               `json:"incus_uuid"`
 			OwnerUserID    string               `json:"owner_user_id"`
 			ApprovedConfig customApprovedConfig `json:"approved_config"`
-			Reason         string               `json:"reason"`
 		}
 		if e := platform.Decode(c, &in); e != nil {
 			return nil, e
 		}
 		if !validIncusUUID(in.IncusUUID) {
 			return nil, bad("incus_uuid must be a canonical UUID")
-		}
-		if e := requestReason(in.Reason); e != nil {
-			return nil, e
 		}
 		node, e := platform.ID(c, "id")
 		if e != nil {
@@ -488,7 +480,7 @@ func registerRequests(a *platform.App, user, admin *gin.RouterGroup) {
 		// Discovery and exact native identity/config verification happen in the worker,
 		// before reserveImported adopts and reserves actual IP/GPU inventory atomically.
 		spec := approvedSpec("Imported "+in.IncusUUID, in.ApprovedConfig)
-		out, e := platform.Enqueue(platform.DB(c, a), "instance.import", owner, node, 0, false, platform.Row{"owner_user_id": strconv.FormatUint(owner, 10), "incus_uuid": in.IncusUUID, "approved_config": spec, "reason": in.Reason})
+		out, e := platform.Enqueue(platform.DB(c, a), "instance.import", owner, node, 0, false, platform.Row{"owner_user_id": strconv.FormatUint(owner, 10), "incus_uuid": in.IncusUUID, "approved_config": spec})
 		if e != nil {
 			return nil, e
 		}
@@ -555,7 +547,6 @@ type adminGPUPolicyInput struct {
 	gpuPolicyInput
 	AllowedUserActions *[]string        `json:"allowed_user_actions"`
 	GPUUserPermissions *map[string]bool `json:"gpu_user_permissions"`
-	Reason             string           `json:"reason"`
 }
 type gpuPolicyBounds struct {
 	Idle       billing.IdleConfig
@@ -710,9 +701,6 @@ func putGPUPolicy(c *gin.Context, a *platform.App) (any, error) {
 			return nil, e
 		}
 		input = adminInput.gpuPolicyInput
-		if e = requestReason(adminInput.Reason); e != nil {
-			return nil, e
-		}
 	} else {
 		if e = permitted(c, r, "gpu_policy"); e != nil {
 			return nil, e
@@ -796,7 +784,7 @@ func putGPUPolicy(c *gin.Context, a *platform.App) (any, error) {
 	if e != nil {
 		return nil, e
 	}
-	if e = platform.Audit(c.Request.Context(), platform.DB(c, a), platform.Current(c).ID, 0, platform.Uint(r["id"]), "instance.gpu_policy.updated", platform.Row{"before": previous, "after": cfg, "allowed_user_actions": rows(r["allowed_user_actions"]), "gpu_user_permissions": object(r["gpu_user_permissions"]), "reason": adminInput.Reason, "policy_versions": b.Versions}); e != nil {
+	if e = platform.Audit(c.Request.Context(), platform.DB(c, a), platform.Current(c).ID, 0, platform.Uint(r["id"]), "instance.gpu_policy.updated", platform.Row{"before": previous, "after": cfg, "allowed_user_actions": rows(r["allowed_user_actions"]), "gpu_user_permissions": object(r["gpu_user_permissions"]), "policy_versions": b.Versions}); e != nil {
 		return nil, e
 	}
 	return gpuPolicyDTO(c, a, r, b)

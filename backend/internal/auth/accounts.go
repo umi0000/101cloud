@@ -3,7 +3,6 @@ package auth
 import (
 	"net/http"
 	"strconv"
-	"strings"
 
 	"101cloud/backend/internal/platform"
 	"github.com/gin-gonic/gin"
@@ -275,13 +274,9 @@ func registerAdmin(a *platform.App, admin *gin.RouterGroup) {
 		}
 		var input struct {
 			NewPassword string `json:"new_password"`
-			Reason      string `json:"reason"`
 		}
 		if err := platform.Decode(c, &input); err != nil {
 			return nil, err
-		}
-		if strings.TrimSpace(input.Reason) == "" || len(input.Reason) > 2000 {
-			return nil, validation("A reason of at most 2000 bytes is required")
 		}
 		hash, err := hashPassword(input.NewPassword)
 		if err != nil {
@@ -301,7 +296,7 @@ func registerAdmin(a *platform.App, admin *gin.RouterGroup) {
 		if err := revokeAll(db, a, id); err != nil {
 			return nil, err
 		}
-		if err := platform.Audit(c.Request.Context(), db, platform.Current(c).ID, 0, 0, "auth.reset-password", gin.H{"user_id": strconv.FormatUint(id, 10), "reason": input.Reason}); err != nil {
+		if err := platform.Audit(c.Request.Context(), db, platform.Current(c).ID, 0, 0, "auth.reset-password", gin.H{"user_id": strconv.FormatUint(id, 10)}); err != nil {
 			return nil, err
 		}
 		if id == platform.Current(c).ID {

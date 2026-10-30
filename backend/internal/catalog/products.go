@@ -597,14 +597,8 @@ func savePlanRelations(db *gorm.DB, id uint64, b planInput) error {
 	return nil
 }
 func retireProduct(c *gin.Context, a *platform.App, table string) (platform.Row, error) {
-	var b struct {
-		Reason string `json:"reason"`
-	}
-	if e := platform.Decode(c, &b); e != nil {
+	if e := platform.Decode(c, &struct{}{}); e != nil {
 		return nil, e
-	}
-	if !textValid(b.Reason, 4000) {
-		return nil, invalid("reason required")
 	}
 	r, e := detail(c, a, table)
 	if e != nil {

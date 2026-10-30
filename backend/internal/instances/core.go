@@ -29,7 +29,8 @@ type GPURequest struct {
 	AllowLive     bool     `json:"allow_live"`
 	FixedUUIDs    []string `json:"fixed_uuids,omitempty"`
 	AllocationIDs []string `json:"allocation_ids,omitempty"`
-	Reason        string   `json:"reason,omitempty"`
+	// Reason is an internal scheduler control marker, never HTTP input or configuration.
+	Reason string `json:"-"`
 }
 type Spec struct {
 	Name                  string          `json:"name"`
@@ -272,7 +273,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		if in.NodeID != "" || len(in.GPU.FixedUUIDs) > 0 || len(in.AllowedUserActions) > 0 || len(in.GPUUserPermissions) > 0 {
 			return nil, bad("Administrator-only configuration")
 		}
-		r, e := createInstance(c.Request.Context(), a, platform.DB(c, a), platform.Current(c).ID, in.Spec, false, in.PolicyVersions, "")
+		r, e := createInstance(c.Request.Context(), a, platform.DB(c, a), platform.Current(c).ID, in.Spec, false, in.PolicyVersions)
 		if e != nil {
 			return nil, e
 		}
@@ -291,19 +292,13 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		if e = platform.Revision(c, r); e != nil {
 			return nil, e
 		}
-		var in struct {
-			Reason string `json:"reason"`
-		}
-		if e = platform.Decode(c, &in); e != nil {
+		if e = platform.Decode(c, &struct{}{}); e != nil {
 			return nil, e
-		}
-		if strings.TrimSpace(in.Reason) == "" {
-			return nil, bad("Reason is required")
 		}
 		if platform.Text(r["status"]) != "unknown" {
 			return nil, conflict("task_not_unknown", "Only unknown tasks require reconciliation")
 		}
-		out, e := platform.Enqueue(platform.DB(c, a), "instance.reconcile", platform.Uint(r["user_id"]), platform.Uint(r["node_id"]), platform.Uint(r["instance_id"]), false, platform.Row{"source_task_id": id, "reason": in.Reason})
+		out, e := platform.Enqueue(platform.DB(c, a), "instance.reconcile", platform.Uint(r["user_id"]), platform.Uint(r["node_id"]), platform.Uint(r["instance_id"]), false, platform.Row{"source_task_id": id})
 		if e != nil {
 			return nil, e
 		}
@@ -340,15 +335,11 @@ func lifecycle(c *gin.Context, a *platform.App, action string) (any, error) {
 		Confirm        bool              `json:"confirm_data_loss_risk"`
 		ConfirmName    string            `json:"confirm_name"`
 		DeleteData     bool              `json:"delete_data"`
-		Reason         string            `json:"reason"`
 		Resources      Resources         `json:"resources"`
 		PolicyVersions map[string]string `json:"policy_versions"`
 	}
 	if e = platform.Decode(c, &in); e != nil {
 		return nil, e
-	}
-	if c.GetBool("admin") && strings.TrimSpace(in.Reason) == "" {
-		return nil, bad("Administrator reason is required")
 	}
 	if in.Mode != "" && in.Mode != "force" && in.Mode != "graceful" {
 		return nil, bad("Invalid stop mode")
@@ -363,11 +354,8 @@ func lifecycle(c *gin.Context, a *platform.App, action string) (any, error) {
 	db := platform.DB(c, a)
 	id := platform.Uint(r["id"])
 	owner := platform.Uint(r["user_id"])
-	if strings.HasPrefix(in.Reason, "credit-enforcement:") || strings.HasPrefix(in.Reason, "automatic_gpu_") {
-		return nil, bad("Reserved internal operation reason")
-	}
 	if action == "stop" {
-		out, e := QueueStop(c.Request.Context(), a, db, id, owner, force, in.Reason)
+		out, e := QueueStop(c.Request.Context(), a, db, id, owner, force, "")
 		if e != nil {
 			return nil, e
 		}
@@ -377,7 +365,7 @@ func lifecycle(c *gin.Context, a *platform.App, action string) (any, error) {
 	if platform.Text(r["provisioning_state"]) != "ready" {
 		return nil, conflict("instance_not_ready", "Instance is not ready")
 	}
-	params := platform.Row{"force": force, "reason": in.Reason}
+	params := platform.Row{"force": force}
 	switch action {
 	case "start":
 		if platform.Text(r["observed_state"]) != "stopped" {
@@ -522,7 +510,11 @@ func QueueStop(ctx context.Context, a *platform.App, db *gorm.DB, instanceID, us
 		return nil, e
 	}
 	control := strings.HasPrefix(reason, "credit-enforcement:")
-	return platform.Enqueue(db, "instance.stop", userID, platform.Uint(r["node_id"]), instanceID, !control, platform.Row{"force": force, "reason": reason})
+	params := platform.Row{"force": force}
+	if reason != "" {
+		params["reason"] = reason
+	}
+	return platform.Enqueue(db, "instance.stop", userID, platform.Uint(r["node_id"]), instanceID, !control, params)
 }
 func mustUint(s string) uint64 { n, _ := strconv.ParseUint(s, 10, 64); return n }
 func validResources(r Resources) (uint64, uint64, error) {

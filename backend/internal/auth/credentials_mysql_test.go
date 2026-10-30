@@ -66,7 +66,7 @@ func isolatedMySQL(t *testing.T, ctx context.Context) *gorm.DB {
 
 // A wrong password is a credential error, not a lost session: the frontend must
 // be able to show "wrong password" without treating the user as logged out.
-func TestMySQLWrongPasswordIsInvalidCredentialsAndKeepsSession(t *testing.T) {
+func TestMySQLCredentialErrorsKeepSessionAndAdminResetNeedsNoReason(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	db := isolatedMySQL(t, ctx)
@@ -145,6 +145,35 @@ func TestMySQLWrongPasswordIsInvalidCredentialsAndKeepsSession(t *testing.T) {
 		t.Fatal("wrong current password cleared the session cookie")
 	}
 	expect(do(http.MethodGet, "/me", "", nil), 200, "")
-	delete(jar, sessionCookie(a))
+	var identity struct {
+		Data struct {
+			User struct {
+				ID string `json:"id"`
+			} `json:"user"`
+		} `json:"data"`
+	}
+	if e = json.Unmarshal(me.Body.Bytes(), &identity); e != nil || identity.Data.User.ID == "" {
+		t.Fatalf("read administrator identity: %v, %s", e, me.Body.String())
+	}
+	resetPath := "/admin/users/" + identity.Data.User.ID + "/reset-password"
+	resetHeaders := map[string]string{"If-Match": me.Header().Get("ETag"), "Idempotency-Key": "admin-reset-without-reason"}
+	expect(do(http.MethodPost, resetPath, `{"new_password":"a-brand-new-password","reason":"legacy operation reason"}`, resetHeaders), 422, "validation_failed")
+	expect(do(http.MethodPost, resetPath, `{"new_password":"a-brand-new-password"}`, resetHeaders), 204, "")
+	var audits []platform.Row
+	if e = db.Table("audit_logs").Where("event_type = ?", "auth.reset-password").Find(&audits).Error; e != nil {
+		t.Fatal(e)
+	}
+	if len(audits) != 1 || platform.Text(audits[0]["actor_user_id"]) != identity.Data.User.ID || platform.Stamp(audits[0]["occurred_at"]).IsZero() {
+		t.Fatalf("reset did not retain basic audit: %v", audits)
+	}
+	var details map[string]json.RawMessage
+	if e = json.Unmarshal([]byte(platform.Text(audits[0]["result_redacted"])), &details); e != nil {
+		t.Fatal(e)
+	}
+	if _, exists := details["reason"]; exists {
+		t.Fatalf("administrator operation reason was recorded: %s", audits[0]["result_redacted"])
+	}
 	expect(do(http.MethodGet, "/me", "", nil), 401, "unauthenticated")
+	expect(do(http.MethodGet, "/auth/csrf", "", nil), 200, "")
+	expect(do(http.MethodPost, "/auth/login", login(initial.Username, "a-brand-new-password"), nil), 200, "")
 }

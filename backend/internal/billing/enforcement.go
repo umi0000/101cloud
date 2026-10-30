@@ -242,13 +242,9 @@ func registerEnforcements(a *platform.App, g *gin.RouterGroup) {
 	g.POST("/credit-enforcements/:id/extend", platform.Handle(func(c *gin.Context) (any, error) {
 		var b struct {
 			Deadline string `json:"shutdown_deadline"`
-			Reason   string `json:"reason"`
 		}
 		if e := platform.Decode(c, &b); e != nil {
 			return nil, e
-		}
-		if strings.TrimSpace(b.Reason) == "" {
-			return nil, invalid("reason is required")
 		}
 		deadline, e := parseTime(b.Deadline)
 		if e != nil {
@@ -270,7 +266,7 @@ func registerEnforcements(a *platform.App, g *gin.RouterGroup) {
 		if e != nil {
 			return nil, e
 		}
-		if e = platform.Audit(c.Request.Context(), db, platform.Current(c).ID, 0, 0, "credit.enforcement.extend", row{"enforcement_id": sid(event["id"]), "shutdown_deadline": deadline.Format(time.RFC3339Nano), "reason": b.Reason}); e != nil {
+		if e = platform.Audit(c.Request.Context(), db, platform.Current(c).ID, 0, 0, "credit.enforcement.extend", row{"enforcement_id": sid(event["id"]), "shutdown_deadline": deadline.Format(time.RFC3339Nano)}); e != nil {
 			return nil, e
 		}
 		if e = notify(db, platform.Uint(event["user_id"]), "credit_deadline_extended", "An administrator extended your credit shutdown deadline to "+deadline.Format(time.RFC3339Nano)+". Save your data; force-stop never deletes disks.", "credit_enforcement", id); e != nil {

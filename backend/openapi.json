@@ -1862,9 +1862,6 @@
                   "delete_data": {
                     "type": "boolean",
                     "const": true
-                  },
-                  "reason": {
-                    "type": "string"
                   }
                 },
                 "required": [
@@ -2084,9 +2081,6 @@
                     "items": {
                       "type": "string"
                     }
-                  },
-                  "reason": {
-                    "type": "string"
                   }
                 },
                 "required": [
@@ -3182,14 +3176,10 @@
                     "description": "Published, effective credit policy version id (policy_versions.id); the same value returned as policy_version_id by credit-account list and detail.",
                     "type": "string",
                     "pattern": "^[1-9][0-9]*$"
-                  },
-                  "reason": {
-                    "type": "string"
                   }
                 },
                 "required": [
-                  "policy_version_id",
-                  "reason"
+                  "policy_version_id"
                 ],
                 "additionalProperties": false
               }
@@ -8794,9 +8784,6 @@
                       "type": "string",
                       "pattern": "^[1-9][0-9]*$"
                     }
-                  },
-                  "reason": {
-                    "type": "string"
                   }
                 },
                 "required": [
@@ -8901,9 +8888,6 @@
                   },
                   "allow_live": {
                     "type": "boolean"
-                  },
-                  "reason": {
-                    "type": "string"
                   }
                 },
                 "required": [
@@ -9015,9 +8999,6 @@
                     "items": {
                       "type": "string"
                     }
-                  },
-                  "reason": {
-                    "type": "string"
                   }
                 },
                 "required": [
@@ -9120,9 +9101,6 @@
                   },
                   "confirm_data_loss_risk": {
                     "type": "boolean"
-                  },
-                  "reason": {
-                    "type": "string"
                   }
                 },
                 "required": [],
@@ -9222,9 +9200,6 @@
                   },
                   "confirm_data_loss_risk": {
                     "type": "boolean"
-                  },
-                  "reason": {
-                    "type": "string"
                   }
                 },
                 "required": [],
@@ -9324,9 +9299,6 @@
                   },
                   "confirm_data_loss_risk": {
                     "type": "boolean"
-                  },
-                  "reason": {
-                    "type": "string"
                   }
                 },
                 "required": [],
@@ -9422,9 +9394,6 @@
                   },
                   "policy_versions": {
                     "$ref": "#/components/schemas/PolicyVersions"
-                  },
-                  "reason": {
-                    "type": "string"
                   }
                 },
                 "required": [
@@ -9689,14 +9658,8 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "properties": {
-                  "reason": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "reason"
-                ],
+                "properties": {},
+                "required": [],
                 "additionalProperties": false
               }
             }
@@ -9877,14 +9840,10 @@
                     "enum": [
                       "prevent_new_allocations"
                     ]
-                  },
-                  "reason": {
-                    "type": "string"
                   }
                 },
                 "required": [
-                  "mode",
-                  "reason"
+                  "mode"
                 ],
                 "additionalProperties": false
               }
@@ -9982,16 +9941,12 @@
                   },
                   "approved_config": {
                     "$ref": "#/components/schemas/CustomConfig"
-                  },
-                  "reason": {
-                    "type": "string"
                   }
                 },
                 "required": [
                   "owner_user_id",
                   "incus_uuid",
-                  "approved_config",
-                  "reason"
+                  "approved_config"
                 ],
                 "additionalProperties": false
               }
@@ -10294,14 +10249,8 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "properties": {
-                  "reason": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "reason"
-                ],
+                "properties": {},
+                "required": [],
                 "additionalProperties": false
               }
             }
@@ -10476,14 +10425,8 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "properties": {
-                  "reason": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "reason"
-                ],
+                "properties": {},
+                "required": [],
                 "additionalProperties": false
               }
             }
@@ -10574,14 +10517,10 @@
                   "shutdown_deadline": {
                     "type": "string",
                     "format": "date-time"
-                  },
-                  "reason": {
-                    "type": "string"
                   }
                 },
                 "required": [
-                  "shutdown_deadline",
-                  "reason"
+                  "shutdown_deadline"
                 ],
                 "additionalProperties": false
               }
@@ -10669,14 +10608,8 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "properties": {
-                  "reason": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "reason"
-                ],
+                "properties": {},
+                "required": [],
                 "additionalProperties": false
               }
             }
@@ -10768,9 +10701,6 @@
                     "type": "string",
                     "pattern": "^-?[0-9]+(?:\\.[0-9]{1,6})?$"
                   },
-                  "reason": {
-                    "type": "string"
-                  },
                   "expires_at": {
                     "anyOf": [
                       {
@@ -10784,8 +10714,7 @@
                   }
                 },
                 "required": [
-                  "amount_pt",
-                  "reason"
+                  "amount_pt"
                 ],
                 "additionalProperties": false
               }
@@ -11057,16 +10986,12 @@
                   },
                   "approved_config": {
                     "$ref": "#/components/schemas/CustomConfig"
-                  },
-                  "reason": {
-                    "type": "string"
                   }
                 },
                 "required": [
                   "owner_user_id",
                   "name",
-                  "approved_config",
-                  "reason"
+                  "approved_config"
                 ],
                 "additionalProperties": false
               }
@@ -11138,14 +11063,10 @@
                   "new_password": {
                     "type": "string",
                     "writeOnly": true
-                  },
-                  "reason": {
-                    "type": "string"
                   }
                 },
                 "required": [
-                  "new_password",
-                  "reason"
+                  "new_password"
                 ],
                 "additionalProperties": false
               }
@@ -11233,14 +11154,8 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "properties": {
-                  "reason": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "reason"
-                ],
+                "properties": {},
+                "required": [],
                 "additionalProperties": false
               }
             }
@@ -11327,14 +11242,8 @@
             "application/json": {
               "schema": {
                 "type": "object",
-                "properties": {
-                  "reason": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "reason"
-                ],
+                "properties": {},
+                "required": [],
                 "additionalProperties": false
               }
             }
@@ -11565,9 +11474,6 @@
                   },
                   "allow_live": {
                     "type": "boolean"
-                  },
-                  "reason": {
-                    "type": "string"
                   }
                 },
                 "required": [
@@ -12613,14 +12519,10 @@
                 "properties": {
                   "connection": {
                     "$ref": "#/components/schemas/Connection"
-                  },
-                  "reason": {
-                    "type": "string"
                   }
                 },
                 "required": [
-                  "connection",
-                  "reason"
+                  "connection"
                 ],
                 "additionalProperties": false
               }
@@ -12825,9 +12727,6 @@
               "type": "string",
               "pattern": "^[1-9][0-9]*$"
             }
-          },
-          "reason": {
-            "type": "string"
           }
         },
         "required": [
@@ -13764,9 +13663,6 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 1000
-          },
-          "reason": {
-            "type": "string"
           }
         },
         "required": [
