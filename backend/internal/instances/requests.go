@@ -231,7 +231,7 @@ func requestRecord(c *gin.Context, a *platform.App, lock bool) (platform.Row, er
 	return r, nil
 }
 func requestList(c *gin.Context, a *platform.App) (any, error) {
-	q := platform.DB(c, a).Table("custom_instance_requests").Select("id,user_id,name,reason,requested_config,approved_config,status,reviewed_by_user_id,review_note,reviewed_at,instance_id,delivery_task_id,revision,created_at,updated_at")
+	q := platform.DB(c, a).Table("custom_instance_requests")
 	filters := []string{"status"}
 	if c.GetBool("admin") {
 		filters = append(filters, "user_id")
@@ -253,32 +253,7 @@ func requestList(c *gin.Context, a *platform.App) (any, error) {
 		}
 		q = q.Where("status = ?", status)
 	}
-	out, e := platform.List(c, a, q, filters)
-	if e != nil {
-		return nil, e
-	}
-	// List handles signed cursors and scalar serialization; snapshots are JSON objects.
-	if page, ok := out.(map[string]any); ok {
-		switch items := page["items"].(type) {
-		case []platform.Row:
-			for _, r := range items {
-				r["requested_config"] = object(r["requested_config"])
-				if r["approved_config"] != nil {
-					r["approved_config"] = object(r["approved_config"])
-				}
-			}
-		case []any:
-			for _, item := range items {
-				if r, ok := item.(map[string]any); ok {
-					r["requested_config"] = object(r["requested_config"])
-					if r["approved_config"] != nil {
-						r["approved_config"] = object(r["approved_config"])
-					}
-				}
-			}
-		}
-	}
-	return out, nil
+	return platform.ListMap(c, a, q, filters, func(r platform.Row) (platform.Row, error) { return requestDTO(r), nil })
 }
 func activeOwner(c *gin.Context, a *platform.App, s string) (uint64, error) {
 	id, e := platform.IDString(s)

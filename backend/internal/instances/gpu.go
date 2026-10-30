@@ -37,11 +37,15 @@ func registerGPU(a *platform.App, user, admin *gin.RouterGroup) {
 			}
 			safe := make([]platform.Row, 0, len(records))
 			for _, row := range records {
-				out := platform.Public(row, "id", "uuid", "model", "status", "gpu_hourly_pt", "gpu_price_version_id", "configured", "observed", "release_verified", "revision", "created_at", "released_at")
+				out := platform.Public(row, "id", "uuid", "model", "status", "gpu_hourly_pt", "revision", "created_at", "released_at")
 				for _, key := range []string{"configured", "observed", "release_verified"} {
+					out[key] = nil
 					if row[key] != nil {
 						out[key] = platform.Bool(row[key])
 					}
+				}
+				if out["gpu_price_version_id"], e = platform.PolicyID(platform.DB(c, a), "gpu-pricing", row["gpu_price_version_id"]); e != nil {
+					return nil, e
 				}
 				safe = append(safe, out)
 			}

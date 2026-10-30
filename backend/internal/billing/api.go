@@ -55,7 +55,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 	registerFinancialList(a, user, "/usage/sessions", "usage_sessions", false)
 	registerFinancialList(a, user, "/usage/charges", "usage_charges", false)
 	user.GET("/credits/redemptions", platform.Handle(func(c *gin.Context) (any, error) {
-		return platform.List(c, a, platform.DB(c, a).Table("redemption_records").Select("id,code_id,user_id,account_id,bucket_id,granted_pt,redeemed_at,expires_at,revision,created_at").Where("user_id = ?", platform.Current(c).ID), nil)
+		return platform.ListMap(c, a, platform.DB(c, a).Table("redemption_records").Where("user_id = ?", platform.Current(c).ID), nil, publicItem)
 	}))
 	user.POST("/credits/redemptions", platform.Handle(func(c *gin.Context) (any, error) {
 		var b struct {
@@ -120,7 +120,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		return nil, nil
 	}))
 	user.GET("/notifications", platform.Handle(func(c *gin.Context) (any, error) {
-		q := platform.DB(c, a).Table("notifications").Select("id,revision,type,message,related_type,related_id,created_at,read_at").Where("user_id = ?", platform.Current(c).ID)
+		q := platform.DB(c, a).Table("notifications").Where("user_id = ?", platform.Current(c).ID)
 		if s := c.Query("unread_only"); s != "" {
 			if !in(s, "true", "false") {
 				return nil, invalid("unread_only must be boolean")
@@ -132,7 +132,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		if s := c.Query("type"); s != "" {
 			q = q.Where("type = ?", s)
 		}
-		return platform.List(c, a, q, []string{"unread_only", "type"})
+		return platform.ListMap(c, a, q, []string{"unread_only", "type"}, publicItem)
 	}))
 	user.PUT("/notifications/:id/read", platform.Handle(func(c *gin.Context) (any, error) {
 		var b struct {
@@ -165,7 +165,8 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		return public(r), nil
 	}))
 	admin.GET("/credit-accounts", platform.Handle(func(c *gin.Context) (any, error) {
-		q := platform.DB(c, a).Table("credit_accounts").Select("id,user_id,credit_policy_version_id,status,version,revision,created_at,updated_at")
+		db := platform.DB(c, a)
+		q := db.Table("credit_accounts")
 		if s := c.Query("user_id"); s != "" {
 			id, e := platform.IDString(s)
 			if e != nil {
@@ -173,7 +174,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 			}
 			q = q.Where("user_id = ?", id)
 		}
-		return platform.List(c, a, q, []string{"user_id"})
+		return platform.ListMap(c, a, q, []string{"user_id"}, func(r row) (row, error) { return accountDTO(db, r) })
 	}))
 	admin.GET("/credit-accounts/:id", platform.Handle(func(c *gin.Context) (any, error) {
 		id, e := requireID(c)
@@ -381,14 +382,14 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		return nil, nil
 	}))
 	admin.GET("/redemption-codes", platform.Handle(func(c *gin.Context) (any, error) {
-		q := platform.DB(c, a).Table("redemption_codes").Select("id,display_prefix,grant_pt,max_uses,used_count,bucket_validity_seconds,valid_from,expires_at,status,revision,created_at,updated_at")
+		q := platform.DB(c, a).Table("redemption_codes")
 		if s := c.Query("status"); s != "" {
 			if !in(s, "active", "disabled") {
 				return nil, invalid("invalid code status")
 			}
 			q = q.Where("status = ?", s)
 		}
-		return platform.List(c, a, q, []string{"status"})
+		return platform.ListMap(c, a, q, []string{"status"}, publicItem)
 	}))
 	admin.POST("/redemption-codes/:id/disable", platform.Handle(func(c *gin.Context) (any, error) {
 		var b struct {
@@ -504,8 +505,34 @@ func registerFinancialList(a *platform.App, g *gin.RouterGroup, path, table stri
 				q = q.Where("status = ?", s)
 			}
 		}
-		return platform.List(c, a, q, filters)
+		dto := publicItem
+		switch table {
+		case "usage_sessions":
+			dto = func(r row) (row, error) { return sessionDTO(db, r) }
+		case "usage_charges":
+			dto = func(r row) (row, error) {
+				out := public(r)
+				out["calculation_snapshot"] = decoded(r["calculation_snapshot"])
+				return out, nil
+			}
+		}
+		return platform.ListMap(c, a, q, filters, dto)
 	}))
+}
+
+// sessionDTO exposes economic versions as policy_versions IDs; usage sessions
+// reference the legacy pricing source rows internally.
+func sessionDTO(db *gorm.DB, r row) (row, error) {
+	out := public(r)
+	out["config_snapshot"] = decoded(r["config_snapshot"])
+	var e error
+	if out["pricing_version_id"], e = platform.PolicyID(db, "pricing", r["pricing_version_id"]); e != nil {
+		return nil, e
+	}
+	if out["gpu_price_version_id"], e = platform.PolicyID(db, "gpu-pricing", r["gpu_price_version_id"]); e != nil {
+		return nil, e
+	}
+	return out, nil
 }
 func accountDTO(db *gorm.DB, ac row) (row, error) {
 	left, held, e := balances(db, platform.Uint(ac["id"]))

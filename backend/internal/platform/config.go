@@ -19,9 +19,8 @@ import (
 
 func LoadConfig() (Config, error) {
 	c := Config{Listen: env("CLOUD_LISTEN", "127.0.0.1:8080"), Origin: os.Getenv("CLOUD_ORIGIN"), DSN: os.Getenv("CLOUD_MYSQL_DSN"), SessionTTL: 12 * time.Hour, ConsoleTTL: 10 * time.Minute, ConsoleMaxConcurrent: 4}
-	u, e := url.Parse(c.Origin)
-	if e != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path != "" {
-		return c, errors.New("CLOUD_ORIGIN must be canonical HTTPS origin")
+	if e := validOrigin(c.Origin); e != nil {
+		return c, e
 	}
 	if c.DSN == "" {
 		return c, errors.New("CLOUD_MYSQL_DSN required")
@@ -65,7 +64,58 @@ func LoadConfig() (Config, error) {
 		}
 		c.NodeAllowCIDRs = append(c.NodeAllowCIDRs, p.Masked())
 	}
+	if c.TrustedProxies, e = trustedProxies(os.Getenv("CLOUD_TRUSTED_PROXIES")); e != nil {
+		return c, e
+	}
 	return c, nil
+}
+
+// HTTPS reports whether browsers reach the panel over TLS; cookie names and the
+// Secure attribute follow it because browsers drop Secure/__Host- cookies on http.
+func (c Config) HTTPS() bool { return strings.HasPrefix(c.Origin, "https://") }
+
+// Origin must equal the browser's serialized Origin header byte for byte:
+// lowercase scheme://host[:port], no default port, no userinfo/path/query/fragment.
+func validOrigin(origin string) error {
+	invalid := errors.New("CLOUD_ORIGIN must be a canonical origin http(s)://host[:port] (lowercase, no default port, no path)")
+	u, e := url.Parse(origin)
+	if e != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || u.Scheme+"://"+u.Host != origin || origin != strings.ToLower(origin) || strings.HasSuffix(u.Host, ":") {
+		return invalid
+	}
+	if port := u.Port(); (u.Scheme == "https" && port == "443") || (u.Scheme == "http" && port == "80") {
+		return invalid
+	}
+	return nil
+}
+
+// Empty means no proxy is trusted and X-Forwarded-For is ignored.
+func trustedProxies(list string) ([]netip.Prefix, error) {
+	if strings.TrimSpace(list) == "" {
+		return nil, nil
+	}
+	var out []netip.Prefix
+	for _, s := range strings.Split(list, ",") {
+		s = strings.TrimSpace(s)
+		var p netip.Prefix
+		var e error
+		if strings.Contains(s, "/") {
+			p, e = netip.ParsePrefix(s)
+		} else {
+			var addr netip.Addr
+			if addr, e = netip.ParseAddr(s); e == nil {
+				if addr.Zone() != "" {
+					e = errors.New("zoned address")
+				}
+				p = netip.PrefixFrom(addr, addr.BitLen())
+			}
+		}
+		// IPv4-mapped IPv6 and zoned addresses would match differently in net.IPNet.
+		if e != nil || !p.IsValid() || p.Addr().Zone() != "" || p.Addr().Is4In6() {
+			return nil, errors.New("invalid CLOUD_TRUSTED_PROXIES entry " + strconv.Quote(s))
+		}
+		out = append(out, p.Masked())
+	}
+	return out, nil
 }
 func env(k, def string) string {
 	if v := os.Getenv(k); v != "" {

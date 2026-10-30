@@ -14,7 +14,7 @@ import (
 
 func networkRegisterBindings(a *platform.App, admin *gin.RouterGroup) {
 	admin.GET("/node-network-bindings", platform.Handle(func(c *gin.Context) (any, error) {
-		q := platform.DB(c, a).Table("node_network_bindings").Select("id,node_id,network_pool_id,mode,parent_interface,incus_network_name,project_name,mtu,status,validation_status,validated_at,revision,created_at,updated_at")
+		q := platform.DB(c, a).Table("node_network_bindings")
 		for param, col := range map[string]string{"node_id": "node_id", "pool_id": "network_pool_id"} {
 			if s := c.Query(param); s != "" {
 				id, e := platform.IDString(s)
@@ -24,7 +24,7 @@ func networkRegisterBindings(a *platform.App, admin *gin.RouterGroup) {
 				q = q.Where(col+"=?", id)
 			}
 		}
-		return platform.List(c, a, q, []string{"node_id", "pool_id"})
+		return listDTO(c, a, q, []string{"node_id", "pool_id"}, func(r platform.Row) platform.Row { return networkPublic(r, false) })
 	}))
 	admin.POST("/node-network-bindings", platform.Handle(func(c *gin.Context) (any, error) {
 		var in struct {

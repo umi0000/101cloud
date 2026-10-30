@@ -181,6 +181,11 @@ func canReactivateCompletedEvent(event, instance row, remaining string, hasRepla
 }
 func eventDTO(db *gorm.DB, event row) (row, error) {
 	out := public(event)
+	pid, e := platform.PolicyID(db, "credit", event["policy_version_id"])
+	if e != nil {
+		return nil, e
+	}
+	out["policy_version_id"] = pid
 	items, e := rows(db, "credit_enforcement_instances", "enforcement_id = ?", event["id"])
 	if e != nil {
 		return nil, e
@@ -205,7 +210,8 @@ func eventDTO(db *gorm.DB, event row) (row, error) {
 }
 func registerEnforcements(a *platform.App, g *gin.RouterGroup) {
 	g.GET("/credit-enforcements", platform.Handle(func(c *gin.Context) (any, error) {
-		q := platform.DB(c, a).Table("credit_enforcements").Select("id,account_id,user_id,policy_version_id,status,exhausted_at,shutdown_deadline,notification_id,revision,created_at,updated_at")
+		db := platform.DB(c, a)
+		q := db.Table("credit_enforcements")
 		if s := c.Query("status"); s != "" {
 			if !in(s, "grace", "stopping", "completed", "cancelled", "unknown") {
 				return nil, invalid("invalid enforcement status")
@@ -219,7 +225,7 @@ func registerEnforcements(a *platform.App, g *gin.RouterGroup) {
 			}
 			q = q.Where("user_id = ?", id)
 		}
-		return platform.List(c, a, q, []string{"status", "user_id"})
+		return platform.ListMap(c, a, q, []string{"status", "user_id"}, func(r row) (row, error) { return eventDTO(db, r) })
 	}))
 	g.GET("/credit-enforcements/:id", platform.Handle(func(c *gin.Context) (any, error) {
 		id, e := requireID(c)

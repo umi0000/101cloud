@@ -24,7 +24,9 @@ func networkPrefix(r platform.Row) netip.Prefix {
 }
 func networkPublic(r platform.Row, pool bool) platform.Row {
 	if !pool {
-		return platform.Public(r, "id", "node_id", "network_pool_id", "mode", "parent_interface", "incus_network_name", "project_name", "mtu", "status", "validation_status", "validated_at", "validation_details", "revision", "created_at", "updated_at")
+		out := platform.Public(r, "id", "node_id", "network_pool_id", "mode", "parent_interface", "incus_network_name", "project_name", "mtu", "status", "validation_status", "validated_at", "revision", "created_at", "updated_at")
+		out["validation_details"] = jsonValue(r["validation_details"])
+		return out
 	}
 	out := platform.Public(r, "id", "availability_zone_id", "name", "address_family", "status", "revision", "created_at", "updated_at")
 	out["cidr"] = networkPrefix(r).String()
@@ -76,7 +78,7 @@ func registerNetworks(a *platform.App, user, admin *gin.RouterGroup) {
 		return platform.List(c, a, q, []string{"zone_id", "instance_type"})
 	}))
 	admin.GET("/network-pools", platform.Handle(func(c *gin.Context) (any, error) {
-		q := platform.DB(c, a).Table("network_pools").Select("id,availability_zone_id,name,address_family,CONCAT(INET6_NTOA(network_address),'/',prefix_length) AS cidr,INET6_NTOA(range_start) AS range_start,INET6_NTOA(range_end) AS range_end,INET6_NTOA(gateway) AS gateway,dns_servers,status,revision,created_at,updated_at")
+		q := platform.DB(c, a).Table("network_pools")
 		if s := c.Query("zone_id"); s != "" {
 			id, e := platform.IDString(s)
 			if e != nil {
@@ -84,7 +86,7 @@ func registerNetworks(a *platform.App, user, admin *gin.RouterGroup) {
 			}
 			q = q.Where("availability_zone_id=?", id)
 		}
-		return platform.List(c, a, q, []string{"zone_id"})
+		return listDTO(c, a, q, []string{"zone_id"}, func(r platform.Row) platform.Row { return networkPublic(r, true) })
 	}))
 	admin.POST("/network-pools", platform.Handle(func(c *gin.Context) (any, error) {
 		var in struct {

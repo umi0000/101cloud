@@ -218,11 +218,12 @@ func sourceFields(kind string, p any) row {
 }
 func policyDTO(r row) row {
 	out := public(r)
-	var cfg any
-	_ = json.Unmarshal([]byte(platform.Text(r["config"])), &cfg)
-	out["config"] = cfg
+	// source_id is the internal legacy row; the API identifies versions by id only.
+	delete(out, "source_id")
+	out["config"] = decoded(r["config"])
 	return out
 }
+func policyItem(r row) (row, error) { return policyDTO(r), nil }
 func policyRow(c *gin.Context, a *platform.App, lock bool) (row, error) {
 	id, e := requireID(c)
 	if e != nil {
@@ -267,7 +268,7 @@ func registerPolicies(a *platform.App, g *gin.RouterGroup) {
 		if _, ok := map[string]bool{"pricing": true, "gpu-pricing": true, "credit": true, "gpu-idle": true, "gpu-scheduling": true, "metrics": true}[c.Param("kind")]; !ok {
 			return nil, invalid("unsupported policy kind")
 		}
-		return platform.List(c, a, platform.DB(c, a).Table("policy_versions").Select("id,kind,code,version,source_id,config,status,effective_at,revision,created_at,updated_at").Where("kind = ?", c.Param("kind")), nil)
+		return platform.ListMap(c, a, platform.DB(c, a).Table("policy_versions").Where("kind = ?", c.Param("kind")), nil, policyItem)
 	}))
 	g.POST("/policies/:kind/versions", platform.Handle(func(c *gin.Context) (any, error) {
 		var b struct {

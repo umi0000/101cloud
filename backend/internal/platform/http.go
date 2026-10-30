@@ -352,6 +352,12 @@ func (a *App) cursorScope(c *gin.Context) string {
 	return fmt.Sprintf("%d:%s:%s", Current(c).ID, c.Request.URL.Path, q.Encode())
 }
 func List(c *gin.Context, a *App, q *gorm.DB, filters []string) (any, error) {
+	return ListMap(c, a, q, filters, func(r Row) (Row, error) { return Public(r), nil })
+}
+
+// ListMap pages like List and projects every row through dto, so list items can
+// reuse the exact detail representation of the resource.
+func ListMap(c *gin.Context, a *App, q *gorm.DB, filters []string, dto func(Row) (Row, error)) (Row, error) {
 	allow := map[string]bool{"limit": true, "cursor": true}
 	for _, k := range filters {
 		allow[k] = true
@@ -399,7 +405,11 @@ func List(c *gin.Context, a *App, q *gorm.DB, filters []string) (any, error) {
 	}
 	out := make([]Row, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, Public(r))
+		item, e := dto(r)
+		if e != nil {
+			return nil, e
+		}
+		out = append(out, item)
 	}
 	return Row{"items": out, "next_cursor": next}, nil
 }

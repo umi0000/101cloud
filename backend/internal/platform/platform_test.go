@@ -77,3 +77,42 @@ func TestPublicPreservesLargeIdentifiers(t *testing.T) {
 		t.Fatalf("public integer precision/unknown lost: %s", b)
 	}
 }
+
+// CLOUD_ORIGIN is compared byte for byte with the browser Origin header, so only
+// the serialized form a browser sends may be configured.
+func TestOriginMustBeCanonicalHTTPOrHTTPS(t *testing.T) {
+	for _, origin := range []string{"https://cloud.example", "https://cloud.example:8443", "http://localhost:5555", "http://192.168.0.10", "https://[::1]:8443"} {
+		if e := validOrigin(origin); e != nil {
+			t.Fatalf("canonical origin %q rejected: %v", origin, e)
+		}
+	}
+	for _, origin := range []string{"", "ftp://cloud.example", "https://cloud.example/", "https://cloud.example/app", "https://cloud.example?x=1", "https://cloud.example#x", "https://user@cloud.example", "https://Cloud.example", "HTTPS://cloud.example", "https://cloud.example:443", "http://cloud.example:80", "https://cloud.example:", "cloud.example", "https://"} {
+		if validOrigin(origin) == nil {
+			t.Fatalf("non-canonical origin %q accepted", origin)
+		}
+	}
+	if !(Config{Origin: "https://cloud.example"}).HTTPS() || (Config{Origin: "http://localhost:5555"}).HTTPS() {
+		t.Fatal("origin scheme misdetected")
+	}
+}
+
+func TestTrustedProxiesParsing(t *testing.T) {
+	if p, e := trustedProxies(" "); e != nil || p != nil {
+		t.Fatalf("empty list must trust nothing: %v %v", p, e)
+	}
+	p, e := trustedProxies("127.0.0.1/32, ::1/128,10.0.0.7,fd00::1,192.168.1.9/24")
+	if e != nil || len(p) != 5 {
+		t.Fatal(p, e)
+	}
+	want := []string{"127.0.0.1/32", "::1/128", "10.0.0.7/32", "fd00::1/128", "192.168.1.0/24"}
+	for i, prefix := range p {
+		if prefix.String() != want[i] {
+			t.Fatalf("entry %d = %s, want %s", i, prefix, want[i])
+		}
+	}
+	for _, list := range []string{"127.0.0.1,", "localhost", "10.0.0.0/33", "fe80::1%eth0", "::ffff:127.0.0.1", "1.2.3"} {
+		if _, e := trustedProxies(list); e == nil {
+			t.Fatalf("invalid proxy list %q accepted", list)
+		}
+	}
+}

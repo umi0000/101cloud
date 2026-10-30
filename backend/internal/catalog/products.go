@@ -69,15 +69,16 @@ func registerProducts(a *platform.App, user, admin *gin.RouterGroup) {
 	}))
 	user.GET("/catalog/images", platform.Handle(func(c *gin.Context) (any, error) { return imageList(c, a, false) }))
 	user.GET("/catalog/gpu-options", platform.Handle(func(c *gin.Context) (any, error) {
-		q := platform.DB(c, a).Table("gpu_price_versions p").Select("p.id,p.gpu_model AS model,p.access_mode,p.gpu_hourly_pt,p.created_at,(SELECT MAX(g.memory_mib) FROM node_gpus g WHERE g.gpu_price_version_id=p.id) AS memory_mib,CASE WHEN EXISTS (SELECT 1 FROM node_gpus g JOIN nodes n ON n.id=g.node_id WHERE g.gpu_price_version_id=p.id AND g.status='available' AND n.administrative_state='active' AND n.health='online') THEN 'available' ELSE 'unavailable' END AS availability").Where("p.status='active' AND p.effective_at<=?", a.Time())
+		// Option IDs are gpu-pricing policy_versions IDs, the value accepted by plans and quotes.
+		inner := platform.DB(c, a).Table("gpu_price_versions p").Select("pv.id,p.gpu_model AS model,p.access_mode,p.gpu_hourly_pt,p.created_at,(SELECT MAX(g.memory_mib) FROM node_gpus g WHERE g.gpu_price_version_id=p.id) AS memory_mib,CASE WHEN EXISTS (SELECT 1 FROM node_gpus g JOIN nodes n ON n.id=g.node_id WHERE g.gpu_price_version_id=p.id AND g.status='available' AND n.administrative_state='active' AND n.health='online') THEN 'available' ELSE 'unavailable' END AS availability").Joins("JOIN policy_versions pv ON pv.kind='gpu-pricing' AND pv.source_id=p.id").Where("p.status='active' AND p.effective_at<=?", a.Time())
 		if s := c.Query("zone_id"); s != "" {
 			id, e := platform.IDString(s)
 			if e != nil {
 				return nil, e
 			}
-			q = q.Where("EXISTS (SELECT 1 FROM node_gpus g JOIN nodes n ON n.id=g.node_id WHERE g.gpu_price_version_id=p.id AND n.availability_zone_id=?)", id)
+			inner = inner.Where("EXISTS (SELECT 1 FROM node_gpus g JOIN nodes n ON n.id=g.node_id WHERE g.gpu_price_version_id=p.id AND n.availability_zone_id=?)", id)
 		}
-		return listProducts(c, a, q, []string{"zone_id"})
+		return listProducts(c, a, platform.DB(c, a).Table("(?) AS options", inner), []string{"zone_id"})
 	}))
 	admin.GET("/zones", platform.Handle(func(c *gin.Context) (any, error) {
 		return listProducts(c, a, platform.DB(c, a).Table("availability_zones").Select("id,code,name,status,revision,created_at,updated_at"), nil)
@@ -301,7 +302,7 @@ func registerProducts(a *platform.App, user, admin *gin.RouterGroup) {
 		return planDTO(platform.DB(c, a), r)
 	}))
 	admin.GET("/init-templates", platform.Handle(func(c *gin.Context) (any, error) {
-		return listProducts(c, a, platform.DB(c, a).Table("init_template_versions").Select("id,code,version,name,phase,timeout_seconds,status,revision,created_at,updated_at"), nil)
+		return listDTO(c, a, platform.DB(c, a).Table("init_template_versions"), nil, templateDTO)
 	}))
 	admin.POST("/init-templates", platform.Handle(func(c *gin.Context) (any, error) {
 		var b templateInput
@@ -404,7 +405,7 @@ func decodeMap(v any, dst any) error {
 	return nil
 }
 func imageList(c *gin.Context, a *platform.App, admin bool) (any, error) {
-	q := platform.DB(c, a).Table("images").Select("images.id,images.code,images.version,images.name,images.image_type AS instance_type,images.architecture,LOWER(HEX(images.fingerprint)) AS fingerprint,images.gpu_ready,images.properties,images.status,images.revision,images.created_at,images.updated_at")
+	q := platform.DB(c, a).Table("images")
 	if !admin {
 		q = q.Where("images.status='active'")
 	}
@@ -424,10 +425,11 @@ func imageList(c *gin.Context, a *platform.App, admin bool) (any, error) {
 		}
 		q = q.Where("EXISTS (SELECT 1 FROM plan_images pi JOIN instance_plans p ON p.id=pi.plan_id WHERE pi.image_id=images.id AND p.availability_zone_id=? AND p.status='active')", id)
 	}
-	return listProducts(c, a, q, []string{"zone_id", "instance_type", "architecture"})
+	return listDTO(c, a, q, []string{"zone_id", "instance_type", "architecture"}, imageDTO)
 }
 func planList(c *gin.Context, a *platform.App, admin bool) (any, error) {
-	q := platform.DB(c, a).Table("instance_plans").Select("id,created_at")
+	db := platform.DB(c, a)
+	q := db.Table("instance_plans")
 	if !admin {
 		q = q.Where("status='active'")
 	}
@@ -442,34 +444,7 @@ func planList(c *gin.Context, a *platform.App, admin bool) (any, error) {
 		}
 		q = q.Where("image_type=?", s)
 	}
-	page, e := listProducts(c, a, q, []string{"zone_id", "instance_type"})
-	if e != nil {
-		return nil, e
-	}
-	var data map[string]any
-	if e = decodeMap(page, &data); e != nil {
-		return nil, e
-	}
-	items, _ := data["items"].([]any)
-	out := make([]platform.Row, 0, len(items))
-	for _, x := range items {
-		m := object(x)
-		id, e := platform.IDString(platform.Text(m["id"]))
-		if e != nil {
-			return nil, e
-		}
-		r, e := platform.Get(platform.DB(c, a), "instance_plans", id, false)
-		if e != nil {
-			return nil, e
-		}
-		dto, e := planDTO(platform.DB(c, a), r)
-		if e != nil {
-			return nil, e
-		}
-		out = append(out, dto)
-	}
-	data["items"] = out
-	return data, nil
+	return platform.ListMap(c, a, q, []string{"zone_id", "instance_type"}, func(r platform.Row) (platform.Row, error) { return planDTO(db, r) })
 }
 func validateImageProperties(p map[string]any) error {
 	if p == nil {
@@ -506,13 +481,13 @@ func planValues(c *gin.Context, a *platform.App, b planInput, publish bool) (pla
 	if e := validResources(b.Resources); e != nil {
 		return nil, e
 	}
-	if e := validGPU(b.GPU, b.InstanceType); e != nil {
-		return nil, e
-	}
 	if b.AllowedOverrides == nil {
 		return nil, invalid("allowed_overrides must be an object")
 	}
 	if e := validateOverrideDefinition(b.AllowedOverrides, b.Resources, b.GPU); e != nil {
+		return nil, e
+	}
+	if e := validPlanGPU(b.GPU, b.InstanceType, platform.Uint(object(b.AllowedOverrides["gpu_count"])["max"])); e != nil {
 		return nil, e
 	}
 	zone, e := platform.IDString(b.ZoneID)
@@ -530,7 +505,7 @@ func planValues(c *gin.Context, a *platform.App, b planInput, publish bool) (pla
 	if e != nil {
 		return nil, e
 	}
-	if b.GPU.Count > 0 && pol["gpu-pricing"] == nil {
+	if b.GPU.Model != nil && pol["gpu-pricing"] == nil {
 		return nil, invalid("GPU policy required")
 	}
 	if len(b.ImageIDs) == 0 || len(b.NetworkOptionIDs) == 0 {
@@ -684,6 +659,10 @@ func validateOverrideDefinition(m map[string]any, r Resources, g GPURequest) err
 			return invalid("invalid override range")
 		}
 		base := map[string]uint64{"vcpus": r.VCPUs, "memory_bytes": mustUnsigned(r.MemoryBytes), "disk_bytes": mustUnsigned(r.DiskBytes), "gpu_count": g.Count}[k]
+		// A zero GPU base is the always-allowed opt-out, so it need not lie in the range.
+		if k == "gpu_count" && base == 0 {
+			continue
+		}
 		if base < lo || base > hi || (base-lo)%step != 0 {
 			return invalid("base resource outside override range")
 		}

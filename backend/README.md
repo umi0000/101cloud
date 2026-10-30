@@ -82,6 +82,7 @@ CLOUD_NODE_ALLOW_CIDRS='192.168.0.111/32'
 CLOUD_SESSION_TTL='12h'
 CLOUD_CONSOLE_TTL='10m'
 CLOUD_CONSOLE_MAX_CONCURRENT='4'
+CLOUD_TRUSTED_PROXIES='127.0.0.1/32,::1/128'
 ```
 
 ```bash
@@ -89,10 +90,13 @@ sudo chown root:root /usr/local/etc/101cloud/backend.env
 sudo chmod 600 /usr/local/etc/101cloud/backend.env
 ```
 
-- `CLOUD_ORIGIN` 是浏览器访问面板的外部 HTTPS 地址，不带末尾 `/`，不是 Agent 地址。
+- `CLOUD_ORIGIN` 是浏览器访问面板的外部 origin，格式 `https://host[:port]` 或 `http://host[:port]`：小写、不带默认端口（443/80）、不带路径、查询、末尾 `/` 或用户信息，必须与浏览器发送的 `Origin` 头逐字相同；不是 Agent 地址。生产必须用 `https://`。
+- scheme 决定 Cookie：`https://` 使用 `__Host-101cloud_session`、`__Host-101cloud_csrf` 并带 Secure；`http://` 使用 `101cloud_session`、`101cloud_csrf` 且不带 Secure（浏览器不会在普通 http 下保存 Secure/`__Host-` Cookie）。两者都是 HttpOnly、Path=/、SameSite=Lax、无 Domain。http 下口令和 Cookie 明文传输，启动时会输出警告日志，只用于本地开发。
+- 本地前端开发：Vite 开发服务器把 `/api/v1` 代理到 `http://127.0.0.1:8080`（需开启 WebSocket 代理），浏览器访问 `http://localhost:5555`，后端设置 `CLOUD_ORIGIN=http://localhost:5555`。代理不得改写浏览器发送的 `Origin` 头，否则修改请求和 WebSocket 会被 403 拒绝。
+- `CLOUD_TRUSTED_PROXIES` 是可信反向代理的 IP 或 CIDR 列表（逗号分隔，IPv4/IPv6），非法条目会使启动失败。留空（默认）表示不信任任何代理，客户端 IP 取 TCP 对端地址。只有 TCP 对端属于该列表时，才采用 `X-Forwarded-For` 中的客户端地址（用于登录按 IP 限速和会话记录）；不读取 `X-Real-IP`。
 - `CLOUD_NODE_ALLOW_CIDRS` 是允许接入的节点管理 IP 范围，按实际节点填写，尽量使用单 IP `/32`。
 - 后端没有自动加载 `.env` 的逻辑，由 systemd 读取文件。
-- 不需要配置后端 SSL 证书。Secure Cookie 要求浏览器侧通过 HTTPS 访问。
+- 不需要配置后端 SSL 证书。生产 HTTPS 由反向代理终结，`CLOUD_ORIGIN` 填浏览器看到的 `https://` 地址。
 - 程序自动配置 MySQL 连接的 UTC+8、时间解析和严格 SQL 模式。
 
 ## 7. 自动初始化数据库及首个面板管理员
@@ -173,7 +177,7 @@ sudo journalctl -u 101cloud-backend -f
 
 ## 9. 配置 Nginx 反向代理
 
-以下片段放进已有的 HTTPS server 中；域名、证书和前端静态文件配置由你的入口服务管理：
+以下片段放进已有的 HTTPS server 中；域名、证书和前端静态文件配置由你的入口服务管理。示例与上文 `CLOUD_TRUSTED_PROXIES='127.0.0.1/32,::1/128'` 配套（Nginx 与后端同机，经回环地址转发）：
 
 ```nginx
 location /api/v1/ {
@@ -182,6 +186,7 @@ location /api/v1/ {
     proxy_set_header Host $host;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
+    proxy_set_header X-Forwarded-For $remote_addr;
     proxy_read_timeout 1h;
     proxy_send_timeout 1h;
     proxy_buffering off;
@@ -193,7 +198,9 @@ sudo nginx -t
 sudo systemctl reload nginx
 ```
 
-前端与 API 应使用同一个外部 origin。不要把内部 8080 端口无保护暴露到公网；只开放反代入口。当前后端不信任任意转发代理 IP 头，不要假定加上 X-Forwarded-For 就会作为可信客户端地址使用。
+前端与 API 应使用同一个外部 origin。不要把内部 8080 端口无保护暴露到公网；只开放反代入口。
+
+`X-Forwarded-For` 使用 `$remote_addr` 覆盖而不是 `$proxy_add_x_forwarded_for` 追加，这样客户端自带的该头不会传到后端。注意：信任某个地址段意味着该段内任何连接都能伪造客户端 IP。信任 `127.0.0.1/32,::1/128` 时，本机任意进程以及经 SSH 隧道（`ssh -L`）从回环地址连入 8080 的用户都能通过伪造 `X-Forwarded-For` 绕过按 IP 的登录限速（按账号的限速仍然有效）。只列出实际的代理地址；不需要时保持为空。
 
 当前控制台上游预连接属于准备该会话的进程，推荐先单后端进程部署。多进程或多副本需要会话亲和，不能让控制台创建和 WebSocket 连接随机落到不同进程。
 
@@ -223,9 +230,9 @@ curl -f https://cloud.example.com/api/v1/health/ready
 1. 创建并发布价格、GPU价格、额度、GPU空闲、GPU调度、监控六类政策，再完整绑定平台政策。不提供默认价格或默认业务额度。
 2. 创建可用区、镜像和初始化模板（如需）。镜像实际必须满足目标节点的容器/VM、架构和驱动要求。
 3. 从可信渠道导入 Agent endpoint、Token和证书指纹，执行只读探测，确认后启用节点。
-4. 给 GPU 配置价格、共享名额和可用状态。共享名额不等于显存隔离或算力保证。
+4. 给 GPU 配置价格、共享名额和可用状态。共享名额不等于显存隔离或算力保证。GPU 的 `gpu_price_version_id` 填 gpu-pricing 政策版本 ID（即 `/api/v1/admin/policies/gpu-pricing/versions` 返回的 id）；API 中所有政策版本引用都使用该 ID。
 5. 登记局域网 IP 池和地址，绑定现有 bridge 或适用的 macvlan，验证后启用。没有 NAT 或端口映射。
-6. 发布套餐，创建用户并明确配置配额。新用户配额全部为0，自定义实例还需 max_resident_instances。
+6. 发布套餐，创建用户并明确配置配额。新用户配额全部为0，自定义实例还需 max_resident_instances。VM 套餐只提供 CPU；容器套餐可设可选 GPU（gpu.count=0、gpu.model 非空且 allowed_overrides.gpu_count.max≥1），提供 GPU 的套餐必须绑定 gpu-pricing。用户创建弹性实例时始终可以用 gpu.count=0 不选 GPU。
 7. 先受控验证一个实例的创建、登录、停止、磁盘保留、GPU观测和控制台，再开放给成员。
 
 每日额度由后台任务处理，首次发放完成前账户可能尚未就绪。自定义实例只有管理员下发，按 admin_exempt 记录，不受每日额度停机影响。
@@ -241,7 +248,8 @@ curl -f https://cloud.example.com/api/v1/health/ready
 | 问题 | 优先检查 |
 |---|---|
 | 服务启动即退出 | journalctl；数据库连接、主密钥权限、迁移是否完成 |
-| 浏览器登录后仍401 | 是否HTTPS、域名是否同源、Cookie是否被保存；不要关闭Secure Cookie绕过 |
+| 浏览器登录后仍401 | `CLOUD_ORIGIN` 是否与浏览器地址栏 origin 完全一致（scheme、主机、端口）、Cookie是否被保存；https origin 必须真的经 HTTPS 访问，不能用 http 页面配 https origin |
+| 登录返回401 invalid_credentials | 用户名或密码错误，或账号已停用；与会话失效的 unauthenticated 不同 |
 | 修改请求403 | Origin、CSRF；上下文到期重新获取/auth/csrf |
 | 操作412/428 | 刷新详情获取ETag，再按接口提交If-Match |
 | 创建409 | 额度、显式配额、节点容量、GPU名额、IP和政策版本 |
@@ -266,3 +274,7 @@ HTTP监听127.0.0.1:8080，就绪检查、随机管理员登录、真实Agent固
 联调修复了两个真实协议问题：CPU时间窗两个端点统一量化为微秒并据此计算独立窗口，不再拒绝Agent的纳秒精度；终端正确响应Incus空文本EOF握手并预先等待真实操作结果，不伪造退出码。修复后的后端已部署，配置、Agent与数据库结构未因此改变。
 
 测试负载已停止，GPU分配确认released，测试容器最终Stopped，磁盘数据和116地址预留保留供后续检查。其他原有实例状态不变。节点管理状态已回到maintenance，GPU在后端标记disabled；当前只有显式的零价格验收政策，未配置成员正式价格、额度或套餐，不应直接开放自助创建。未完成真实多卡均衡（本机只有一张可识别GPU）及KVM/VGA验收。
+
+后续按用户要求直接SSH到服务器、在本机HTTP调用API复测（未做换卡）：登录/CSRF、缺少或陈旧If-Match拒绝、同幂等键返回相同任务及异参409、维护态刷新节点库存、116容器启动、客机exec真实退出状态和文件读取、等待客机网络就绪、单卡在线绑定及nvidia-smi、最新指标入库、空闲在线移除GPU、正常停机均通过。复测快照实例样本556条、GPU样本182条、实例汇总48条，孤立GPU子记录0。测试后保持验收容器Stopped、GPU已释放、节点maintenance及GPU disabled，其他原有实例状态未变。未声称本轮重新执行CUDA负载或多卡均衡。
+
+2026-10-30 契约修正部署：新增 `CLOUD_TRUSTED_PROXIES`（X-Forwarded-For）、`CLOUD_ORIGIN` 支持 http/https（Cookie 名称与 Secure 随协议变化）、密码错误独立返回 `invalid_credentials`、列表与详情字段类型统一、对外政策版本引用统一为 `policy_versions.id`、弹性实例可选择不带 GPU。本地临时 MySQL 8.4 上 `go test -race ./...`（含 MySQL 回归）与 `go vet ./...` 通过，并用真实 HTTP 进程（http Origin、可信代理 127.0.0.1）验证 27 项：HTTP Cookie 名与 Secure、两类 401、改密码失败会话保留、按转发 IP 分桶限流、政策/镜像/地址池/绑定列表字段类型、GPU 定价与额度账户 ID、可选 GPU 套餐发布、报价 0 张/1 张/超范围。服务器仅替换二进制（备份 `/usr/local/bin/101cloud-backend.bak-20261030172121`），`backend.env` 与数据库结构未改；部署后只读核对真实数据：列表字段为对象/数组/布尔，GPU `gpu_price_version_id`、`/catalog/gpu-options` 的 `id`、使用记录与 GPU 分配的版本 ID 均等于对应政策版本 `id`，HTTPS Origin 下仍为 `__Host-` Secure Cookie，错误密码返回 `invalid_credentials`。当前未配置 Nginx，`CLOUD_TRUSTED_PROXIES` 保持为空。

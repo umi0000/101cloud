@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"101cloud/backend/internal/platform"
@@ -204,6 +205,21 @@ func public(r row) row {
 				out[k] = v
 			}
 		}
+	}
+	return out
+}
+func publicItem(r row) (row, error) { return public(r), nil }
+
+// decoded returns a stored JSON column as its JSON value (object/array).
+func decoded(v any) any {
+	if v == nil {
+		return nil
+	}
+	var out any
+	d := json.NewDecoder(strings.NewReader(platform.Text(v)))
+	d.UseNumber()
+	if d.Decode(&out) != nil {
+		return nil
 	}
 	return out
 }

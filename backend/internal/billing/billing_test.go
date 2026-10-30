@@ -248,10 +248,13 @@ func TestDailyCycleBoundaryAndCalendarTimezone(t *testing.T) {
 func TestPolicyDTOAndLargeIDsPreserveExactStrings(t *testing.T) {
 	r := row{"id": uint64(9007199254740993), "source_id": uint64(9007199254740995), "revision": uint64(7), "version": "2026.10", "config": []byte(`{"cpu_hourly_pt":"0.000001"}`)}
 	out := policyDTO(r)
-	for key, want := range map[string]string{"id": "9007199254740993", "source_id": "9007199254740995", "revision": "7", "version": "2026.10"} {
+	for key, want := range map[string]string{"id": "9007199254740993", "revision": "7", "version": "2026.10"} {
 		if got := out[key]; got != want {
 			t.Errorf("%s=%v, want exact string %s", key, got, want)
 		}
+	}
+	if _, leaked := out["source_id"]; leaked {
+		t.Error("policy DTO exposed the internal legacy source_id")
 	}
 	cfg, ok := out["config"].(map[string]any)
 	if !ok || cfg["cpu_hourly_pt"] != "0.000001" {

@@ -3,7 +3,7 @@
   "info": {
     "title": "101cloud Backend API",
     "version": "1.0.0",
-    "description": "Implemented Go/Gin/MySQL/GORM control plane. Numeric IDs and money are strings; time is RFC3339 +08:00. No NAT or arbitrary Incus proxy. See 后端接口文档.md for workflow and policy boundaries."
+    "description": "Implemented Go/Gin/MySQL/GORM control plane. Numeric IDs and money are strings; time is RFC3339 +08:00. No NAT or arbitrary Incus proxy. List items use exactly the same representation as the resource detail: JSON columns are decoded objects/arrays (never JSON-encoded strings), booleans are true/false (never 1/0), every revision is a decimal string. Every policy version reference in requests and responses (pricing_version_id, gpu_price_version_id, policy_version_id, policy_versions values, catalog gpu-option id) is a policy_versions id as returned by /admin/policies/{kind}/versions; an id of the wrong kind is 422 validation_failed. See 后端接口文档.md for workflow and policy boundaries."
   },
   "servers": [
     {
@@ -592,6 +592,7 @@
                     "minimum": 1
                   },
                   "gpu_price_version_id": {
+                    "description": "gpu-pricing policy version id (policy_versions.id). Unknown id or another kind: 422 validation_failed; unpublished, not yet effective, model or exclusive-slot mismatch: 422. null leaves the price unchanged.",
                     "anyOf": [
                       {
                         "type": "string",
@@ -3178,6 +3179,7 @@
                 "type": "object",
                 "properties": {
                   "policy_version_id": {
+                    "description": "Published, effective credit policy version id (policy_versions.id); the same value returned as policy_version_id by credit-account list and detail.",
                     "type": "string",
                     "pattern": "^[1-9][0-9]*$"
                   },
@@ -4032,7 +4034,8 @@
                     "$ref": "#/components/schemas/Resources"
                   },
                   "gpu": {
-                    "$ref": "#/components/schemas/GPURequest"
+                    "$ref": "#/components/schemas/GPURequest",
+                    "description": "Plan GPU offering; only count/model/access_mode/max_hourly_pt apply. VM plans: count 0, model null, no gpu_count override with max > 0. Container plans: model null requires count 0 and no gpu_count override max > 0; model set requires count > 0, or count 0 with allowed_overrides.gpu_count.max >= 1 (optional GPU). A plan with a model requires policy_versions.gpu-pricing. Only count > 0 requires every image to be gpu_ready. Violations return 422 validation_failed."
                   },
                   "image_ids": {
                     "type": "array",
@@ -4940,22 +4943,6 @@
               "type": "string",
               "pattern": "^[1-9][0-9]*$"
             }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 100
-            }
-          },
-          {
-            "in": "query",
-            "name": "cursor",
-            "schema": {
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -4967,30 +4954,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "type": "object",
-                      "properties": {
-                        "items": {
-                          "type": "array",
-                          "items": {
-                            "type": "object"
-                          }
-                        },
-                        "next_cursor": {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "items",
-                        "next_cursor"
-                      ],
-                      "additionalProperties": false
+                      "$ref": "#/components/schemas/LimitsView"
                     },
                     "request_id": {
                       "type": "string"
@@ -5053,7 +5017,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "$ref": "#/components/schemas/LimitsView"
                     },
                     "request_id": {
                       "type": "string"
@@ -11384,7 +11348,7 @@
         "tags": [
           "auth"
         ],
-        "description": "",
+        "description": "Wrong username or password (including unknown or disabled accounts) returns 401 invalid_credentials with a generic message. 429 rate_limited with Retry-After per client IP and account.",
         "parameters": [
           {
             "in": "header",
@@ -12399,7 +12363,7 @@
         "tags": [
           "me"
         ],
-        "description": "",
+        "description": "Revokes all sessions of the user on success. A wrong current_password returns 401 invalid_credentials and leaves the current session valid; 401 unauthenticated means the session itself is missing, expired or revoked.",
         "parameters": [
           {
             "in": "header",
@@ -12756,7 +12720,8 @@
       "session": {
         "type": "apiKey",
         "in": "cookie",
-        "name": "__Host-101cloud_session"
+        "name": "__Host-101cloud_session",
+        "description": "HttpOnly session cookie. Name depends on the CLOUD_ORIGIN scheme: https -> __Host-101cloud_session (Secure); http (local development only) -> 101cloud_session (not Secure). The CSRF browser-context cookie follows the same rule (__Host-101cloud_csrf / 101cloud_csrf)."
       }
     },
     "schemas": {
@@ -12930,7 +12895,8 @@
             "$ref": "#/components/schemas/Resources"
           },
           "gpu": {
-            "$ref": "#/components/schemas/GPURequest"
+            "$ref": "#/components/schemas/GPURequest",
+            "description": "Only count/model/access_mode/max_hourly_pt apply. count 0 opts out of GPUs on any plan, regardless of the plan's base count or gpu_count.min: model must be null, the plan's model/access_mode/price limit are not compared, and gpu_hourly_pt is 0. count > 0 requires a container plan that offers GPUs; count must equal the plan base or fit allowed_overrides.gpu_count min/max/step; model and access_mode must equal the plan's; max_hourly_pt must not exceed the plan limit; the image must be gpu_ready. Violations return 422 validation_failed."
           },
           "init_parameters": {
             "type": "object"
@@ -12974,7 +12940,8 @@
             "$ref": "#/components/schemas/Resources"
           },
           "gpu": {
-            "$ref": "#/components/schemas/GPURequest"
+            "$ref": "#/components/schemas/GPURequest",
+            "description": "Same rules as ElasticSpec.gpu: count 0 opts out of GPUs on any plan (model null, no GPU charge); count > 0 must match the plan's GPU offering."
           },
           "init_parameters": {
             "type": "object"
@@ -13117,6 +13084,28 @@
             "pattern": "^[1-9][0-9]*$"
           },
           "instance_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[1-9][0-9]*$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "node_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[1-9][0-9]*$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "user_id": {
             "anyOf": [
               {
                 "type": "string",
@@ -13692,6 +13681,60 @@
           }
         },
         "required": [
+          "max_instances",
+          "max_resident_instances",
+          "max_vcpus",
+          "max_memory_bytes",
+          "max_disk_bytes",
+          "max_gpus"
+        ],
+        "additionalProperties": false
+      },
+      "LimitsView": {
+        "description": "Effective quota object returned by GET /me (limits), GET and PUT /admin/users/{id}/limits.",
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "user_id": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "revision": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "max_instances": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_resident_instances": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_vcpus": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "max_memory_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "max_disk_bytes": {
+            "type": "string",
+            "pattern": "^[0-9]+$"
+          },
+          "max_gpus": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "id",
+          "user_id",
+          "revision",
           "max_instances",
           "max_resident_instances",
           "max_vcpus",
@@ -14315,7 +14358,8 @@
             "$ref": "#/components/schemas/Resources"
           },
           "gpu": {
-            "$ref": "#/components/schemas/GPURequest"
+            "$ref": "#/components/schemas/GPURequest",
+            "description": "Plan GPU offering; only count/model/access_mode/max_hourly_pt apply. VM plans: count 0, model null, no gpu_count override with max > 0. Container plans: model null requires count 0 and no gpu_count override max > 0; model set requires count > 0, or count 0 with allowed_overrides.gpu_count.max >= 1 (optional GPU). A plan with a model requires policy_versions.gpu-pricing. Only count > 0 requires every image to be gpu_ready. Violations return 422 validation_failed."
           },
           "image_ids": {
             "type": "array",

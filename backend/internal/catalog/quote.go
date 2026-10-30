@@ -50,7 +50,9 @@ func validResources(r Resources) error {
 	_, e := unsigned(r.DiskBytes, true)
 	return e
 }
-func validGPU(g GPURequest, typ string) error {
+
+// validGPUTerms checks the GPU fields shared by plan offerings and requests.
+func validGPUTerms(g GPURequest) error {
 	if !enum(g.AccessMode, "shared", "exclusive") {
 		return invalid("gpu.access_mode is required")
 	}
@@ -58,14 +60,53 @@ func validGPU(g GPURequest, typ string) error {
 	if e != nil || n.IsNegative() || n.Exponent() < -6 {
 		return invalid("gpu.max_hourly_pt must be a nonnegative decimal with up to six fractional digits")
 	}
-	if g.Count > 4294967295 || (typ == "virtual-machine" && g.Count != 0) {
+	if g.Count > 4294967295 {
+		return invalid("gpu.count must be a uint32")
+	}
+	if g.Model != nil && !textValid(*g.Model, 255) {
+		return invalid("gpu.model must contain 1–255 characters")
+	}
+	return nil
+}
+
+// validGPU checks an elastic request. Count 0 opts out of GPUs and needs no model.
+func validGPU(g GPURequest, typ string) error {
+	if e := validGPUTerms(g); e != nil {
+		return e
+	}
+	if typ == "virtual-machine" && g.Count != 0 {
 		return invalid("VM cannot have GPUs")
 	}
 	if g.Count == 0 && g.Model != nil {
 		return invalid("GPU model must be null when count is zero")
 	}
-	if g.Count > 0 && (g.Model == nil || !textValid(*g.Model, 255)) {
+	if g.Count > 0 && g.Model == nil {
 		return invalid("GPU model required")
+	}
+	return nil
+}
+
+// validPlanGPU checks a plan's GPU offering. A container plan with a model offers
+// GPUs by default (count > 0) or optionally (count 0 with gpu_count override max >= 1).
+// VM plans never offer GPUs.
+func validPlanGPU(g GPURequest, typ string, overrideMax uint64) error {
+	if e := validGPUTerms(g); e != nil {
+		return e
+	}
+	if typ == "virtual-machine" {
+		if g.Count != 0 || g.Model != nil || overrideMax > 0 {
+			return invalid("VM plans cannot offer GPUs")
+		}
+		return nil
+	}
+	if g.Model == nil {
+		if g.Count > 0 || overrideMax > 0 {
+			return invalid("GPU model required when the plan offers GPUs")
+		}
+		return nil
+	}
+	if g.Count == 0 && overrideMax == 0 {
+		return invalid("GPU model requires gpu.count > 0 or allowed_overrides.gpu_count.max >= 1")
 	}
 	return nil
 }
@@ -201,28 +242,29 @@ func ValidateElastic(ctx context.Context, db *gorm.DB, a *platform.App, s Create
 }
 func validateOverrides(plan platform.Row, r Resources, g GPURequest) error {
 	bounds := object(plan["allowed_overrides"])
-	values := map[string]uint64{"vcpus": r.VCPUs, "memory_bytes": mustUnsigned(r.MemoryBytes), "disk_bytes": mustUnsigned(r.DiskBytes), "gpu_count": g.Count}
-	for k, v := range values {
-		baseKey := k
-		if k == "gpu_count" {
-			baseKey = "gpu_count"
+	values := map[string]uint64{"vcpus": r.VCPUs, "memory_bytes": mustUnsigned(r.MemoryBytes), "disk_bytes": mustUnsigned(r.DiskBytes)}
+	// gpu.count 0 opts out of the plan's GPU offering and is always allowed.
+	if g.Count > 0 {
+		if platform.Text(plan["gpu_model"]) == "" || platform.Text(plan["image_type"]) != "container" {
+			return invalid("plan does not offer GPUs")
 		}
-		base := platform.Uint(plan[baseKey])
+		values["gpu_count"] = g.Count
+	}
+	for k, v := range values {
 		if b := object(bounds[k]); b != nil {
 			lo, hi := platform.Uint(b["min"]), platform.Uint(b["max"])
 			step := platform.Uint(b["step"])
 			if lo > hi || v < lo || v > hi || step == 0 || (v-lo)%step != 0 {
 				return invalid("resource outside allowed override: " + k)
 			}
-		} else if v != base {
+		} else if v != platform.Uint(plan[k]) {
 			return invalid("resource override is not allowed: " + k)
 		}
 	}
-	model := ""
-	if g.Model != nil {
-		model = *g.Model
+	if g.Count == 0 {
+		return nil
 	}
-	if model != platform.Text(plan["gpu_model"]) || g.AccessMode != platform.Text(plan["gpu_access_mode"]) {
+	if g.Model == nil || *g.Model != platform.Text(plan["gpu_model"]) || g.AccessMode != platform.Text(plan["gpu_access_mode"]) {
 		return invalid("GPU model/access mode cannot override plan")
 	}
 	limit, e := decimal.NewFromString(platform.Text(plan["gpu_max_hourly_pt"]))

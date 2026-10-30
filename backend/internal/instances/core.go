@@ -172,20 +172,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 			if v := c.Query("zone_id"); v != "" {
 				q = q.Where("node_id IN (SELECT id FROM nodes WHERE availability_zone_id=?)", v)
 			}
-			data, e := platform.List(c, a, q, []string{"product_type", "observed_state", "zone_id", "owner_user_id", "node_id"})
-			if e != nil {
-				return nil, e
-			}
-			page := data.(platform.Row)
-			items := page["items"].([]platform.Row)
-			for i, r := range items {
-				out, e := instanceView(c, a, r)
-				if e != nil {
-					return nil, e
-				}
-				items[i] = out
-			}
-			return page, nil
+			return platform.ListMap(c, a, q, []string{"product_type", "observed_state", "zone_id", "owner_user_id", "node_id"}, func(r platform.Row) (platform.Row, error) { return instanceView(c, a, r) })
 		}))
 		g.GET("/instances/:id", platform.Handle(func(c *gin.Context) (any, error) {
 			r, e := owned(c, a)
@@ -246,7 +233,8 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 			return out, nil
 		}))
 		g.GET("/tasks", platform.Handle(func(c *gin.Context) (any, error) {
-			q := platform.DB(c, a).Table("tasks").Select("id,task_type AS type,instance_id,node_id,user_id,status,phase,created_at,started_at,finished_at,error_code,revision")
+			db := platform.DB(c, a)
+			q := db.Table("tasks")
 			if !c.GetBool("admin") {
 				q = q.Where("user_id=?", platform.Current(c).ID)
 			}
@@ -258,7 +246,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 					q = q.Where(f+"=?", v)
 				}
 			}
-			return platform.List(c, a, q, []string{"instance_id", "status", "user_id", "node_id"})
+			return platform.ListMap(c, a, q, []string{"instance_id", "status", "user_id", "node_id"}, func(r platform.Row) (platform.Row, error) { return taskDTO(db, r) })
 		}))
 		g.GET("/tasks/:id", platform.Handle(func(c *gin.Context) (any, error) {
 			id, e := platform.ID(c, "id")
@@ -269,23 +257,8 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 			if e != nil {
 				return nil, e
 			}
-			out := platform.Public(r, "id", "instance_id", "status", "phase", "created_at", "started_at", "finished_at", "error_code", "revision")
-			out["type"] = platform.Text(r["task_type"])
-			var steps []platform.Row
-			if e = platform.DB(c, a).Table("task_steps").Select("step_key AS name,status,error_code,started_at,finished_at").Where("task_id=?", id).Order("id").Find(&steps).Error; e != nil {
-				return nil, e
-			}
-			safe := make([]platform.Row, 0, len(steps))
-			for _, step := range steps {
-				safe = append(safe, platform.Public(step))
-			}
-			out["steps"] = safe
-			out["next_action"] = "wait"
-			if platform.Text(r["status"]) == "unknown" {
-				out["next_action"] = "administrator_reconcile"
-			}
 			platform.SetETag(c, r)
-			return out, nil
+			return taskDTO(platform.DB(c, a), r)
 		}))
 	}
 	user.POST("/instances", platform.Handle(func(c *gin.Context) (any, error) {
@@ -621,6 +594,24 @@ func instanceView(c *gin.Context, a *platform.App, r platform.Row) (platform.Row
 		caps["start"] = false
 		caps["gpu_attach"] = false
 		caps["gpu_rebind"] = false
+	}
+	return out, nil
+}
+func taskDTO(db *gorm.DB, r platform.Row) (platform.Row, error) {
+	out := platform.Public(r, "id", "instance_id", "node_id", "user_id", "status", "phase", "created_at", "started_at", "finished_at", "error_code", "revision")
+	out["type"] = platform.Text(r["task_type"])
+	var steps []platform.Row
+	if e := db.Table("task_steps").Select("step_key AS name,status,error_code,started_at,finished_at").Where("task_id=?", r["id"]).Order("id").Find(&steps).Error; e != nil {
+		return nil, platform.WrapDB(e)
+	}
+	safe := make([]platform.Row, 0, len(steps))
+	for _, step := range steps {
+		safe = append(safe, platform.Public(step))
+	}
+	out["steps"] = safe
+	out["next_action"] = "wait"
+	if platform.Text(r["status"]) == "unknown" {
+		out["next_action"] = "administrator_reconcile"
 	}
 	return out, nil
 }

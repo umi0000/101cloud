@@ -108,11 +108,11 @@ func testCSRFRouter(a *platform.App) *gin.Engine {
 	return r
 }
 
-func getCSRF(t *testing.T, r http.Handler, session string) (string, *http.Cookie) {
+func getCSRF(t *testing.T, a *platform.App, r http.Handler, session string) (string, *http.Cookie) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "https://cloud.example/api/v1/auth/csrf", nil)
+	req := httptest.NewRequest(http.MethodGet, a.Config.Origin+"/api/v1/auth/csrf", nil)
 	if session != "" {
-		req.AddCookie(&http.Cookie{Name: sessionCookie, Value: session})
+		req.AddCookie(&http.Cookie{Name: sessionCookie(a), Value: session})
 	}
 	response := httptest.NewRecorder()
 	r.ServeHTTP(response, req)
@@ -134,8 +134,8 @@ func getCSRF(t *testing.T, r http.Handler, session string) (string, *http.Cookie
 		t.Fatal("missing CSRF token")
 	}
 	for _, cookie := range response.Result().Cookies() {
-		if cookie.Name == csrfCookie {
-			if !cookie.Secure || !cookie.HttpOnly || cookie.Path != "/" || cookie.Domain != "" || cookie.SameSite != http.SameSiteLaxMode || cookie.MaxAge != int(csrfTTL.Seconds()) {
+		if cookie.Name == csrfCookie(a) {
+			if cookie.Secure != a.Config.HTTPS() || !cookie.HttpOnly || cookie.Path != "/" || cookie.Domain != "" || cookie.SameSite != http.SameSiteLaxMode || cookie.MaxAge != int(csrfTTL.Seconds()) {
 				t.Fatalf("unsafe CSRF context cookie: %+v", cookie)
 			}
 			return envelope.Data.Token, cookie
@@ -150,8 +150,8 @@ func TestCSRFBrowserContextSessionBindingAndOrigin(t *testing.T) {
 	r := testCSRFRouter(a)
 	session := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
 	otherSession := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32))
-	token, cookie := getCSRF(t, r, session)
-	anonymousToken, anonymousCookie := getCSRF(t, r, "")
+	token, cookie := getCSRF(t, a, r, session)
+	anonymousToken, anonymousCookie := getCSRF(t, a, r, "")
 	expiredBody := strings.Repeat("A", 43) + "." + strconv.FormatInt(a.Time().Add(-time.Minute).Unix(), 10)
 	expired := expiredBody + "." + base64.RawURLEncoding.EncodeToString(keyed(a, "csrf-context:"+expiredBody))
 	for _, tc := range []struct {
@@ -187,10 +187,10 @@ func TestCSRFBrowserContextSessionBindingAndOrigin(t *testing.T) {
 				req.Header.Set("Sec-Fetch-Site", tc.fetchSite)
 			}
 			if tc.context != "" {
-				req.AddCookie(&http.Cookie{Name: csrfCookie, Value: tc.context})
+				req.AddCookie(&http.Cookie{Name: csrfCookie(a), Value: tc.context})
 			}
 			if tc.session != "" {
-				req.AddCookie(&http.Cookie{Name: sessionCookie, Value: tc.session})
+				req.AddCookie(&http.Cookie{Name: sessionCookie(a), Value: tc.session})
 			}
 			response := httptest.NewRecorder()
 			r.ServeHTTP(response, req)
@@ -199,6 +199,37 @@ func TestCSRFBrowserContextSessionBindingAndOrigin(t *testing.T) {
 			}
 			if tc.status == 403 && !strings.Contains(response.Body.String(), `"code":"csrf_failed"`) {
 				t.Fatalf("wrong rejection: %s", response.Body.String())
+			}
+		})
+	}
+}
+
+// Plain-http origins (local dev) must not depend on Secure/__Host- cookies, which
+// browsers refuse to store there, while keeping the same Origin and token checks.
+func TestHTTPOriginUsesUnprefixedNonSecureCookies(t *testing.T) {
+	a := platform.New(nil, platform.Config{Origin: "http://localhost:5555", MasterKey: bytes.Repeat([]byte{7}, 32), SessionTTL: 8 * time.Hour})
+	r := testCSRFRouter(a)
+	if sessionCookie(a) != "101cloud_session" || csrfCookie(a) != "101cloud_csrf" {
+		t.Fatalf("http cookie names: %s %s", sessionCookie(a), csrfCookie(a))
+	}
+	token, cookie := getCSRF(t, a, r, "")
+	for _, tc := range []struct {
+		name, origin, cookieName string
+		status                   int
+	}{
+		{"same http origin", a.Config.Origin, cookie.Name, 204},
+		{"https variant of origin", "https://localhost:5555", cookie.Name, 403},
+		{"prefixed cookie name", a.Config.Origin, "__Host-101cloud_csrf", 403},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, a.Config.Origin+"/api/v1/probe", nil)
+			req.Header.Set("Origin", tc.origin)
+			req.Header.Set("X-CSRF-Token", token)
+			req.AddCookie(&http.Cookie{Name: tc.cookieName, Value: cookie.Value})
+			response := httptest.NewRecorder()
+			r.ServeHTTP(response, req)
+			if response.Code != tc.status {
+				t.Fatalf("status=%d want=%d body=%s", response.Code, tc.status, response.Body.String())
 			}
 		})
 	}

@@ -25,8 +25,17 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-const sessionCookie = "__Host-101cloud_session"
-const csrfCookie = "__Host-101cloud_csrf"
+// https origins get __Host- cookies; plain http (e.g. local dev) cannot store
+// Secure/__Host- cookies, so it uses unprefixed names without Secure.
+func cookieName(a *platform.App, base string) string {
+	if a.Config.HTTPS() {
+		return "__Host-" + base
+	}
+	return base
+}
+func sessionCookie(a *platform.App) string { return cookieName(a, "101cloud_session") }
+func csrfCookie(a *platform.App) string    { return cookieName(a, "101cloud_csrf") }
+
 const csrfTTL = 30 * time.Minute
 
 // Only token hashes are persisted. Session validity always includes current user state.
@@ -39,7 +48,7 @@ type identity struct {
 
 func Middleware(a *platform.App) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		token, err := c.Cookie(sessionCookie)
+		token, err := c.Cookie(sessionCookie(a))
 		if err != nil || !validToken(token) {
 			platform.Fail(c, unauthenticated())
 			c.Abort()
@@ -52,7 +61,7 @@ func Middleware(a *platform.App) gin.HandlerFunc {
 			Joins("JOIN users u ON u.id = s.user_id").
 			Where("s.token_hash = ? AND s.revoked_at IS NULL AND s.expires_at > ? AND u.status = ?", hash[:], a.Time(), "active").Take(&u)
 		if errors.Is(result.Error, gorm.ErrRecordNotFound) {
-			clearCookie(c, sessionCookie)
+			clearCookie(c, a, sessionCookie(a))
 			platform.Fail(c, unauthenticated())
 			c.Abort()
 			return
@@ -96,7 +105,7 @@ func CSRF(a *platform.App) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		cookie, err := c.Cookie(csrfCookie)
+		cookie, err := c.Cookie(csrfCookie(a))
 		supplied := c.GetHeader("X-CSRF-Token")
 		if err != nil || !validCSRFContext(a, cookie) || !hmac.Equal([]byte(supplied), []byte(csrfToken(a, c, cookie))) {
 			platform.Fail(c, platform.E(403, "csrf_failed", "CSRF token is missing or expired"))
@@ -113,13 +122,13 @@ func Register(a *platform.App, api, user, admin *gin.RouterGroup) {
 			return nil, platform.E(403, "csrf_failed", "Origin validation failed")
 		}
 		c.Header("Cache-Control", "no-store")
-		context, err := c.Cookie(csrfCookie)
+		context, err := c.Cookie(csrfCookie(a))
 		if err != nil || !validCSRFContext(a, context) {
 			context, err = newCSRFContext(a)
 			if err != nil {
 				return nil, err
 			}
-			setCookie(c, csrfCookie, context, int(csrfTTL.Seconds()))
+			setCookie(c, a, csrfCookie(a), context, int(csrfTTL.Seconds()))
 		}
 		return gin.H{"csrf_token": csrfToken(a, c, context)}, nil
 	}))
@@ -136,8 +145,7 @@ func Register(a *platform.App, api, user, admin *gin.RouterGroup) {
 		if err != nil {
 			return nil, platform.WrapDB(err)
 		}
-		clearCookie(c, sessionCookie)
-		clearCookie(c, csrfCookie)
+		clearSessionCookies(c, a)
 		noContent(c)
 		return nil, nil
 	}))
@@ -208,7 +216,7 @@ func login(c *gin.Context, a *platform.App) (any, error) {
 		if platform.Text(user["status"]) != "active" || !hmac.Equal(bytesOf(user["password_hash"]), existing.PasswordHash) {
 			return invalidCredentials()
 		}
-		if old, e := c.Cookie(sessionCookie); e == nil && validToken(old) {
+		if old, e := c.Cookie(sessionCookie(a)); e == nil && validToken(old) {
 			h := sha256.Sum256([]byte(old))
 			if e = tx.Table("user_sessions").Where("token_hash = ? AND revoked_at IS NULL", h[:]).Updates(map[string]any{"revoked_at": now, "revision": gorm.Expr("revision + 1")}).Error; e != nil {
 				return platform.WrapDB(e)
@@ -239,8 +247,8 @@ func login(c *gin.Context, a *platform.App) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	setCookie(c, sessionCookie, token, int(ttl.Seconds()))
-	setCookie(c, csrfCookie, context, int(csrfTTL.Seconds()))
+	setCookie(c, a, sessionCookie(a), token, int(ttl.Seconds()))
+	setCookie(c, a, csrfCookie(a), context, int(csrfTTL.Seconds()))
 	// csrfToken reads the old request cookie, so explicitly bind the rotated token.
 	return gin.H{"user": userDTO(user), "csrf_token": csrfFor(a, context, token)}, nil
 }
@@ -299,7 +307,7 @@ func validCSRFContext(a *platform.App, value string) bool {
 	return err == nil && hmac.Equal(sig, keyed(a, "csrf-context:"+parts[0]+"."+parts[1]))
 }
 func csrfToken(a *platform.App, c *gin.Context, context string) string {
-	token, _ := c.Cookie(sessionCookie)
+	token, _ := c.Cookie(sessionCookie(a))
 	return csrfFor(a, context, token)
 }
 func csrfFor(a *platform.App, context, token string) string {
@@ -324,19 +332,25 @@ func validToken(token string) bool {
 	b, err := base64.RawURLEncoding.DecodeString(token)
 	return err == nil && len(b) == 32 && base64.RawURLEncoding.EncodeToString(b) == token
 }
-func setCookie(c *gin.Context, name, value string, age int) {
-	http.SetCookie(c.Writer, &http.Cookie{Name: name, Value: value, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: age, Expires: time.Now().Add(time.Duration(age) * time.Second)})
+func setCookie(c *gin.Context, a *platform.App, name, value string, age int) {
+	http.SetCookie(c.Writer, &http.Cookie{Name: name, Value: value, Path: "/", Secure: a.Config.HTTPS(), HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: age, Expires: time.Now().Add(time.Duration(age) * time.Second)})
 }
-func clearCookie(c *gin.Context, name string) {
-	http.SetCookie(c.Writer, &http.Cookie{Name: name, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1, Expires: time.Unix(1, 0)})
+func clearCookie(c *gin.Context, a *platform.App, name string) {
+	http.SetCookie(c.Writer, &http.Cookie{Name: name, Path: "/", Secure: a.Config.HTTPS(), HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1, Expires: time.Unix(1, 0)})
+}
+func clearSessionCookies(c *gin.Context, a *platform.App) {
+	clearCookie(c, a, sessionCookie(a))
+	clearCookie(c, a, csrfCookie(a))
 }
 func noContent(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 	c.Writer.WriteHeaderNow()
 }
 func unauthenticated() error { return platform.E(401, "unauthenticated", "Authentication required") }
+
+// Wrong username/password or current password; deliberately does not reveal which.
 func invalidCredentials() error {
-	return platform.E(401, "unauthenticated", "Invalid username or password")
+	return platform.E(401, "invalid_credentials", "Invalid username or password")
 }
 func validation(message string) error { return platform.E(422, "validation_failed", message) }
 func bytesOf(v any) []byte {

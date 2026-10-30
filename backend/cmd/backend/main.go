@@ -65,6 +65,9 @@ func run() error {
 			slog.Warn("initial administrator created; save these credentials and change the password after login; restrict access to this log", "username", initial.Username, "password", initial.Password)
 			initial.Password = ""
 		}
+		if !cfg.HTTPS() {
+			slog.Warn("CLOUD_ORIGIN uses plain http: passwords, session and CSRF cookies travel unencrypted and cookies are not Secure; use only for local development", "origin", cfg.Origin)
+		}
 		router := server.Router(a)
 		httpServer := &http.Server{Addr: cfg.Listen, Handler: router, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 90 * time.Second, MaxHeaderBytes: 32 << 10}
 		workerDone := make(chan struct{})

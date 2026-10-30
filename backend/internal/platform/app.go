@@ -29,6 +29,7 @@ type Config struct {
 	ConsoleTTL           time.Duration
 	ConsoleMaxConcurrent int
 	NodeAllowCIDRs       []netip.Prefix
+	TrustedProxies       []netip.Prefix
 }
 
 type User struct {

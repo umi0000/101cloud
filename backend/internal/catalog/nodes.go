@@ -35,7 +35,6 @@ type nodeAllocatable struct {
 	ResidentDiskBytes   string  `json:"resident_disk_bytes"`
 }
 
-const nodePublicColumns = "id, availability_zone_id AS zone_id, name, agent_endpoint AS endpoint, LOWER(HEX(server_cert_sha256)) AS server_cert_sha256, TRUE AS has_credentials, key_version, default_storage_pool AS storage_pool, default_project_name AS project_name, allocatable_vcpus, allocatable_memory_bytes, allocatable_disk_bytes, resident_vcpu_budget, resident_memory_budget_bytes, resident_disk_budget_bytes, administrative_state, health, connection_verified_at, resources_sampled_at, last_heartbeat_at, revision, created_at, updated_at"
 const nodeGPUColumns = "node_gpus.id, node_gpus.node_id, node_gpus.uuid, node_gpus.model, node_gpus.pci_address, node_gpus.memory_mib, node_gpus.max_allocations, node_gpus.gpu_price_version_id, node_gpus.status, node_gpus.last_seen_at, node_gpus.revision, node_gpus.created_at, node_gpus.updated_at, (SELECT COUNT(*) FROM gpu_allocations ga WHERE ga.gpu_id=node_gpus.id AND ga.active_slot=1) AS allocation_count, (SELECT COUNT(*) FROM gpu_allocations ga WHERE ga.gpu_id=node_gpus.id AND ga.status='reserved') AS reservation_count"
 
 func registerNodes(a *platform.App, admin *gin.RouterGroup) {
@@ -44,7 +43,7 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 	a.RegisterReconciler("node.probe", nodeInventoryJob)
 	a.RegisterReconciler("node.drain", nodeInventoryJob)
 	admin.GET("/nodes", platform.Handle(func(c *gin.Context) (any, error) {
-		q := platform.DB(c, a).Table("nodes").Select(nodePublicColumns)
+		q := platform.DB(c, a).Table("nodes")
 		var err error
 		if q, err = listFilterID(c, q, "zone_id", "availability_zone_id"); err != nil {
 			return nil, err
@@ -57,15 +56,7 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 				q = q.Where(f+" = ?", s)
 			}
 		}
-		result, err := platform.List(c, a, q, []string{"zone_id", "administrative_state", "health"})
-		if err != nil {
-			return nil, err
-		}
-		page := result.(platform.Row)
-		for _, row := range page["items"].([]platform.Row) {
-			nodeListDTO(row)
-		}
-		return page, nil
+		return listDTO(c, a, q, []string{"zone_id", "administrative_state", "health"}, nodeDTO)
 	}))
 	admin.POST("/nodes", platform.Handle(func(c *gin.Context) (any, error) {
 		var in struct {
@@ -261,28 +252,10 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 		if e != nil {
 			return nil, e
 		}
-		q := platform.DB(c, a).Table("node_gpus").Select(nodeGPUColumns).Where("node_gpus.node_id = ?", id)
-		result, e := platform.List(c, a, q, nil)
-		if e != nil {
-			return nil, e
-		}
-		observations := map[string]any{}
+		db := platform.DB(c, a)
+		q := db.Table("node_gpus").Select(nodeGPUColumns).Where("node_gpus.node_id = ?", id)
 		resources := nodeResources(n["resources"])
-		if gpus, ok := resources["gpus"].([]any); ok {
-			for _, v := range gpus {
-				if g, ok := v.(map[string]any); ok {
-					observations[strings.ToLower(platform.Text(g["uuid"]))] = g
-				}
-			}
-		}
-		page := result.(platform.Row)
-		for _, row := range page["items"].([]platform.Row) {
-			row["observation"] = observations[strings.ToLower(platform.Text(row["uuid"]))]
-			row["quality"] = nodeQuality(n)
-			row["observed_at"] = nodeTime(n["resources_sampled_at"])
-			row["health"] = nodeGPUHealth(row, n)
-		}
-		return page, nil
+		return platform.ListMap(c, a, q, nil, func(r platform.Row) (platform.Row, error) { return nodeGPUDTO(db, r, n, resources) })
 	}))
 	admin.GET("/nodes/:id/gpus/:gpu_id", platform.Handle(func(c *gin.Context) (any, error) {
 		r, n, e := nodeGPU(c, a, false)
@@ -290,7 +263,7 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 			return nil, e
 		}
 		platform.SetETag(c, r)
-		return nodeGPUDTO(r, n), nil
+		return nodeGPUDTO(platform.DB(c, a), r, n, nodeResources(n["resources"]))
 	}))
 	admin.PATCH("/nodes/:id/gpus/:gpu_id", platform.Handle(func(c *gin.Context) (any, error) {
 		var in struct {
@@ -327,10 +300,11 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 		if max < uint64(used) {
 			return nil, platform.E(409, "gpu_in_use", "allocation limit cannot be below active, reserved, releasing or unknown allocations")
 		}
+		// gpu_price_version_id is a gpu-pricing policy_versions ID externally;
+		// node_gpus references the legacy gpu_price_versions source row.
 		priceID := platform.Uint(r["gpu_price_version_id"])
 		if in.PriceID != nil {
-			priceID, e = platform.IDString(*in.PriceID)
-			if e != nil {
+			if _, priceID, e = platform.PolicySource(platform.DB(c, a), "gpu-pricing", *in.PriceID, true); e != nil {
 				return nil, e
 			}
 			changes["gpu_price_version_id"] = priceID
@@ -373,7 +347,7 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 		}
 		saved["reservation_count"] = uint64(reserved)
 		platform.SetETag(c, saved)
-		return nodeGPUDTO(saved, n), nil
+		return nodeGPUDTO(platform.DB(c, a), saved, n, nodeResources(n["resources"]))
 	}))
 	admin.GET("/nodes/:id/unmanaged-instances", platform.Handle(func(c *gin.Context) (any, error) {
 		id, e := platform.ID(c, "id")
@@ -385,7 +359,11 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 		}
 		q := platform.DB(c, a).Table("node_unmanaged_instances").Select("id,node_id,project_name,incus_name,incus_uuid,instance_type,architecture,observed_state,config,observed_at,revision,created_at,updated_at").Where("node_id = ?", id)
 		q = q.Where("NOT EXISTS (SELECT 1 FROM instances i WHERE i.node_id=node_unmanaged_instances.node_id AND i.deleted_at IS NULL AND ((i.project_name=node_unmanaged_instances.project_name AND i.incus_name=node_unmanaged_instances.incus_name) OR (i.incus_uuid IS NOT NULL AND i.incus_uuid=node_unmanaged_instances.incus_uuid)))")
-		return platform.List(c, a, q, nil)
+		return listDTO(c, a, q, nil, func(r platform.Row) platform.Row {
+			out := platform.Public(r)
+			out["config"] = jsonValue(r["config"])
+			return out
+		})
 	}))
 }
 
@@ -573,14 +551,18 @@ func nodeGPU(c *gin.Context, a *platform.App, lock bool) (platform.Row, platform
 	r["reservation_count"] = counts.ReservationCount
 	return r, n, nil
 }
-func nodeGPUDTO(r, n platform.Row) platform.Row {
-	p := platform.Public(r, "id", "node_id", "uuid", "model", "pci_address", "memory_mib", "max_allocations", "gpu_price_version_id", "status", "last_seen_at", "revision", "created_at", "updated_at")
+func nodeGPUDTO(db *gorm.DB, r, n platform.Row, resources map[string]any) (platform.Row, error) {
+	p := platform.Public(r, "id", "node_id", "uuid", "model", "pci_address", "memory_mib", "max_allocations", "status", "last_seen_at", "revision", "created_at", "updated_at")
+	price, e := platform.PolicyID(db, "gpu-pricing", r["gpu_price_version_id"])
+	if e != nil {
+		return nil, e
+	}
+	p["gpu_price_version_id"] = price
 	p["allocation_count"] = platform.Uint(r["allocation_count"])
 	p["reservation_count"] = platform.Uint(r["reservation_count"])
 	p["observed_at"] = nodeTime(n["resources_sampled_at"])
 	p["quality"] = nodeQuality(n)
 	p["observation"] = nil
-	resources := nodeResources(n["resources"])
 	if gpus, ok := resources["gpus"].([]any); ok {
 		for _, v := range gpus {
 			g, ok := v.(map[string]any)
@@ -591,7 +573,7 @@ func nodeGPUDTO(r, n platform.Row) platform.Row {
 		}
 	}
 	p["health"] = nodeGPUHealth(p, n)
-	return p
+	return p, nil
 }
 
 func nodeGPUObservedHealthy(r, n platform.Row) bool {
@@ -611,14 +593,6 @@ func nodeGPUObservedHealthy(r, n platform.Row) bool {
 	return false
 }
 
-func nodeListDTO(p platform.Row) {
-	p["connection"] = platform.Row{"endpoint": p["endpoint"], "server_cert_sha256": p["server_cert_sha256"], "has_credentials": true, "key_version": p["key_version"]}
-	p["defaults"] = platform.Row{"storage_pool": p["storage_pool"], "project_name": p["project_name"]}
-	p["allocatable"] = platform.Row{"vcpus": platform.Uint(p["allocatable_vcpus"]), "memory_bytes": p["allocatable_memory_bytes"], "disk_bytes": p["allocatable_disk_bytes"], "resident_vcpus": platform.Uint(p["resident_vcpu_budget"]), "resident_memory_bytes": p["resident_memory_budget_bytes"], "resident_disk_bytes": p["resident_disk_budget_bytes"]}
-	for _, key := range []string{"endpoint", "server_cert_sha256", "has_credentials", "key_version", "storage_pool", "project_name", "allocatable_vcpus", "allocatable_memory_bytes", "allocatable_disk_bytes", "resident_vcpu_budget", "resident_memory_budget_bytes", "resident_disk_budget_bytes"} {
-		delete(p, key)
-	}
-}
 func nodeGPUHealth(r, n platform.Row) string {
 	if platform.Text(n["health"]) != "online" || platform.Stamp(n["connection_verified_at"]).IsZero() {
 		return "unknown"

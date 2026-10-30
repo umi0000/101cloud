@@ -17,7 +17,16 @@ import (
 func Router(a *platform.App) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	_ = r.SetTrustedProxies(nil)
+	// X-Forwarded-For is honored only when the TCP peer is a configured proxy;
+	// X-Real-IP is ignored so a single proxy contract applies.
+	var proxies []string
+	for _, p := range a.Config.TrustedProxies {
+		proxies = append(proxies, p.String())
+	}
+	r.RemoteIPHeaders = []string{"X-Forwarded-For"}
+	if e := r.SetTrustedProxies(proxies); e != nil {
+		panic("trusted proxies were validated at config load: " + e.Error())
+	}
 	r.Use(platform.RequestMiddleware())
 	r.Use(gin.CustomRecovery(func(c *gin.Context, _ any) { platform.Fail(c, platform.E(500, "internal_error", "request failed")) }))
 	api := r.Group("/api/v1")

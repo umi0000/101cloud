@@ -85,17 +85,20 @@ func registerMe(a *platform.App, user *gin.RouterGroup) {
 		if err := revokeAll(platform.DB(c, a), a, platform.Current(c).ID); err != nil {
 			return nil, err
 		}
-		clearCookie(c, sessionCookie)
-		clearCookie(c, csrfCookie)
+		clearSessionCookies(c, a)
 		noContent(c)
 		return nil, nil
 	}))
 	user.GET("/me/sessions", platform.Handle(func(c *gin.Context) (any, error) {
 		current := platform.Current(c)
 		query := platform.DB(c, a).Table("user_sessions").
-			Select("id,revision,created_at,expires_at,(id = ?) AS is_current", current.SessionID).
+			Select("id,revision,created_at,expires_at").
 			Where("user_id = ? AND revoked_at IS NULL AND expires_at > ?", current.ID, a.Time())
-		return platform.List(c, a, query, nil)
+		return platform.ListMap(c, a, query, nil, func(r platform.Row) (platform.Row, error) {
+			out := platform.Public(r)
+			out["is_current"] = platform.Uint(r["id"]) == current.SessionID
+			return out, nil
+		})
 	}))
 	user.DELETE("/me/sessions/:session_id", platform.Handle(func(c *gin.Context) (any, error) {
 		id, err := platform.ID(c, "session_id")
@@ -113,8 +116,7 @@ func registerMe(a *platform.App, user *gin.RouterGroup) {
 			return nil, err
 		}
 		if id == platform.Current(c).SessionID {
-			clearCookie(c, sessionCookie)
-			clearCookie(c, csrfCookie)
+			clearSessionCookies(c, a)
 		}
 		noContent(c)
 		return nil, nil
@@ -303,8 +305,7 @@ func registerAdmin(a *platform.App, admin *gin.RouterGroup) {
 			return nil, err
 		}
 		if id == platform.Current(c).ID {
-			clearCookie(c, sessionCookie)
-			clearCookie(c, csrfCookie)
+			clearSessionCookies(c, a)
 		}
 		noContent(c)
 		return nil, nil
@@ -384,7 +385,7 @@ func getLimits(db *gorm.DB, userID uint64, lock bool) (platform.Row, error) {
 	return row, nil
 }
 func limitsDTO(row platform.Row) gin.H {
-	return gin.H{"id": strconv.FormatUint(platform.Uint(row["id"]), 10), "user_id": strconv.FormatUint(platform.Uint(row["user_id"]), 10), "revision": platform.Uint(row["revision"]), "max_instances": platform.Uint(row["max_instances"]), "max_resident_instances": platform.Uint(row["max_resident_instances"]), "max_vcpus": platform.Uint(row["max_vcpus"]), "max_memory_bytes": strconv.FormatUint(platform.Uint(row["max_memory_bytes"]), 10), "max_disk_bytes": strconv.FormatUint(platform.Uint(row["max_disk_bytes"]), 10), "max_gpus": platform.Uint(row["max_gpu_allocations"])}
+	return gin.H{"id": strconv.FormatUint(platform.Uint(row["id"]), 10), "user_id": strconv.FormatUint(platform.Uint(row["user_id"]), 10), "revision": strconv.FormatUint(platform.Uint(row["revision"]), 10), "max_instances": platform.Uint(row["max_instances"]), "max_resident_instances": platform.Uint(row["max_resident_instances"]), "max_vcpus": platform.Uint(row["max_vcpus"]), "max_memory_bytes": strconv.FormatUint(platform.Uint(row["max_memory_bytes"]), 10), "max_disk_bytes": strconv.FormatUint(platform.Uint(row["max_disk_bytes"]), 10), "max_gpus": platform.Uint(row["max_gpu_allocations"])}
 }
 func permissions(row platform.Row) []string {
 	effective := []string{"catalog:read", "instances:own", "requests:own", "billing:own", "sessions:own", "profile:own"}

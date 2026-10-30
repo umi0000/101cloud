@@ -94,8 +94,14 @@ func detail(c *gin.Context, a *platform.App, table string) (platform.Row, error)
 func listProducts(c *gin.Context, a *platform.App, q *gorm.DB, filters []string) (any, error) {
 	return platform.List(c, a, q, filters)
 }
+
+// listDTO pages full rows through the resource's detail DTO.
+func listDTO(c *gin.Context, a *platform.App, q *gorm.DB, filters []string, dto func(platform.Row) platform.Row) (any, error) {
+	return platform.ListMap(c, a, q, filters, func(r platform.Row) (platform.Row, error) { return dto(r), nil })
+}
 func imageDTO(r platform.Row) platform.Row {
-	p := platform.Public(r, "id", "code", "version", "name", "architecture", "gpu_ready", "os_name", "os_release", "status", "revision", "created_at", "updated_at")
+	p := platform.Public(r, "id", "code", "version", "name", "architecture", "os_name", "os_release", "status", "revision", "created_at", "updated_at")
+	p["gpu_ready"] = platform.Bool(r["gpu_ready"])
 	p["instance_type"] = platform.Text(r["image_type"])
 	p["fingerprint"] = hex.EncodeToString([]byte(platform.Text(r["fingerprint"])))
 	p["properties"] = jsonValue(r["properties"])
@@ -108,7 +114,12 @@ func templateDTO(r platform.Row) platform.Row {
 	return p
 }
 func planDTO(db *gorm.DB, r platform.Row) (platform.Row, error) {
-	p := platform.Public(r, "id", "code", "version", "name", "status", "pricing_version_id", "init_template_version_id", "revision", "created_at", "updated_at")
+	p := platform.Public(r, "id", "code", "version", "name", "status", "init_template_version_id", "revision", "created_at", "updated_at")
+	pricing, e := platform.PolicyID(db, "pricing", r["pricing_version_id"])
+	if e != nil {
+		return nil, e
+	}
+	p["pricing_version_id"] = pricing
 	p["zone_id"] = strconv.FormatUint(platform.Uint(r["availability_zone_id"]), 10)
 	p["instance_type"] = platform.Text(r["image_type"])
 	p["resources"] = Resources{VCPUs: platform.Uint(r["vcpus"]), MemoryBytes: platform.Text(r["memory_bytes"]), DiskBytes: platform.Text(r["disk_bytes"])}
