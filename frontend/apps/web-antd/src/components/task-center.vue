@@ -2,8 +2,10 @@
 import { Badge, Button, Drawer, Empty, Tooltip } from 'ant-design-vue';
 
 import { TASK_TYPES } from '#/locales/enums';
+import { describeTaskError } from '#/locales/errors';
 import { useTaskStore } from '#/store/tasks';
 
+import ErrorFeedback from './error-feedback.vue';
 import StatusTag from './status-tag.vue';
 import TimeText from './time-text.vue';
 
@@ -39,11 +41,17 @@ const tasks = useTaskStore();
       <div v-if="t.task?.status === 'unknown'" class="mt-2 text-xs text-orange-500">
         结果待核对，不会自动重新发起操作。可在"管理 / 任务"中请求核对。
       </div>
-      <div v-if="t.task?.error_code" class="mt-2 font-mono text-xs text-red-500">{{ t.task.error_code }}</div>
+      <ErrorFeedback v-if="t.task" class="mt-2" :feedback="describeTaskError(t.task, t.requestId)" />
+      <div v-if="t.task?.status === 'failed'" class="text-muted-foreground mt-2 text-xs">
+        任务已失败，不会自动重试。请先处理原因，再决定是否重新提交。
+      </div>
       <div v-if="t.task?.steps?.length" class="mt-2 space-y-1">
-        <div v-for="s in t.task.steps" :key="s.name" class="flex items-center justify-between text-xs">
-          <span class="font-mono">{{ s.name }}</span>
-          <StatusTag kind="task" :value="s.status" />
+        <div v-for="s in t.task.steps" :key="s.name" class="text-xs">
+          <div class="flex items-center justify-between">
+            <span class="font-mono">{{ s.name }}</span>
+            <StatusTag kind="task" :value="s.status" />
+          </div>
+          <ErrorFeedback :feedback="describeTaskError(s, t.requestId)" />
         </div>
       </div>
     </div>

@@ -65,6 +65,60 @@ func AdmitInstance(ctx context.Context, db *gorm.DB, instance row, action string
 	}
 	return nil
 }
+
+// CancelUnprovisionedInstance is only for a creation proven never dispatched by
+// the caller, with guest absence, instance ownership and a live task lease checked
+// in the same transaction. It releases held funds through the existing ledger;
+// it never settles, refunds, deletes history or treats a running guest as stopped.
+func CancelUnprovisionedInstance(ctx context.Context, db *gorm.DB, instance row) error {
+	db = db.WithContext(ctx)
+	ac, e := account(db, platform.Uint(instance["user_id"]), false)
+	if e != nil {
+		return e
+	}
+	ss, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id"), "usage_sessions", "instance_id = ?", instance["id"])
+	if e != nil {
+		return e
+	}
+	for _, s := range ss {
+		if !pristineCreationSession(s, instance, ac) {
+			return conflict("invalid_state", "创建资源的计费记录已有使用证据，预留暂不释放；请管理员核对。")
+		}
+		var charged int64
+		if e = db.Table("usage_charges").Where("session_id = ?", s["id"]).Count(&charged).Error; e != nil {
+			return e
+		}
+		if charged != 0 {
+			return conflict("invalid_state", "创建资源已有计费区间，预留暂不释放；请管理员核对。")
+		}
+		rs, err := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id"), "credit_reservations", "session_id = ?", s["id"])
+		if err != nil {
+			return err
+		}
+		for _, reservation := range rs {
+			if platform.Uint(reservation["account_id"]) != platform.Uint(ac["id"]) || platform.Text(reservation["status"]) != "held" || !dec(reservation["settled_pt"]).IsZero() || !dec(reservation["released_pt"]).IsZero() {
+				return conflict("invalid_state", "计费预留已有结算或释放记录，请管理员核对后处理。")
+			}
+		}
+	}
+	t := now()
+	for _, s := range ss {
+		if e = releaseReservations(db, s, t); e != nil {
+			return e
+		}
+		if e = db.Table("usage_sessions").Where("id = ?", s["id"]).Updates(row{"status": "ended", "ended_at": t, "revision": gorm.Expr("revision+1")}).Error; e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+func pristineCreationSession(s, instance, ac row) bool {
+	kind, state := platform.Text(s["charge_kind"]), platform.Text(s["metering_state"])
+	// Admission starts retained-storage clocks before a guest exists. These may
+	// be cancelled only without any metering/charge history and caller absence proof.
+	return platform.Uint(s["account_id"]) == platform.Uint(ac["id"]) && platform.Uint(s["user_id"]) == platform.Uint(instance["user_id"]) && platform.Uint(s["node_id"]) == platform.Uint(instance["node_id"]) && platform.Uint(s["instance_id"]) == platform.Uint(instance["id"]) && platform.Text(s["status"]) == "active" && s["ended_at"] == nil && platform.Uint(s["metered_microseconds"]) == 0 && dec(s["cumulative_expected_pt"]).IsZero() && stamp(s["started_at"]).Equal(stamp(s["last_settled_at"])) && ((state == "held" && (kind == "base_compute" || kind == "gpu")) || (state == "running" && kind == "storage"))
+}
 func InstanceUsage(ctx context.Context, db *gorm.DB, instance row, event string, allocationIDs []uint64) error {
 	if !in(event, "disk_reserved", "running", "stopped", "deleted", "resize", "resize_reserved", "gpu_reserved", "gpu_attached", "gpu_released") {
 		return invalid("unsupported usage lifecycle event")

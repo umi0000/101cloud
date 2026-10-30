@@ -154,4 +154,50 @@ func TestMySQLPoolRangeEditing(t *testing.T) {
 	if err := db.Table("ip_addresses").Where("network_pool_id=1 AND address=INET6_ATON('192.0.2.116') AND status='available'").Count(&inventory).Error; err != nil || inventory != 1 {
 		t.Fatalf("range editing changed inventory: %d %v", inventory, err)
 	}
+	etag, _ = get()
+	for _, tc := range []struct {
+		body, reason string
+		status       int
+	}{
+		{`{"addresses":["192.0.2.50","192.0.2.116"]}`, "already_registered", 409},
+		{`{"addresses":["192.0.2.50","192.0.2.50"]}`, "duplicate_in_batch", 422},
+		{`{"addresses":["192.0.2.50","192.0.2.1"]}`, "gateway", 422},
+		{`{"addresses":["192.0.2.50","192.0.2.0"]}`, "reserved_address", 422},
+		{`{"addresses":["192.0.2.50","192.0.2.255"]}`, "reserved_address", 422},
+		{`{"addresses":["192.0.2.50","192.0.2.117"]}`, "outside_range", 422},
+		{`{"addresses":["192.0.2.50","192.0.3.5"]}`, "outside_subnet", 422},
+		{`{"addresses":["192.0.2.50","invalid"]}`, "invalid_address", 422},
+	} {
+		w = call(http.MethodPost, "/network-pools/1/addresses", tc.body, etag)
+		var failure struct {
+			Error struct {
+				Code    string `json:"code"`
+				Details struct {
+					Reason string `json:"reason"`
+					Field  string `json:"field"`
+				} `json:"details"`
+			} `json:"error"`
+		}
+		if err = json.Unmarshal(w.Body.Bytes(), &failure); err != nil {
+			t.Fatal(err)
+		}
+		if w.Code != tc.status || failure.Error.Details.Reason != tc.reason || failure.Error.Details.Field != "addresses[1]" {
+			t.Fatalf("incorrect batch rejection: %d %s", w.Code, w.Body.String())
+		}
+		wantCode := "invalid_network"
+		if tc.status == 409 {
+			wantCode = "configuration_conflict"
+		}
+		if failure.Error.Code != wantCode {
+			t.Fatalf("changed stable error code: %s", w.Body.String())
+		}
+		unchanged, _ := get()
+		if unchanged != etag {
+			t.Fatalf("rejected batch changed pool revision: %s -> %s", etag, unchanged)
+		}
+		var total int64
+		if err = db.Table("ip_addresses").Where("network_pool_id=1").Count(&total).Error; err != nil || total != 1 {
+			t.Fatalf("partial batch was persisted: %d %v", total, err)
+		}
+	}
 }

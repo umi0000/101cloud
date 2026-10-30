@@ -10,6 +10,7 @@ import type { IDisposable } from '@xterm/xterm';
 import type RFB from '@novnc/novnc';
 
 import type { ConsoleKind, ConsoleSession, Instance } from '#/api/types';
+import type { ErrorText } from '#/locales/errors';
 
 import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 
@@ -20,6 +21,7 @@ import { Alert, Button, Drawer, RadioButton, RadioGroup, Space, Spin } from 'ant
 import { consoleApi } from '#/api/backend';
 import { ApiError, newIdempotencyKey, websocketURL } from '#/api/request';
 import ConfirmAction from '#/components/confirm-action.vue';
+import ErrorFeedback from '#/components/error-feedback.vue';
 import { errorToast, useAction } from '#/composables/api';
 import { enumLabel } from '#/locales/enums';
 import { describeError } from '#/locales/errors';
@@ -35,7 +37,7 @@ const confirmOpen = ref(false);
 const drawerOpen = ref(false);
 const kind = ref<ConsoleKind>('terminal');
 const phase = ref<Phase>('preparing');
-const notice = ref('');
+const notice = ref<ErrorText | string>('');
 const session = shallowRef<ConsoleSession | null>(null);
 const termEl = ref<HTMLDivElement>();
 const vncEl = ref<HTMLDivElement>();
@@ -168,7 +170,7 @@ async function waitReady(initial: ConsoleSession, mine: number) {
       session.value = s;
     }
   } catch (error) {
-    return fail(mine, describeError(error).text);
+    return fail(mine, describeError(error));
   }
   if (s.status !== 'ready') return fail(mine, `会话${enumLabel('consoleStatus', s.status).text}，请重新连接`);
   await openSocket(s, mine);
@@ -254,7 +256,7 @@ function onClose(mine: number, code: number) {
   inputs = [];
 }
 
-function fail(mine: number, text: string) {
+function fail(mine: number, text: ErrorText | string) {
   if (mine !== gen) return;
   phase.value = 'failed';
   notice.value = text;
@@ -360,9 +362,13 @@ function sendCtrlAltDel() {
     <Alert
       v-if="notice"
       banner
-      :message="notice"
+      :message="typeof notice === 'string' ? notice : notice.text"
       :type="phase === 'failed' ? 'error' : phase === 'ended' ? 'warning' : 'info'"
-    />
+    >
+      <template v-if="typeof notice !== 'string'" #description>
+        <ErrorFeedback :feedback="notice" hide-message />
+      </template>
+    </Alert>
     <div v-if="phase === 'preparing' || phase === 'connecting'" class="flex items-center gap-2 px-4 py-2 text-sm">
       <Spin size="small" />
       {{ phase === 'preparing' ? '正在准备控制台…' : '正在连接…' }}

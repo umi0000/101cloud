@@ -8,6 +8,7 @@ import { useRoute } from 'vue-router';
 import { Page } from '@vben/common-ui';
 
 import {
+  Alert,
   Button,
   Card,
   Descriptions,
@@ -27,14 +28,16 @@ import {
   TypographyText,
 } from 'ant-design-vue';
 
-import { catalogApi, instancesApi, nodesApi } from '#/api/backend';
+import { catalogApi, instancesApi, nodesApi, opsApi } from '#/api/backend';
 import { ApiError } from '#/api/request';
 import ConfirmAction from '#/components/confirm-action.vue';
+import ErrorFeedback from '#/components/error-feedback.vue';
 import StatusTag from '#/components/status-tag.vue';
 import TimeText from '#/components/time-text.vue';
 import UserName from '#/components/user-name.vue';
 import { errorToast, trackAccepted, useAction, usePolling, useResource } from '#/composables/api';
 import { enumLabel, instanceState } from '#/locales/enums';
+import { describeTaskError } from '#/locales/errors';
 import { useTaskStore } from '#/store/tasks';
 import { formatAge, formatBytes, secondsSince } from '#/utils/format';
 
@@ -73,6 +76,12 @@ async function initial() {
 onMounted(initial);
 
 const i = computed(() => inst.data.value);
+const failedTasks = useResource(() => i.value?.provisioning_state === 'failed'
+  ? opsApi.tasks({ instance_id: id, limit: 1, status: 'failed' }) : null);
+const failedTask = computed(() => failedTasks.data.value?.items[0] ?? null);
+watch(() => i.value?.revision, () => {
+  if (i.value?.provisioning_state === 'failed') void failedTasks.reload().catch(errorToast);
+}, { immediate: true });
 usePolling(reload, () => (i.value && (i.value.active_task_id || i.value.provisioning_state !== 'ready') ? 5000 : 30_000));
 
 const tasks = useTaskStore();
@@ -286,7 +295,10 @@ function resourcesText(x: Instance) {
             <Button v-if="i.capabilities.console" :disabled="busy" @click="consoleRef?.start()">
               {{ i.instance_type === 'virtual-machine' ? '控制台' : '终端' }}
             </Button>
-            <span v-if="i.state_stale" class="text-sm text-orange-500">状态未知，等待同步</span>
+            <span v-if="i.provisioning_state === 'failed' && i.resource_reservations_released === true" class="text-sm text-red-500">
+              创建失败，请查看任务原因
+            </span>
+            <span v-else-if="i.state_stale" class="text-sm text-orange-500">状态未知，等待同步</span>
             <template v-else>
               <Button v-if="i.capabilities.start" :disabled="busy" type="primary" @click="openPower('start')">启动</Button>
               <Button v-if="i.observed_state === 'running'" :disabled="busy" @click="openPower('restart')">重启</Button>
@@ -297,6 +309,21 @@ function resourcesText(x: Instance) {
           </Space>
         </div>
       </Card>
+      <Alert v-if="i.provisioning_state === 'failed'" class="mb-3" message="实例创建失败" show-icon type="error">
+        <template #description>
+          <div>
+            {{ i.resource_reservations_released === true
+              ? '创建前失败，IP/GPU及计费预留已释放，可调整配置后重新创建'
+              : '资源预留未确认释放，请查看任务/请求管理员核对' }}
+          </div>
+          <ErrorFeedback
+            v-if="failedTask"
+            class="my-2"
+            :feedback="describeTaskError(failedTask, failedTasks.requestId.value)"
+          />
+          <RouterLink :to="`/admin/tasks?instance_id=${i.id}`">查看失败原因与处理建议</RouterLink>
+        </template>
+      </Alert>
 
       <Tabs v-model:active-key="tab" destroy-inactive-tab-pane size="small">
         <TabPane key="overview" tab="概览">

@@ -12347,6 +12347,30 @@
         ],
         "additionalProperties": false
       },
+      "PublicTaskError": {
+        "description": "Explicitly public safe error only. Resource amounts in details are decimal strings, never floating-point numbers; no raw upstream output or parameters.",
+        "type": "object",
+        "properties": {
+          "code": { "type": "string" },
+          "message": { "type": "string" },
+          "details": { "type": ["object", "null"], "additionalProperties": true }
+        },
+        "required": ["code", "message", "details"],
+        "additionalProperties": false
+      },
+      "TaskStep": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "status": { "type": "string", "enum": ["queued", "running", "waiting", "unknown", "succeeded", "failed", "cancelled"] },
+          "error_code": { "type": ["string", "null"] },
+          "error": { "anyOf": [{ "$ref": "#/components/schemas/PublicTaskError" }, { "type": "null" }] },
+          "started_at": { "type": ["string", "null"], "format": "date-time" },
+          "finished_at": { "type": ["string", "null"], "format": "date-time" }
+        },
+        "required": ["name", "status", "error_code", "error", "started_at", "finished_at"],
+        "additionalProperties": false
+      },
       "Task": {
         "type": "object",
         "properties": {
@@ -12452,26 +12476,42 @@
               }
             ]
           },
+          "error": {
+            "anyOf": [{ "$ref": "#/components/schemas/PublicTaskError" }, { "type": "null" }]
+          },
+          "resource_reservations_released": {
+            "type": "boolean",
+            "description": "True only after atomic, proven pre-dispatch creation reservation cancellation. False is not evidence that a guest exists."
+          },
           "steps": {
             "type": "array",
             "items": {
-              "type": "object"
+              "$ref": "#/components/schemas/TaskStep"
             }
           },
           "next_action": {
-            "type": "string"
+            "type": "string",
+            "enum": ["wait", "administrator_reconcile", "inspect_failure", "correct_and_resubmit", "none"]
           }
         },
         "required": [
           "id",
           "type",
-          "status"
+          "status",
+          "error",
+          "steps",
+          "next_action",
+          "resource_reservations_released"
         ],
         "additionalProperties": true
       },
       "Instance": {
         "type": "object",
         "properties": {
+          "resource_reservations_released": {
+            "type": "boolean",
+            "description": "Only a failed, proven never-dispatched creation with completed atomic reservation release reports true."
+          },
           "id": {
             "type": "string",
             "pattern": "^[1-9][0-9]*$"

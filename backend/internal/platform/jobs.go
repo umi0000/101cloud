@@ -227,21 +227,43 @@ func (a *App) execute(ctx context.Context, j Job, owner string) {
 		if errors.As(e, &u) || ctx.Err() != nil || errors.Is(e, context.DeadlineExceeded) || errors.Is(e, context.Canceled) {
 			status = "unknown"
 			finished = nil
-			code = "external_result_unknown"
 		} else {
 			status = "failed"
-			code = "operation_failed"
-			var he *HTTPError
-			if errors.As(e, &he) {
-				code = he.Code
-			}
 		}
+		code = PublicError(e, status == "unknown")["code"]
 		LogError("task "+j.Type, e)
 	}
-	r := a.DB.WithContext(finishCtx).Table("tasks").Where("id=? AND lease_owner=? AND lease_generation=? AND status='running'", j.ID, owner, j.LeaseGeneration).Updates(Row{"status": status, "finished_at": finished, "error_code": code, "lease_owner": nil, "lease_until": nil, "revision": gorm.Expr("revision+1")})
-	if r.Error != nil {
-		LogError("finish task", r.Error)
+	if err := a.finishTask(finishCtx, j, owner, status, finished, code, e); err != nil {
+		LogError("finish task", err)
 	}
+}
+
+// finishTask commits task and open-step errors together under the same live lease.
+func (a *App) finishTask(ctx context.Context, j Job, owner, status string, finished, code any, cause error) error {
+	return a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var task Row
+		if err := tx.Raw("SELECT * FROM tasks WHERE id=? AND lease_owner=? AND lease_generation=? AND status='running' AND lease_until>? FOR UPDATE", j.ID, owner, j.LeaseGeneration, a.Time()).Scan(&task).Error; err != nil {
+			return err
+		}
+		if Uint(task["id"]) != j.ID {
+			return errors.New("lost task lease before completion")
+		}
+		changes := Row{"status": status, "finished_at": finished, "error_code": code, "lease_owner": nil, "lease_until": nil, "revision": gorm.Expr("revision+1")}
+		if cause != nil {
+			b, err := json.Marshal(PublicError(cause, status == "unknown"))
+			if err != nil {
+				return err
+			}
+			result := gorm.Expr("JSON_SET(COALESCE(result_redacted, JSON_OBJECT()), '$.error', JSON_EXTRACT(?, '$'))", string(b))
+			changes["result_redacted"] = result
+			if err = tx.Table("task_steps").Where("task_id=? AND attempt=? AND status IN ?", j.ID, j.LeaseGeneration, []string{"running", "waiting", "unknown"}).Updates(Row{"status": status, "finished_at": finished, "error_code": code, "result_redacted": result}).Error; err != nil {
+				return err
+			}
+		} else {
+			changes["result_redacted"] = gorm.Expr("JSON_REMOVE(COALESCE(result_redacted, JSON_OBJECT()), '$.error')")
+		}
+		return tx.Table("tasks").Where("id=?", j.ID).Updates(changes).Error
+	})
 }
 func (a *App) Run(ctx context.Context) {
 	var wg sync.WaitGroup

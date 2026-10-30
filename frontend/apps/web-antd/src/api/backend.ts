@@ -51,7 +51,8 @@ import type {
 } from './types';
 import type { ApiResult } from './request';
 
-import { api } from './request';
+import { api, ApiError } from './request';
+import { TaskPageSchema, TaskSchema } from './task-schema';
 
 export type Query = Record<string, boolean | number | string | undefined>;
 
@@ -474,8 +475,22 @@ export const opsApi = {
   audit: (q?: Query) => list<AuditLog>('/admin/audit-logs', q),
   reconcile: (id: ID, w: Write) =>
     post<TaskAccepted>(`/admin/tasks/${id}/reconcile`, {}, w),
-  task: (id: ID) => detail<Task>(`/admin/tasks/${id}`),
-  tasks: (q?: Query) => list<Task>('/admin/tasks', q),
+  task: async (id: ID): Promise<ApiResult<Task>> => {
+    const result = await detail<unknown>(`/admin/tasks/${id}`);
+    const parsed = TaskSchema.safeParse(result.data);
+    if (!parsed.success) {
+      throw new ApiError(result.status, { code: 'invalid_response', details: null, message: '任务数据格式异常，请联系管理员' }, result.requestId, null);
+    }
+    return { ...result, data: parsed.data };
+  },
+  tasks: async (q?: Query): Promise<ApiResult<Page<Task>>> => {
+    const result = await api.get<unknown>('/admin/tasks', { params: clean(q) });
+    const parsed = TaskPageSchema.safeParse(result.data);
+    if (!parsed.success) {
+      throw new ApiError(result.status, { code: 'invalid_response', details: null, message: '任务列表数据格式异常，请联系管理员' }, result.requestId, null);
+    }
+    return { ...result, data: parsed.data };
+  },
 };
 
 /** 取完游标分页的全部项（用于下拉选项等小集合，最多 pages 页）。 */

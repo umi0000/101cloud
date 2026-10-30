@@ -7,6 +7,7 @@ import { Page } from '@vben/common-ui';
 import { Alert, Button, Card, Skeleton, Space, TabPane, Tabs } from 'ant-design-vue';
 
 import { usersApi } from '#/api/backend';
+import ErrorFeedback from '#/components/error-feedback.vue';
 import StatusTag from '#/components/status-tag.vue';
 import { errorToast, useResource } from '#/composables/api';
 import { describeError } from '#/locales/errors';
@@ -73,6 +74,7 @@ watch(id, reload, { immediate: true });
         show-icon
         type="error"
       >
+        <template #description><ErrorFeedback :feedback="describeError(user.error.value)" hide-message /></template>
         <template #action><Button size="small" @click="reload">重试</Button></template>
       </Alert>
       <Skeleton v-else-if="!user.data.value" active />

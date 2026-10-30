@@ -5,6 +5,7 @@ import type { EChartsOption } from 'echarts';
 import type { EchartsUIType } from '@vben/plugins/echarts';
 
 import type { HistoryPoint, LatestMetrics, MetricsHistory } from '#/api/types';
+import type { ErrorText } from '#/locales/errors';
 
 import { computed, onMounted, ref, shallowRef, watch } from 'vue';
 
@@ -15,7 +16,7 @@ import { MarkAreaComponent } from 'echarts/components';
 import * as echarts from 'echarts/core';
 
 import { instancesApi } from '#/api/backend';
-import { ApiError } from '#/api/request';
+import ErrorFeedback from '#/components/error-feedback.vue';
 import TimeText from '#/components/time-text.vue';
 import { usePolling } from '#/composables/api';
 import { QUALITY_REASONS } from '#/locales/enums';
@@ -31,7 +32,7 @@ const props = defineProps<{ instanceId: string }>();
 /* ---------- 最新值 ---------- */
 
 const latest = shallowRef<LatestMetrics | null>(null);
-const latestError = ref<null | string>(null);
+const latestError = ref<ErrorText | null>(null);
 
 async function loadLatest() {
   try {
@@ -39,10 +40,7 @@ async function loadLatest() {
     latestError.value = null;
   } catch (error) {
     latest.value = null;
-    latestError.value =
-      error instanceof ApiError && (error.code === 'metrics_unavailable' || error.status === 503)
-        ? '暂无采样数据'
-        : describeError(error).text;
+    latestError.value = describeError(error);
   }
 }
 usePolling(loadLatest, () => 10_000);
@@ -74,7 +72,7 @@ const history = shallowRef<MetricsHistory | null>(null);
 const points = shallowRef<HistoryPoint[]>([]);
 const truncated = ref(false);
 const historyLoading = ref(false);
-const historyError = ref<null | string>(null);
+const historyError = ref<ErrorText | null>(null);
 let historySeq = 0;
 
 async function loadHistory() {
@@ -106,7 +104,7 @@ async function loadHistory() {
     if (mine !== historySeq) return;
     history.value = null;
     points.value = [];
-    historyError.value = describeError(error).text;
+    historyError.value = describeError(error);
   } finally {
     if (mine === historySeq) historyLoading.value = false;
   }
@@ -247,7 +245,9 @@ const RESOLUTION_NAMES: Record<string, string> = { day: '按天', hour: '按小�
 <template>
   <div class="flex flex-col gap-3">
     <Card size="small" title="最新值">
-      <Alert v-if="latestError" :message="latestError" show-icon type="info" />
+      <Alert v-if="latestError" :message="latestError.text" show-icon type="info">
+        <template #description><ErrorFeedback :feedback="latestError" hide-message /></template>
+      </Alert>
       <template v-else-if="latest">
         <div v-if="latest.stale" class="mb-2 text-sm text-orange-500">
           数据已过期（{{ Math.round(Number(latest.age_seconds)) }} 秒前）
@@ -310,7 +310,9 @@ const RESOLUTION_NAMES: Record<string, string> = { day: '按天', hour: '按小�
         </RadioGroup>
       </template>
       <Spin :spinning="historyLoading">
-        <Alert v-if="historyError" class="mb-2" :message="historyError" show-icon type="error" />
+        <Alert v-if="historyError" class="mb-2" :message="historyError.text" show-icon type="error">
+          <template #description><ErrorFeedback :feedback="historyError" hide-message /></template>
+        </Alert>
         <div v-if="history" class="text-muted-foreground mb-2 flex flex-wrap gap-x-4 text-xs">
           <span>粒度：{{ RESOLUTION_NAMES[history.resolution] ?? history.resolution }}</span>
           <span>覆盖率：{{ coverageText }}</span>

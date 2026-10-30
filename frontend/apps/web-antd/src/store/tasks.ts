@@ -1,18 +1,21 @@
 import type { Task } from '#/api/types';
 
-import { computed, ref } from 'vue';
+import { computed, h, ref } from 'vue';
 
 import { notification } from 'ant-design-vue';
 import { defineStore } from 'pinia';
 
 import { opsApi } from '#/api/backend';
+import ErrorFeedback from '#/components/error-feedback.vue';
 import { TASK_TYPES } from '#/locales/enums';
+import { describeTaskError } from '#/locales/errors';
 
 interface Tracked {
   label: string;
   onDone?: () => void;
   startedAt: number;
   task: null | Task;
+  requestId: string;
   taskId: string;
 }
 
@@ -44,6 +47,7 @@ export const useTaskStore = defineStore('tasks', () => {
       const r = await opsApi.task(taskId);
       const before = t.task?.status;
       t.task = r.data;
+      t.requestId = r.requestId;
       if (TERMINAL[r.data.status]) {
         timers.delete(taskId);
         if (before !== r.data.status) {
@@ -52,7 +56,7 @@ export const useTaskStore = defineStore('tasks', () => {
             notification.success({ duration: 4, message: `${name}：成功` });
           } else {
             notification.error({
-              description: r.data.error_code ?? undefined,
+              description: () => h(ErrorFeedback, { feedback: describeTaskError(r.data, r.requestId) }),
               duration: 8,
               message: `${name}：${r.data.status === 'failed' ? '失败' : '已取消'}`,
             });
@@ -73,7 +77,7 @@ export const useTaskStore = defineStore('tasks', () => {
       if (onDone) existing.onDone = onDone;
       return;
     }
-    tracked.value.unshift({ label, onDone, startedAt: Date.now(), task: null, taskId });
+    tracked.value.unshift({ label, onDone, requestId: '', startedAt: Date.now(), task: null, taskId });
     if (tracked.value.length > 50) {
       const removed = tracked.value.splice(50);
       for (const r of removed) {

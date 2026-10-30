@@ -438,3 +438,29 @@ func TestCompletedCreditEventReactivationRequiresFreshLateRunningProof(t *testin
 		t.Fatal("late-start proof reset the original deadline")
 	}
 }
+
+func TestPreDispatchCancellationRequiresPristineSessions(t *testing.T) {
+	at := time.Date(2026, 10, 31, 12, 0, 0, 0, zone)
+	instance := row{"id": uint64(15), "user_id": uint64(2), "node_id": uint64(1)}
+	ac := row{"id": uint64(7)}
+	base := row{"account_id": uint64(7), "user_id": uint64(2), "node_id": uint64(1), "instance_id": uint64(15), "status": "active", "ended_at": nil, "metered_microseconds": uint64(0), "cumulative_expected_pt": "0.000000", "started_at": at, "last_settled_at": at, "charge_kind": "base_compute", "metering_state": "held"}
+	if !pristineCreationSession(base, instance, ac) {
+		t.Fatal("pristine held admission rejected")
+	}
+	for _, change := range []row{{"metering_state": "running"}, {"charge_kind": "gpu", "metering_state": "running"}, {"metered_microseconds": uint64(1)}, {"cumulative_expected_pt": "0.000001"}, {"last_settled_at": at.Add(time.Microsecond)}, {"ended_at": at}, {"status": "ended"}, {"account_id": uint64(8)}, {"user_id": uint64(3)}, {"node_id": uint64(2)}, {"instance_id": uint64(16)}} {
+		s := row{}
+		for k, v := range base {
+			s[k] = v
+		}
+		for k, v := range change {
+			s[k] = v
+		}
+		if pristineCreationSession(s, instance, ac) {
+			t.Fatalf("used or foreign session cancelled: %+v", change)
+		}
+	}
+	base["charge_kind"], base["metering_state"] = "storage", "running"
+	if !pristineCreationSession(base, instance, ac) {
+		t.Fatal("unmetered retained-storage admission cannot cancel")
+	}
+}

@@ -42,29 +42,31 @@ type ValidatedSpec struct {
 
 func validResources(r Resources) error {
 	if r.VCPUs == 0 || r.VCPUs > 4294967295 {
-		return invalid("vcpus must be a positive uint32")
+		return invalid("vcpus 必须是大于零的 uint32 整数。")
 	}
 	if _, e := unsigned(r.MemoryBytes, true); e != nil {
-		return e
+		return platform.EDetails(422, "validation_failed", "resources.memory_bytes 必须为大于零的十进制整数字符串。", platform.Row{"field": "resources.memory_bytes", "action": "请以字节为单位填写正整数，不要附带 GiB 等单位。"})
 	}
-	_, e := unsigned(r.DiskBytes, true)
-	return e
+	if _, e := unsigned(r.DiskBytes, true); e != nil {
+		return platform.EDetails(422, "validation_failed", "resources.disk_bytes 必须为大于零的十进制整数字符串。", platform.Row{"field": "resources.disk_bytes", "action": "请以字节为单位填写正整数，不要附带 GiB 等单位。"})
+	}
+	return nil
 }
 
 // validGPUTerms checks the GPU fields shared by plan offerings and requests.
 func validGPUTerms(g GPURequest) error {
 	if !enum(g.AccessMode, "shared", "exclusive") {
-		return invalid("gpu.access_mode is required")
+		return invalid("请指定 gpu.access_mode 为 shared 或 exclusive。")
 	}
 	n, e := decimal.NewFromString(g.MaxHourlyPT)
 	if e != nil || n.IsNegative() || n.Exponent() < -6 {
-		return invalid("gpu.max_hourly_pt must be a nonnegative decimal with up to six fractional digits")
+		return invalid("gpu.max_hourly_pt 必须为非负十进制数，最多六位小数。")
 	}
 	if g.Count > 4294967295 {
-		return invalid("gpu.count must be a uint32")
+		return invalid("gpu.count 必须为 uint32 整数。")
 	}
 	if g.Model != nil && !textValid(*g.Model, 255) {
-		return invalid("gpu.model must contain 1–255 characters")
+		return invalid("gpu.model 必须包含 1–255 个字符。")
 	}
 	return nil
 }
@@ -75,13 +77,13 @@ func validGPU(g GPURequest, typ string) error {
 		return e
 	}
 	if typ == "virtual-machine" && g.Count != 0 {
-		return invalid("VM cannot have GPUs")
+		return invalid("虚拟机不支持 GPU，请将 GPU 数量设为零。")
 	}
 	if g.Count == 0 && g.Model != nil {
-		return invalid("GPU model must be null when count is zero")
+		return invalid("GPU 数量为零时，gpu.model 必须为 null。")
 	}
 	if g.Count > 0 && g.Model == nil {
-		return invalid("GPU model required")
+		return invalid("申请 GPU 时必须指定 gpu.model。")
 	}
 	return nil
 }
@@ -95,18 +97,18 @@ func validPlanGPU(g GPURequest, typ string, overrideMax uint64) error {
 	}
 	if typ == "virtual-machine" {
 		if g.Count != 0 || g.Model != nil || overrideMax > 0 {
-			return invalid("VM plans cannot offer GPUs")
+			return invalid("虚拟机套餐不能提供 GPU。")
 		}
 		return nil
 	}
 	if g.Model == nil {
 		if g.Count > 0 || overrideMax > 0 {
-			return invalid("GPU model required when the plan offers GPUs")
+			return invalid("套餐提供 GPU 时必须指定 GPU 型号。")
 		}
 		return nil
 	}
 	if g.Count == 0 && overrideMax == 0 {
-		return invalid("GPU model requires gpu.count > 0 or allowed_overrides.gpu_count.max >= 1")
+		return invalid("配置 GPU 型号时，gpu.count 必须大于零或允许覆盖的 GPU 数量上限至少为 1。")
 	}
 	return nil
 }
@@ -121,12 +123,12 @@ func resolvePolicies(ctx context.Context, db *gorm.DB, a *platform.App, versions
 	out := map[string]platform.Row{}
 	for _, k := range []string{"pricing", "credit", "gpu-idle", "gpu-scheduling"} {
 		if versions[k] == "" {
-			return nil, platform.E(409, "policy_not_configured", "required policy "+k+" is not configured")
+			return nil, platform.E(409, "policy_not_configured", "所需策略 "+k+" 尚未配置，请联系管理员发布并绑定策略。")
 		}
 	}
 	for k, s := range versions {
 		if !enum(k, "pricing", "credit", "gpu-idle", "gpu-scheduling", "gpu-pricing") {
-			return nil, invalid("unknown policy version kind")
+			return nil, invalid("policy_versions 包含未知的策略类型。")
 		}
 		id, e := platform.IDString(s)
 		if e != nil {
@@ -137,10 +139,10 @@ func resolvePolicies(ctx context.Context, db *gorm.DB, a *platform.App, versions
 			return nil, e
 		}
 		if platform.Text(r["kind"]) != k {
-			return nil, missingReference(k)
+			return nil, platform.EDetails(422, "validation_failed", "策略版本不存在或类型不匹配，请重新获取报价。", platform.Row{"field": "policy_versions." + k, "action": "请使用最新报价返回的对应类型策略版本。"})
 		}
 		if active && (platform.Text(r["status"]) != "active" || platform.Stamp(r["effective_at"]).After(a.Time())) {
-			return nil, platform.E(409, "policy_changed", "selected policy is no longer effective")
+			return nil, platform.E(409, "policy_changed", "所选策略已失效，请重新获取报价。")
 		}
 		out[k] = r
 	}
@@ -148,7 +150,7 @@ func resolvePolicies(ctx context.Context, db *gorm.DB, a *platform.App, versions
 }
 func ValidateElastic(ctx context.Context, db *gorm.DB, a *platform.App, s CreateElasticSpec, versions map[string]string) (*ValidatedSpec, error) {
 	if !textValid(s.Name, 128) {
-		return nil, invalid("name must contain 1–128 characters")
+		return nil, invalid("实例名称必须包含 1–128 个字符。")
 	}
 	if e := validResources(s.Resources); e != nil {
 		return nil, e
@@ -162,21 +164,21 @@ func ValidateElastic(ctx context.Context, db *gorm.DB, a *platform.App, s Create
 		return nil, e
 	}
 	if platform.Text(plan["status"]) != "active" {
-		return nil, conflict("plan is not published")
+		return nil, conflict("套餐尚未发布，请选择已发布套餐。")
 	}
 	zone, e := platform.IDString(s.ZoneID)
 	if e != nil {
 		return nil, e
 	}
 	if zone != platform.Uint(plan["availability_zone_id"]) {
-		return nil, invalid("plan does not belong to zone")
+		return nil, invalid("套餐不属于所选可用区，请重新选择。")
 	}
 	zr, e := platform.Get(db, "availability_zones", zone, false)
 	if e != nil {
 		return nil, e
 	}
 	if platform.Text(zr["status"]) != "active" {
-		return nil, conflict("zone disabled")
+		return nil, conflict("可用区已停用，请选择其他可用区。")
 	}
 	typ := platform.Text(plan["image_type"])
 	if e = validGPU(s.GPU, typ); e != nil {
@@ -194,14 +196,14 @@ func ValidateElastic(ctx context.Context, db *gorm.DB, a *platform.App, s Create
 		return nil, platform.WrapDB(e)
 	}
 	if n != 1 {
-		return nil, invalid("image is not allowed by plan")
+		return nil, invalid("套餐不允许使用此镜像，请选择套餐允许的镜像。")
 	}
 	ir, e := platform.Get(db, "images", image, false)
 	if e != nil {
 		return nil, e
 	}
 	if platform.Text(ir["status"]) != "active" || platform.Text(ir["image_type"]) != typ || (s.GPU.Count > 0 && !platform.Bool(ir["gpu_ready"])) {
-		return nil, invalid("incompatible image")
+		return nil, invalid("镜像未启用、类型不匹配或不支持所申请的 GPU，请重新选择。")
 	}
 	network, e := platform.IDString(s.NetworkOptionID)
 	if e != nil {
@@ -211,7 +213,7 @@ func ValidateElastic(ctx context.Context, db *gorm.DB, a *platform.App, s Create
 		return nil, platform.WrapDB(e)
 	}
 	if n != 1 {
-		return nil, invalid("network option is not allowed by plan")
+		return nil, invalid("套餐不允许此网络选项，请选择套餐允许的网络。")
 	}
 	nr, e := ValidateNetworkOption(db, network, zone, typ)
 	if e != nil {
@@ -220,11 +222,11 @@ func ValidateElastic(ctx context.Context, db *gorm.DB, a *platform.App, s Create
 	configured := versionMap(plan["policy_versions"])
 	if versions != nil {
 		if len(versions) != len(configured) {
-			return nil, platform.E(409, "policy_changed", "quote policies changed")
+			return nil, platform.E(409, "policy_changed", "报价对应策略已变更，请重新获取报价。")
 		}
 		for k, v := range configured {
 			if versions[k] != v {
-				return nil, platform.E(409, "policy_changed", "quote policies changed")
+				return nil, platform.E(409, "policy_changed", "报价对应策略已变更，请重新获取报价。")
 			}
 		}
 	}
@@ -233,7 +235,7 @@ func ValidateElastic(ctx context.Context, db *gorm.DB, a *platform.App, s Create
 		return nil, e
 	}
 	if s.GPU.Count > 0 && policies["gpu-pricing"] == nil {
-		return nil, platform.E(409, "policy_not_configured", "GPU pricing policy is not configured")
+		return nil, platform.E(409, "policy_not_configured", "GPU 定价策略尚未配置，请联系管理员发布并绑定策略。")
 	}
 	if e = ValidateInit(ctx, db, platform.Uint(plan["init_template_version_id"]), s.InitParameters); e != nil {
 		return nil, e
@@ -246,7 +248,7 @@ func validateOverrides(plan platform.Row, r Resources, g GPURequest) error {
 	// gpu.count 0 opts out of the plan's GPU offering and is always allowed.
 	if g.Count > 0 {
 		if platform.Text(plan["gpu_model"]) == "" || platform.Text(plan["image_type"]) != "container" {
-			return invalid("plan does not offer GPUs")
+			return invalid("此套餐不提供 GPU，请选择支持 GPU 的套餐。")
 		}
 		values["gpu_count"] = g.Count
 	}
@@ -255,25 +257,25 @@ func validateOverrides(plan platform.Row, r Resources, g GPURequest) error {
 			lo, hi := platform.Uint(b["min"]), platform.Uint(b["max"])
 			step := platform.Uint(b["step"])
 			if lo > hi || v < lo || v > hi || step == 0 || (v-lo)%step != 0 {
-				return invalid("resource outside allowed override: " + k)
+				return invalid("资源超出套餐允许的覆盖范围或步长：" + k)
 			}
 		} else if v != platform.Uint(plan[k]) {
-			return invalid("resource override is not allowed: " + k)
+			return invalid("套餐不允许修改此资源：" + k)
 		}
 	}
 	if g.Count == 0 {
 		return nil
 	}
 	if g.Model == nil || *g.Model != platform.Text(plan["gpu_model"]) || g.AccessMode != platform.Text(plan["gpu_access_mode"]) {
-		return invalid("GPU model/access mode cannot override plan")
+		return invalid("GPU 型号和访问模式必须与套餐一致。")
 	}
 	limit, e := decimal.NewFromString(platform.Text(plan["gpu_max_hourly_pt"]))
 	if e != nil {
-		return invalid("plan GPU price limit missing")
+		return invalid("套餐 GPU 价格上限缺失或无效，请联系管理员检查套餐。")
 	}
 	price, _ := decimal.NewFromString(g.MaxHourlyPT)
 	if price.GreaterThan(limit) {
-		return invalid("GPU price limit exceeds plan")
+		return invalid("申请的 GPU 价格上限超过套餐限制，请降低 gpu.max_hourly_pt。")
 	}
 	return nil
 }
@@ -314,7 +316,7 @@ func Quote(ctx context.Context, db *gorm.DB, a *platform.App, s CreateElasticSpe
 			return nil, e
 		}
 		if platform.Text(p["gpu_model"]) != *s.GPU.Model || platform.Text(p["access_mode"]) != s.GPU.AccessMode {
-			return nil, invalid("GPU pricing incompatible with specification")
+			return nil, invalid("GPU 定价的型号或访问模式与申请不匹配，请重新选择。")
 		}
 		rate, e := decimal.NewFromString(platform.Text(p["gpu_hourly_pt"]))
 		if e != nil {
@@ -344,14 +346,14 @@ func quoteAvailability(ctx context.Context, db *gorm.DB, a *platform.App, s Crea
 	config := object(policies["gpu-scheduling"]["config"])
 	maxAge := platform.Uint(config["metrics_max_age_seconds"])
 	if maxAge == 0 {
-		return nil, platform.E(409, "policy_not_configured", "inventory freshness policy is not configured")
+		return nil, platform.E(409, "policy_not_configured", "库存观测有效期策略未配置，请联系管理员检查 GPU 调度策略。")
 	}
 	sampled := platform.Stamp(node["resources_sampled_at"])
 	if sampled.IsZero() || a.Time().Sub(sampled) > time.Duration(maxAge)*time.Second {
 		reasons = append(reasons, "inventory_stale")
 	}
 	var usage platform.Row
-	if e = db.Table("instances").Select("COALESCE(SUM(CASE WHEN desired_state='running' OR observed_state IN ('running','unknown','pending','error') OR provisioning_state IN ('pending','creating','initializing','deleting','unknown') THEN vcpus ELSE 0 END),0) AS vcpus, COALESCE(SUM(CASE WHEN desired_state='running' OR observed_state IN ('running','unknown','pending','error') OR provisioning_state IN ('pending','creating','initializing','deleting','unknown') THEN memory_bytes ELSE 0 END),0) AS memory_bytes, COALESCE(SUM(disk_bytes),0) AS disk_bytes").Where("node_id=? AND deleted_at IS NULL", node["id"]).Scan(&usage).Error; e != nil {
+	if e = db.Table("instances").Select("COALESCE(SUM(CASE WHEN desired_state='running' OR observed_state IN ('running','unknown','pending','error') OR provisioning_state IN ('pending','creating','initializing','deleting','unknown') THEN vcpus ELSE 0 END),0) AS vcpus, COALESCE(SUM(CASE WHEN desired_state='running' OR observed_state IN ('running','unknown','pending','error') OR provisioning_state IN ('pending','creating','initializing','deleting','unknown') THEN memory_bytes ELSE 0 END),0) AS memory_bytes, COALESCE(SUM(disk_bytes),0) AS disk_bytes").Where("node_id=? AND deleted_at IS NULL AND NOT (provisioning_state='failed' AND incus_uuid IS NULL AND COALESCE(JSON_EXTRACT(incus_config_snapshot,'$.creation_reservations_released') = true, 0))", node["id"]).Scan(&usage).Error; e != nil {
 		return nil, platform.WrapDB(e)
 	}
 	for _, x := range []struct {
@@ -404,14 +406,14 @@ func quoteAvailability(ctx context.Context, db *gorm.DB, a *platform.App, s Crea
 }
 func ValidateInit(ctx context.Context, db *gorm.DB, templateID uint64, params map[string]any) error {
 	if params == nil {
-		return invalid("init_parameters must be an object")
+		return invalid("init_parameters 必须是 JSON 对象。")
 	}
 	if e := secretFree(params); e != nil {
 		return e
 	}
 	if templateID == 0 {
 		if len(params) > 0 {
-			return invalid("no initialization template configured")
+			return invalid("未配置初始化模板，不能提交初始化参数。")
 		}
 		return nil
 	}
@@ -420,26 +422,26 @@ func ValidateInit(ctx context.Context, db *gorm.DB, templateID uint64, params ma
 		return e
 	}
 	if platform.Text(r["status"]) != "active" {
-		return missingReference("initialization template")
+		return platform.EDetails(422, "validation_failed", "初始化模板未启用，请联系管理员发布有效模板。", platform.Row{"field": "init_parameters", "action": "请使用已启用的初始化模板，或不提交初始化参数。"})
 	}
 	return validateSchema(object(r["parameter_schema"]), params, "init_parameters", 0)
 }
 func validateSchema(s map[string]any, v any, path string, depth int) error {
 	if depth > 16 {
-		return invalid("schema nesting exceeds limit")
+		return invalid("参数结构嵌套超过允许深度，请简化参数。")
 	}
 	typ := platform.Text(s["type"])
 	switch typ {
 	case "object":
 		m, ok := v.(map[string]any)
 		if !ok {
-			return invalid(path + " must be an object")
+			return invalid(path + " 必须是对象。")
 		}
 		props := object(s["properties"])
 		if req, ok := s["required"].([]any); ok {
 			for _, x := range req {
 				if _, ok := m[platform.Text(x)]; !ok {
-					return invalid(path + " missing required parameter")
+					return invalid(path + " 缺少必填参数。")
 				}
 			}
 		}
@@ -447,7 +449,7 @@ func validateSchema(s map[string]any, v any, path string, depth int) error {
 			ps, ok := props[k]
 			if !ok {
 				if s["additionalProperties"] != true {
-					return invalid(path + " unknown parameter " + k)
+					return invalid(path + " 包含未知参数：" + k)
 				}
 				continue
 			}
@@ -458,45 +460,45 @@ func validateSchema(s map[string]any, v any, path string, depth int) error {
 	case "string":
 		x, ok := v.(string)
 		if !ok {
-			return invalid(path + " must be a string")
+			return invalid(path + " 必须是字符串。")
 		}
 		if n := platform.Uint(s["maxLength"]); n > 0 && uint64(len([]rune(x))) > n {
-			return invalid(path + " too long")
+			return invalid(path + " 长度超过允许上限。")
 		}
 		if uint64(len([]rune(x))) < platform.Uint(s["minLength"]) {
-			return invalid(path + " too short")
+			return invalid(path + " 长度低于允许下限。")
 		}
 	case "integer", "number":
 		d, e := decimal.NewFromString(fmt.Sprint(v))
 		if e != nil {
-			return invalid(path + " must be numeric")
+			return invalid(path + " 必须是数值。")
 		}
 		if typ == "integer" && !d.Equal(d.Truncate(0)) {
-			return invalid(path + " must be an integer")
+			return invalid(path + " 必须是整数。")
 		}
 		if n, ok := s["minimum"]; ok {
 			b, e := decimal.NewFromString(fmt.Sprint(n))
 			if e != nil || d.LessThan(b) {
-				return invalid(path + " below minimum")
+				return invalid(path + " 低于允许的最小值。")
 			}
 		}
 		if n, ok := s["maximum"]; ok {
 			b, e := decimal.NewFromString(fmt.Sprint(n))
 			if e != nil || d.GreaterThan(b) {
-				return invalid(path + " above maximum")
+				return invalid(path + " 超过允许的最大值。")
 			}
 		}
 	case "boolean":
 		if _, ok := v.(bool); !ok {
-			return invalid(path + " must be boolean")
+			return invalid(path + " 必须是布尔值。")
 		}
 	case "array":
 		xs, ok := v.([]any)
 		if !ok {
-			return invalid(path + " must be array")
+			return invalid(path + " 必须是数组。")
 		}
 		if max := platform.Uint(s["maxItems"]); max > 0 && uint64(len(xs)) > max {
-			return invalid(path + " too many items")
+			return invalid(path + " 数组元素数量超过上限。")
 		}
 		for _, x := range xs {
 			if e := validateSchema(object(s["items"]), x, path+"[]", depth+1); e != nil {
@@ -504,7 +506,7 @@ func validateSchema(s map[string]any, v any, path string, depth int) error {
 			}
 		}
 	default:
-		return invalid("unsupported template schema type")
+		return invalid("初始化模板包含不支持的参数类型，请联系管理员修正模板。")
 	}
 	if es, ok := s["enum"].([]any); ok {
 		found := false
@@ -517,7 +519,7 @@ func validateSchema(s map[string]any, v any, path string, depth int) error {
 			}
 		}
 		if !found {
-			return invalid(path + " is not an allowed value")
+			return invalid(path + " 不是允许的选项值。")
 		}
 	}
 	return nil
@@ -532,7 +534,7 @@ func quoteUserEligibility(ctx context.Context, db *gorm.DB, a *platform.App, use
 		reasons = append(reasons, "quota_not_configured")
 	} else {
 		var used platform.Row
-		if e := db.Table("instances").Select("COUNT(*) AS instances,COALESCE(SUM(vcpus),0) AS vcpus,COALESCE(SUM(memory_bytes),0) AS memory_bytes,COALESCE(SUM(disk_bytes),0) AS disk_bytes").Where("user_id=? AND deleted_at IS NULL", userID).Scan(&used).Error; e != nil {
+		if e := db.Table("instances").Select("COUNT(*) AS instances,COALESCE(SUM(vcpus),0) AS vcpus,COALESCE(SUM(memory_bytes),0) AS memory_bytes,COALESCE(SUM(disk_bytes),0) AS disk_bytes").Where("user_id=? AND deleted_at IS NULL AND NOT (provisioning_state='failed' AND incus_uuid IS NULL AND COALESCE(JSON_EXTRACT(incus_config_snapshot,'$.creation_reservations_released') = true, 0))", userID).Scan(&used).Error; e != nil {
 			return platform.WrapDB(e)
 		}
 		var gpus int64
@@ -565,7 +567,7 @@ func quoteUserEligibility(ctx context.Context, db *gorm.DB, a *platform.App, use
 		cfg := object(policies["credit"]["config"])
 		seconds := platform.Uint(cfg["billing_window_seconds"])
 		if seconds == 0 {
-			return platform.E(409, "policy_not_configured", "credit billing window missing")
+			return platform.E(409, "policy_not_configured", "信用计费窗口未配置，请联系管理员检查信用策略。")
 		}
 		prices := object(q["price_details"])
 		total, e := decimal.NewFromString(platform.Text(prices["total_hourly_pt"]))

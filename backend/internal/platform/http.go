@@ -38,20 +38,20 @@ func WrapDB(e error) error {
 		return e
 	}
 	if errors.Is(e, gorm.ErrRecordNotFound) {
-		return E(404, "not_found", "resource not found")
+		return E(404, "not_found", "资源不存在或已被移除，请刷新列表后重试。")
 	}
 	var m *mysqlerr.MySQLError
 	if errors.As(e, &m) {
 		switch m.Number {
 		case 1062:
-			return E(409, "configuration_conflict", "conflicting resource or active operation")
+			return E(409, "configuration_conflict", "资源配置冲突或已有操作正在进行，请刷新状态后再试。")
 		case 1451, 1452, 3819, 1048:
-			return E(422, "validation_failed", "database constraint rejected operation")
+			return E(422, "validation_failed", "请求不符合资源约束，请检查配置；如配置无误，请联系管理员。")
 		case 1205, 1213:
-			return E(409, "instance_busy", "concurrent operation; refresh and retry")
+			return E(409, "instance_busy", "资源正在被其他操作修改，请刷新状态后重试。")
 		}
 	}
-	return E(500, "internal_error", "database operation failed")
+	return E(500, "internal_error", "服务暂时无法完成请求，请稍后重试；如持续失败，请携带请求编号联系管理员。")
 }
 func Reply(c *gin.Context, status int, data any) {
 	if status == 204 {
@@ -64,11 +64,11 @@ func Reply(c *gin.Context, status int, data any) {
 func Fail(c *gin.Context, e error) {
 	var he *HTTPError
 	if !errors.As(e, &he) {
-		he = &HTTPError{Status: 500, Code: "internal_error", Message: "request failed"}
+		he = &HTTPError{Status: 500, Code: "internal_error", Message: "服务暂时无法完成请求，请稍后重试；如持续失败，请携带请求编号联系管理员。"}
 		LogError("request", e)
 	}
 	c.Set("request_failed", true)
-	c.AbortWithStatusJSON(he.Status, gin.H{"error": gin.H{"code": he.Code, "message": he.Message, "details": he.Details}, "request_id": c.GetString("request_id")})
+	c.AbortWithStatusJSON(he.Status, gin.H{"error": PublicError(he, false), "request_id": c.GetString("request_id")})
 }
 
 type Endpoint func(*gin.Context) (any, error)
@@ -92,7 +92,7 @@ func ValidateKeys(m map[string]any, keys ...string) error {
 	}
 	for k := range m {
 		if !allowed[k] {
-			return E(422, "validation_failed", "unknown field: "+k)
+			return requestFieldError(k, "请求包含不支持的字段，请按接口要求调整后重试。")
 		}
 	}
 	return nil
@@ -100,26 +100,35 @@ func ValidateKeys(m map[string]any, keys ...string) error {
 func Decode(c *gin.Context, v any) error {
 	b, e := io.ReadAll(io.LimitReader(c.Request.Body, (1<<20)+1))
 	if e != nil || len(b) > 1<<20 {
-		return E(400, "invalid_json", "invalid or oversized JSON")
+		return EDetails(400, "invalid_json", "请求内容不是有效的 JSON，或超过 1 MiB 大小限制。", Row{"action": "请检查 JSON 格式并缩小请求内容后重试。"})
 	}
 	b = bytes.TrimSpace(b)
 	if len(b) == 0 {
 		b = []byte("{}")
 	}
 	if b[0] != '{' {
-		return E(422, "validation_failed", "JSON object required")
+		return requestFieldError("", "请求正文必须是 JSON 对象。")
 	}
 	d := json.NewDecoder(bytes.NewReader(b))
 	if e = uniqueJSON(d); e != nil {
-		return E(400, "invalid_json", "duplicate or malformed JSON")
+		return EDetails(400, "invalid_json", "请求 JSON 格式错误或包含重复字段。", Row{"action": "请修正 JSON 语法，确保每个字段只出现一次。"})
 	}
 	if _, e = d.Token(); e != io.EOF {
-		return E(400, "invalid_json", "trailing JSON")
+		return EDetails(400, "invalid_json", "请求包含多个 JSON 值或多余内容。", Row{"action": "请只提交一个 JSON 对象。"})
 	}
 	d = json.NewDecoder(bytes.NewReader(b))
 	d.DisallowUnknownFields()
 	if e = d.Decode(v); e != nil {
-		return E(422, "validation_failed", "invalid request fields")
+		var typeError *json.UnmarshalTypeError
+		if errors.As(e, &typeError) {
+			return requestFieldError(typeError.Field, "请求字段的类型或数值范围不正确。")
+		}
+		const unknown = "json: unknown field "
+		if strings.HasPrefix(e.Error(), unknown) {
+			field, _ := strconv.Unquote(strings.TrimPrefix(e.Error(), unknown))
+			return requestFieldError(field, "请求包含不支持的字段，请按接口要求调整后重试。")
+		}
+		return requestFieldError("", "请求字段格式不正确，请检查字段类型及必填项。")
 	}
 	return nil
 }

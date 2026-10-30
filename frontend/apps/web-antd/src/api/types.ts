@@ -2,6 +2,7 @@
  * 后端 /api/v1 响应类型。字段名、枚举照抄后端 DTO（backend/internal/**），
  * 2026-10-30 在真实服务器上逐个接口核对。ID、字节数、pt 金额是十进制字符串。
  */
+import type { PublicError } from './request';
 
 export type ID = string;
 /** 十进制字符串，单位 bytes。 */
@@ -461,6 +462,8 @@ export interface Instance {
   plan_id: ID | null;
   product_type: 'custom' | 'elastic';
   provisioning_state: ProvisioningState;
+  /** 仅后端确认创建未派发且原子释放预留后为 true；缺失不视为释放。 */
+  resource_reservations_released?: boolean;
   resources: Resources;
   revision: string;
   state_stale: boolean;
@@ -625,6 +628,7 @@ export interface ConsoleSession {
 export type TaskStatus = 'cancelled' | 'failed' | 'queued' | 'running' | 'succeeded' | 'unknown' | 'waiting';
 
 export interface TaskStep {
+  error?: null | PublicError;
   error_code: null | string;
   finished_at: null | Time;
   name: string;
@@ -633,6 +637,7 @@ export interface TaskStep {
 }
 
 export interface Task {
+  error?: null | PublicError;
   created_at: Time;
   error_code: null | string;
   finished_at: null | Time;
@@ -640,7 +645,8 @@ export interface Task {
   instance_id: ID | null;
   next_action: string;
   node_id: ID | null;
-  phase: string;
+  phase: null | string;
+  resource_reservations_released?: boolean;
   revision: string;
   started_at: null | Time;
   status: TaskStatus;

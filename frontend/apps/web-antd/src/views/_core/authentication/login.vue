@@ -1,4 +1,6 @@
 <script lang="ts" setup>
+import type { ErrorText } from '#/locales/errors';
+
 import { onBeforeUnmount, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
@@ -7,6 +9,7 @@ import { preferences } from '@vben/preferences';
 import { Alert, Button, Form, FormItem, Input, InputPassword } from 'ant-design-vue';
 
 import { ApiError } from '#/api/request';
+import ErrorFeedback from '#/components/error-feedback.vue';
 import { describeError } from '#/locales/errors';
 import { useAuthStore } from '#/store';
 
@@ -21,7 +24,7 @@ const router = useRouter();
 const route = useRoute();
 
 const form = reactive({ password: '', username: '' });
-const errorText = ref('');
+const errorFeedback = ref<ErrorText | null>(null);
 const retryIn = ref(0);
 let timer: number | undefined;
 
@@ -35,9 +38,9 @@ function startRetryCountdown(seconds: number) {
 }
 
 async function submit() {
-  errorText.value = '';
+  errorFeedback.value = null;
   if (!form.username || !form.password) {
-    errorText.value = '请输入用户名和密码';
+    errorFeedback.value = { code: '', details: [], requestId: '', stage: '', text: '请输入用户名和密码' };
     return;
   }
   try {
@@ -53,8 +56,7 @@ async function submit() {
     if (error instanceof ApiError && error.code === 'rate_limited' && error.retryAfter) {
       startRetryCountdown(error.retryAfter);
     }
-    const d = describeError(error);
-    errorText.value = d.requestId ? `${d.text}（${d.requestId}）` : d.text;
+    errorFeedback.value = describeError(error);
   }
 }
 
@@ -67,7 +69,9 @@ onBeforeUnmount(() => window.clearInterval(timer));
       <h2 class="text-foreground mb-2 text-2xl font-semibold">登录 101cloud</h2>
       <p class="text-muted-foreground text-sm">账号由管理员创建</p>
     </div>
-    <Alert v-if="errorText" class="mb-4" :message="errorText" show-icon type="error" />
+    <Alert v-if="errorFeedback" class="mb-4" :message="errorFeedback.text" show-icon type="error">
+      <template #description><ErrorFeedback :feedback="errorFeedback" hide-message /></template>
+    </Alert>
     <Form layout="vertical" @submit.prevent="submit">
       <FormItem label="用户名">
         <Input

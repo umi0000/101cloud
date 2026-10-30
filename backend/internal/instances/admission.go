@@ -7,6 +7,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"gorm.io/gorm"
 	"strconv"
 	"strings"
@@ -25,21 +27,21 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 	}
 	if !custom {
 		if len(versions) == 0 {
-			return nil, bad("policy_versions from a current quote are required")
+			return nil, bad("请先获取最新报价并提交其中的 policy_versions。")
 		}
 		if e := validateVersions(ctx, a, db, versions); e != nil {
 			return nil, e
 		}
 	}
 	if strings.TrimSpace(spec.Name) == "" || len([]rune(spec.Name)) > 128 {
-		return nil, bad("Name must be 1–128 characters")
+		return nil, bad("实例名称必须包含 1–128 个字符。")
 	}
 	memory, disk, e := validResources(spec.Resources)
 	if e != nil {
 		return nil, e
 	}
 	if spec.GPU.Count < 0 || spec.GPU.Count > 64 {
-		return nil, bad("GPU count is outside supported range")
+		return nil, bad("GPU 数量必须在 0–64 范围内。")
 	}
 	if spec.GPU.AccessMode == "" {
 		spec.GPU.AccessMode = "shared"
@@ -78,7 +80,7 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 		versions = validated.PolicyVersions
 		templateID = platform.Uint(plan["init_template_version_id"])
 		if spec.InstanceType != "" && spec.InstanceType != platform.Text(image["image_type"]) {
-			return nil, bad("Instance type does not match image")
+			return nil, bad("实例类型与镜像不匹配，请选择对应类型的镜像。")
 		}
 		spec.InstanceType = platform.Text(image["image_type"])
 	} else {
@@ -87,20 +89,20 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 			return nil, e
 		}
 		if platform.Text(image["status"]) != "active" {
-			return nil, conflict("image_unavailable", "Image is not active")
+			return nil, conflict("image_unavailable", "镜像未启用，请选择已启用的镜像。")
 		}
 		binding, e = platform.Get(db, "node_network_bindings", bindingID, false)
 		if e != nil {
 			return nil, e
 		}
 		if spec.InstanceType != platform.Text(image["image_type"]) {
-			return nil, bad("Instance type does not match image")
+			return nil, bad("实例类型与镜像不匹配，请选择对应类型的镜像。")
 		}
 		versions = map[string]string{}
 		for kind, dest := range map[string]*uint64{"pricing": &pricingID, "credit": &creditID, "gpu-idle": &idleID} {
 			var p platform.Row
 			if e = db.Table("policy_versions p").Select("p.id,p.source_id").Joins("JOIN platform_policy_bindings b ON b.policy_id=p.id").Where("b.kind=? AND p.status='active' AND p.effective_at<=?", kind, a.Time()).Take(&p).Error; e != nil || platform.Uint(p["source_id"]) == 0 {
-				return nil, platform.E(503, "policy_not_configured", "Published source policy is required")
+				return nil, platform.E(503, "policy_not_configured", "缺少已发布且生效的策略，请管理员完成策略配置。")
 			}
 			*dest = platform.Uint(p["source_id"])
 			versions[kind] = strconv.FormatUint(platform.Uint(p["id"]), 10)
@@ -120,42 +122,42 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 		return nil, e
 	}
 	if spec.InstanceType != "container" && spec.InstanceType != "virtual-machine" {
-		return nil, bad("Unsupported instance type")
+		return nil, bad("不支持的实例类型，请使用 container 或 virtual-machine。")
 	}
 	if spec.GPU.Count > 0 && (spec.InstanceType != "container" || !platform.Bool(image["gpu_ready"])) {
-		return nil, bad("GPU requires a GPU-ready container image")
+		return nil, bad("GPU 仅支持已标记为 GPU 就绪的容器镜像。")
 	}
 	if platform.Text(binding["status"]) != "active" || platform.Text(binding["validation_status"]) != "verified" {
-		return nil, conflict("network_unavailable", "Network option must be active and verified")
+		return nil, conflict("network_unavailable", "网络选项必须已启用且通过验证，请管理员验证后重试。")
 	}
 	if spec.InstanceType == "virtual-machine" && platform.Text(binding["mode"]) == "macvlan" {
-		return nil, conflict("unsupported_configuration", "Virtual machines require a bridge network")
+		return nil, conflict("unsupported_configuration", "虚拟机需要桥接网络，不支持 macvlan。")
 	}
 	nodeID := platform.Uint(binding["node_id"])
 	if spec.NodeID != "" && mustUint(spec.NodeID) != nodeID {
-		return nil, bad("Node does not match network option")
+		return nil, bad("节点与网络选项不匹配，请重新选择。")
 	}
 	node, e := platform.Get(locked(db), "nodes", nodeID, true)
 	if e != nil {
 		return nil, e
 	}
 	if platform.Uint(node["availability_zone_id"]) != zone {
-		return nil, bad("Node and zone do not match")
+		return nil, bad("节点不属于所选可用区，请重新选择。")
 	}
 	if platform.Text(node["administrative_state"]) != "active" || platform.Text(node["health"]) != "online" || platform.Stamp(node["connection_verified_at"]).IsZero() || a.Time().Sub(platform.Stamp(node["resources_sampled_at"])) > time.Minute || a.Time().Sub(platform.Stamp(node["last_heartbeat_at"])) > time.Minute {
-		return nil, conflict("node_unavailable", "Node is not verified online with fresh inventory")
+		return nil, conflict("node_unavailable", "节点未通过连接验证、未在线或资源观测已过期，请管理员检查节点连接与采集状态。")
 	}
 	resources := object(node["resources"])
 	arch := platform.Text(resources["architecture"])
 	if arch != "" && arch != platform.Text(image["architecture"]) {
-		return nil, conflict("unsupported_configuration", "Node architecture is incompatible")
+		return nil, conflict("unsupported_configuration", "节点架构与镜像不兼容，请选择相同架构的镜像或节点。")
 	}
 	pool, e := platform.Get(locked(db), "network_pools", platform.Uint(binding["network_pool_id"]), true)
 	if e != nil {
 		return nil, e
 	}
 	if platform.Text(pool["status"]) != "active" || platform.Uint(pool["availability_zone_id"]) != zone {
-		return nil, conflict("network_unavailable", "Address pool is inactive or incompatible")
+		return nil, conflict("network_unavailable", "地址池未启用或不属于所选可用区，请检查网络选项。")
 	}
 	pricing, e := platform.Get(db, "pricing_versions", pricingID, false)
 	if e != nil {
@@ -205,6 +207,11 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 	if e = reserveExisting(ctx, a, db, r, nil); e != nil {
 		return nil, e
 	}
+	if native == nil {
+		if e = StorageCapacity(ctx, a, nodeID, platform.Text(r["storage_pool"]), platform.Text(r["project_name"]), disk); e != nil {
+			return nil, e
+		}
+	}
 	if e = billing.AdmitInstance(ctx, db, r, "create"); e != nil {
 		return nil, e
 	}
@@ -226,7 +233,23 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 		q = q.Where("address=?", addr)
 	}
 	if e = q.Order("id").Take(&ip).Error; e != nil {
-		return nil, conflict("ip_capacity_unavailable", "No approved address inventory is available")
+		if !errors.Is(e, gorm.ErrRecordNotFound) {
+			return nil, e
+		}
+		var registered, available int64
+		if e = db.Table("ip_addresses").Where("network_pool_id=?", pool["id"]).Count(&registered).Error; e != nil {
+			return nil, e
+		}
+		if e = db.Table("ip_addresses").Where("network_pool_id=? AND status='available'", pool["id"]).Count(&available).Error; e != nil {
+			return nil, e
+		}
+		message := "地址库存不足：已登记地址均不可分配；配置地址池范围不会自动登记地址。"
+		if registered == 0 {
+			message = "地址池尚未登记任何地址：配置的地址范围不等于可分配库存。"
+		} else if native != nil && available > 0 {
+			message = "导入实例指定的 IP 未登记为可分配地址，不能使用其他库存地址代替。"
+		}
+		return nil, platform.EDetails(409, "ip_capacity_unavailable", message+fmt.Sprintf("已用 %d + 本次申请 1，登记库存上限 %d，当前可用 %d（count）。", registered-available, registered, available), platform.Row{"scope": "ip_pool", "resource": "addresses", "used": strconv.FormatInt(registered-available, 10), "requested": "1", "limit": strconv.FormatInt(registered, 10), "available": strconv.FormatInt(available, 10), "unit": "count", "action": "请管理员在地址池允许范围内登记经确认可供平台使用的地址；若已有地址被占用，请释放或补充库存。ARP 探测不能证明地址可供分配。"})
 	}
 	if native != nil {
 		uuids := []string{}
@@ -235,7 +258,7 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 		}
 		spec.GPU.FixedUUIDs = uuids
 		if spec.GPU.Count != len(uuids) {
-			return nil, bad("Approved GPU count differs from imported configuration")
+			return nil, bad("批准的 GPU 数量与导入实例的实际配置不一致，请核对配置。")
 		}
 	}
 	var allocated []uint64
@@ -288,18 +311,18 @@ func reserveExisting(ctx context.Context, a *platform.App, db *gorm.DB, r platfo
 		return e
 	}
 	if platform.Text(userRecord["status"]) != "active" {
-		return platform.E(403, "owner_inactive", "Instance owner is not active")
+		return platform.E(403, "owner_inactive", "实例所属用户未启用，请管理员检查用户状态。")
 	}
 	limits, e := queryRow(locked(db), "user_limits", "user_id=?", owner)
 	if e != nil {
 		if api, ok := e.(*platform.HTTPError); ok && api.Status == 404 {
-			return conflict("quota_not_configured", "User quota is required")
+			return conflict("quota_not_configured", "用户尚未配置资源配额，请联系管理员配置。")
 		}
 		return e
 	}
 	id := platform.Uint(r["id"])
 	var user, node platform.Row
-	if e = db.Table("instances").Select("COUNT(*) AS instances,COALESCE(SUM(vcpus),0) AS vcpus,COALESCE(SUM(memory_bytes),0) AS memory_bytes,COALESCE(SUM(disk_bytes),0) AS disk_bytes,COALESCE(SUM(product_type='custom'),0) AS resident").Where("user_id=? AND deleted_at IS NULL AND id<>?", owner, id).Take(&user).Error; e != nil {
+	if e = db.Table("instances").Select("COUNT(*) AS instances,COALESCE(SUM(vcpus),0) AS vcpus,COALESCE(SUM(memory_bytes),0) AS memory_bytes,COALESCE(SUM(disk_bytes),0) AS disk_bytes,COALESCE(SUM(product_type='custom'),0) AS resident").Where("user_id=? AND deleted_at IS NULL AND NOT (provisioning_state='failed' AND incus_uuid IS NULL AND COALESCE(JSON_EXTRACT(incus_config_snapshot,'$.creation_reservations_released') = true, 0)) AND id<>?", owner, id).Take(&user).Error; e != nil {
 		return e
 	}
 	v, m, d := platform.Uint(r["vcpus"]), platform.Uint(r["memory_bytes"]), platform.Uint(r["disk_bytes"])
@@ -308,35 +331,67 @@ func reserveExisting(ctx context.Context, a *platform.App, db *gorm.DB, r platfo
 		m = mustUint(replacement.MemoryBytes)
 		d = mustUint(replacement.DiskBytes)
 	}
-	for _, check := range []struct{ used, want, max uint64 }{{platform.Uint(user["instances"]), 1, platform.Uint(limits["max_instances"])}, {platform.Uint(user["vcpus"]), v, platform.Uint(limits["max_vcpus"])}, {platform.Uint(user["memory_bytes"]), m, platform.Uint(limits["max_memory_bytes"])}, {platform.Uint(user["disk_bytes"]), d, platform.Uint(limits["max_disk_bytes"])}} {
+	for _, check := range []struct {
+		resource, label, unit string
+		used, want, max       uint64
+	}{
+		{"instances", "实例数量", "count", platform.Uint(user["instances"]), 1, platform.Uint(limits["max_instances"])},
+		{"vcpus", "CPU 核数", "count", platform.Uint(user["vcpus"]), v, platform.Uint(limits["max_vcpus"])},
+		{"memory_bytes", "内存", "bytes", platform.Uint(user["memory_bytes"]), m, platform.Uint(limits["max_memory_bytes"])},
+		{"disk_bytes", "磁盘", "bytes", platform.Uint(user["disk_bytes"]), d, platform.Uint(limits["max_disk_bytes"])},
+	} {
 		if check.want > check.max || check.used > check.max-check.want {
-			return conflict("quota_exceeded", "User resource quota exceeded")
+			return admissionCapacityError("quota_exceeded", "user_quota", check.resource, check.label, check.unit, check.used, check.want, check.max, "请减少申请量、删除不再需要的实例，或联系管理员提高用户配额；已有实例也计入配额。")
 		}
 	}
 	if platform.Text(r["product_type"]) == "custom" && platform.Uint(user["resident"])+1 > platform.Uint(limits["max_resident_instances"]) {
-		return conflict("quota_exceeded", "Resident instance quota exceeded")
+		return admissionCapacityError("quota_exceeded", "user_quota", "resident_instances", "常驻实例数量", "count", platform.Uint(user["resident"]), 1, platform.Uint(limits["max_resident_instances"]), "请删除不再需要的常驻实例，或联系管理员提高常驻实例配额。")
 	}
 	n, e := platform.Get(locked(db), "nodes", platform.Uint(r["node_id"]), true)
 	if e != nil {
 		return e
 	}
 	if platform.Text(n["administrative_state"]) != "active" || platform.Text(n["health"]) != "online" || platform.Stamp(n["connection_verified_at"]).IsZero() || a.Time().Sub(platform.Stamp(n["resources_sampled_at"])) > time.Minute {
-		return conflict("node_unavailable", "Admission requires a verified online node with fresh inventory")
+		return conflict("node_unavailable", "资源准入需要已验证、在线且资源观测未过期的节点，请管理员检查节点状态。")
 	}
-	if e = db.Table("instances").Select("COALESCE(SUM(CASE WHEN product_type='custom' OR desired_state<>'stopped' OR observed_state<>'stopped' OR provisioning_state<>'ready' THEN vcpus ELSE 0 END),0) AS vcpus,COALESCE(SUM(CASE WHEN product_type='custom' OR desired_state<>'stopped' OR observed_state<>'stopped' OR provisioning_state<>'ready' THEN memory_bytes ELSE 0 END),0) AS memory_bytes,COALESCE(SUM(disk_bytes),0) AS disk_bytes,COALESCE(SUM(CASE WHEN product_type='custom' THEN vcpus ELSE 0 END),0) AS resident_vcpus,COALESCE(SUM(CASE WHEN product_type='custom' THEN memory_bytes ELSE 0 END),0) AS resident_memory,COALESCE(SUM(CASE WHEN product_type='custom' THEN disk_bytes ELSE 0 END),0) AS resident_disk").Where("node_id=? AND deleted_at IS NULL AND id<>?", r["node_id"], id).Take(&node).Error; e != nil {
+	if e = db.Table("instances").Select("COALESCE(SUM(CASE WHEN product_type='custom' OR desired_state<>'stopped' OR observed_state<>'stopped' OR provisioning_state<>'ready' THEN vcpus ELSE 0 END),0) AS vcpus,COALESCE(SUM(CASE WHEN product_type='custom' OR desired_state<>'stopped' OR observed_state<>'stopped' OR provisioning_state<>'ready' THEN memory_bytes ELSE 0 END),0) AS memory_bytes,COALESCE(SUM(disk_bytes),0) AS disk_bytes,COALESCE(SUM(CASE WHEN product_type='custom' THEN vcpus ELSE 0 END),0) AS resident_vcpus,COALESCE(SUM(CASE WHEN product_type='custom' THEN memory_bytes ELSE 0 END),0) AS resident_memory,COALESCE(SUM(CASE WHEN product_type='custom' THEN disk_bytes ELSE 0 END),0) AS resident_disk").Where("node_id=? AND deleted_at IS NULL AND NOT (provisioning_state='failed' AND incus_uuid IS NULL AND COALESCE(JSON_EXTRACT(incus_config_snapshot,'$.creation_reservations_released') = true, 0)) AND id<>?", r["node_id"], id).Take(&node).Error; e != nil {
 		return e
 	}
-	for _, check := range []struct{ used, want, max uint64 }{{platform.Uint(node["vcpus"]), v, platform.Uint(n["allocatable_vcpus"])}, {platform.Uint(node["memory_bytes"]), m, platform.Uint(n["allocatable_memory_bytes"])}, {platform.Uint(node["disk_bytes"]), d, platform.Uint(n["allocatable_disk_bytes"])}} {
+	for _, check := range []struct {
+		resource, label, unit string
+		used, want, max       uint64
+	}{
+		{"vcpus", "节点 CPU 核数", "count", platform.Uint(node["vcpus"]), v, platform.Uint(n["allocatable_vcpus"])},
+		{"memory_bytes", "节点内存", "bytes", platform.Uint(node["memory_bytes"]), m, platform.Uint(n["allocatable_memory_bytes"])},
+		{"disk_bytes", "节点磁盘", "bytes", platform.Uint(node["disk_bytes"]), d, platform.Uint(n["allocatable_disk_bytes"])},
+	} {
 		if check.want > check.max || check.used > check.max-check.want {
-			return conflict("node_capacity_unavailable", "Node resource capacity exhausted")
+			return admissionCapacityError("node_capacity_unavailable", "node_capacity", check.resource, check.label, check.unit, check.used, check.want, check.max, "请减少申请量或选择其他节点；管理员可检查节点可分配容量与已有实例占用。")
 		}
 	}
 	if platform.Text(r["product_type"]) == "custom" {
-		for _, c := range []struct{ used, want, max uint64 }{{platform.Uint(node["resident_vcpus"]), v, platform.Uint(n["resident_vcpu_budget"])}, {platform.Uint(node["resident_memory"]), m, platform.Uint(n["resident_memory_budget_bytes"])}, {platform.Uint(node["resident_disk"]), d, platform.Uint(n["resident_disk_budget_bytes"])}} {
+		for _, c := range []struct {
+			resource, label, unit string
+			used, want, max       uint64
+		}{
+			{"vcpus", "常驻 CPU 预算", "count", platform.Uint(node["resident_vcpus"]), v, platform.Uint(n["resident_vcpu_budget"])},
+			{"memory_bytes", "常驻内存预算", "bytes", platform.Uint(node["resident_memory"]), m, platform.Uint(n["resident_memory_budget_bytes"])},
+			{"disk_bytes", "常驻磁盘预算", "bytes", platform.Uint(node["resident_disk"]), d, platform.Uint(n["resident_disk_budget_bytes"])},
+		} {
 			if c.want > c.max || c.used > c.max-c.want {
-				return conflict("resident_capacity_unavailable", "Resident capacity exhausted")
+				return admissionCapacityError("resident_capacity_unavailable", "resident_capacity", c.resource, c.label, c.unit, c.used, c.want, c.max, "请减少常驻资源申请、选择其他节点，或联系管理员调整常驻资源预算。")
 			}
 		}
 	}
 	return nil
+}
+
+func admissionCapacityError(code, scope, resource, label, unit string, used, requested, limit uint64, action string) error {
+	available := uint64(0)
+	if used < limit {
+		available = limit - used
+	}
+	return platform.EDetails(409, code, label+"不足，本次申请将超过可分配上限。", platform.Row{
+		"scope": scope, "resource": resource, "used": strconv.FormatUint(used, 10), "requested": strconv.FormatUint(requested, 10), "limit": strconv.FormatUint(limit, 10), "available": strconv.FormatUint(available, 10), "unit": unit, "action": action,
+	})
 }

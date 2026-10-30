@@ -257,6 +257,93 @@ func workerUnknown(ctx context.Context, a *platform.App, j platform.Job, r platf
 	})
 	return platform.Unknown(err)
 }
+
+func workerCreatePreflightFailed(ctx context.Context, a *platform.App, j platform.Job, r platform.Row, cause error) error {
+	// Recovered tasks never acquire new release authority from missing journals.
+	if ctx.Value(workerRecoveryKey{}) != nil {
+		return workerUnknown(ctx, a, j, r, workerRetainedCreationError(cause))
+	}
+	absent, err := workerAbsent(ctx, a, r)
+	if err != nil || !absent {
+		return workerUnknown(ctx, a, j, r, workerRetainedCreationError(cause))
+	}
+	err = a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+		if e := lockWorkerAccount(db, a, j, j.UserID); e != nil {
+			return e
+		}
+		current, e := platform.Get(db, "instances", j.InstanceID, true)
+		if e != nil {
+			return e
+		}
+		if !workerPristineCreation(current, j) {
+			return errors.New("creation state changed before reservation cleanup")
+		}
+		// All other task history is conservatively disqualifying, including unknown
+		// reconciliation descendants. Missing journals alone never authorize release.
+		var other, mutations int64
+		if e = db.Table("tasks").Where("instance_id=? AND id<>?", j.InstanceID, j.ID).Count(&other).Error; e != nil {
+			return e
+		}
+		if e = db.Table("task_steps").Where("task_id=? AND (step_key<>? OR (operation_id IS NOT NULL AND operation_id<>''))", j.ID, "create.preflight").Count(&mutations).Error; e != nil {
+			return e
+		}
+		if other != 0 || mutations != 0 {
+			return errors.New("creation has prior task or mutation intent")
+		}
+		var ips, allocations []platform.Row
+		if e = locked(db).Table("ip_addresses").Where("instance_id=?", j.InstanceID).Find(&ips).Error; e != nil {
+			return e
+		}
+		for _, ip := range ips {
+			if platform.Text(ip["status"]) != "reserved" || platform.Uint(ip["reservation_task_id"]) != j.ID || platform.Uint(ip["node_id"]) != j.NodeID || ip["bound_at"] != nil {
+				return errors.New("IP reservation ownership changed")
+			}
+		}
+		if e = locked(db).Table("gpu_allocations").Where("instance_id=?", j.InstanceID).Find(&allocations).Error; e != nil {
+			return e
+		}
+		for _, g := range allocations {
+			if platform.Text(g["status"]) != "reserved" || platform.Uint(g["user_id"]) != j.UserID || platform.Uint(g["node_id"]) != j.NodeID || g["configured"] == nil || g["observed"] == nil || platform.Bool(g["configured"]) || platform.Bool(g["observed"]) || g["attached_at"] != nil {
+				return errors.New("GPU reservation is not pristine")
+			}
+		}
+		if e = billing.CancelUnprovisionedInstance(ctx, db, current); e != nil {
+			return e
+		}
+		now := a.Time()
+		if e = db.Table("gpu_allocations").Where("instance_id=? AND status='reserved'", j.InstanceID).Updates(platform.Row{"status": "cancelled", "released_at": now, "release_reason": "creation failed before dispatch", "release_verified": true, "last_verified_at": now, "revision": gorm.Expr("revision+1")}).Error; e != nil {
+			return e
+		}
+		if e = db.Table("ip_addresses").Where("instance_id=? AND reservation_task_id=? AND status='reserved'", j.InstanceID, j.ID).Updates(platform.Row{"status": "available", "node_id": nil, "node_network_binding_id": nil, "instance_id": nil, "reservation_task_id": nil, "reserved_at": nil, "reservation_expires_at": nil, "revision": gorm.Expr("revision+1")}).Error; e != nil {
+			return e
+		}
+		if e = db.Table("instances").Where("id=?", j.InstanceID).Updates(platform.Row{"provisioning_state": "failed", "observed_state": "error", "observed_at": now, "incus_config_snapshot": gorm.Expr("JSON_SET(incus_config_snapshot, '$.creation_reservations_released', true)"), "revision": gorm.Expr("revision+1")}).Error; e != nil {
+			return e
+		}
+		return db.Table("tasks").Where("id=? AND lease_generation=?", j.ID, j.LeaseGeneration).Update("result_redacted", jsonText(platform.Row{"creation_reservations_released": true})).Error
+	})
+	if err != nil {
+		platform.LogError("retain failed creation reservations", err)
+		return workerUnknown(ctx, a, j, r, workerRetainedCreationError(cause))
+	}
+	return cause
+}
+
+func workerPristineCreation(r platform.Row, j platform.Job) bool {
+	state := platform.Text(r["provisioning_state"])
+	return j.Type == "instance.create" && platform.Uint(r["id"]) == j.InstanceID && platform.Uint(r["user_id"]) == j.UserID && platform.Uint(r["node_id"]) == j.NodeID && platform.Text(r["incus_uuid"]) == "" && r["deleted_at"] == nil && platform.Text(r["observed_state"]) == "pending" && (state == "pending" || state == "creating")
+}
+
+func workerRetainedCreationError(cause error) error {
+	public := platform.PublicError(cause, true)
+	details, _ := public["details"].(map[string]any)
+	if details == nil {
+		details = map[string]any{}
+	}
+	details["resource_reservations_released"] = false
+	details["action"] = "资源预留仍保留，未自动重试或释放；请管理员核对节点实例、派发记录及计费预留后处理。"
+	return platform.EDetails(409, platform.Text(public["code"]), platform.Text(public["message"]), platform.Row(details))
+}
 func workerConfirm(ctx context.Context, a *platform.App, j platform.Job, r platform.Row, state, event string, extra platform.Row) error {
 	return a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
 		if err := lockWorkerAccount(db, a, j, platform.Uint(r["user_id"])); err != nil {
@@ -301,7 +388,7 @@ func workerNetwork(ctx context.Context, a *platform.App, r platform.Row) (platfo
 		return nil, nil, nil, err
 	}
 	if len(ips) != 1 {
-		return nil, nil, nil, errors.New("instance requires exactly one approved reserved address")
+		return nil, nil, nil, platform.E(409, "invalid_state", "实例未持有唯一的已批准预留地址，请管理员检查 IP 预留与网络绑定。")
 	}
 	binding, err := platform.Get(a.DB.WithContext(ctx), "node_network_bindings", platform.Uint(ips[0]["node_network_binding_id"]), false)
 	if err != nil {
@@ -312,7 +399,7 @@ func workerNetwork(ctx context.Context, a *platform.App, r platform.Row) (platfo
 		return nil, nil, nil, err
 	}
 	if platform.Uint(binding["node_id"]) != platform.Uint(r["node_id"]) || platform.Text(binding["project_name"]) != platform.Text(r["project_name"]) || platform.Text(binding["status"]) != "active" || platform.Text(binding["validation_status"]) != "verified" {
-		return nil, nil, nil, errors.New("approved network binding changed")
+		return nil, nil, nil, platform.E(409, "configuration_conflict", "已批准的网络绑定已变更或未验证，请管理员重新核对节点网络配置。")
 	}
 	return ips[0], binding, pool, nil
 }
@@ -340,7 +427,7 @@ func workerNoNAT(ctx context.Context, a *platform.App, node uint64, project stri
 	cfg := object(m["config"])
 	for _, key := range []string{"ipv4.nat", "ipv6.nat"} {
 		if platform.Text(cfg[key]) != "false" {
-			return errors.New("managed bridge must explicitly disable IPv4 and IPv6 NAT")
+			return platform.E(409, "configuration_conflict", "受管网桥必须明确关闭 IPv4 和 IPv6 NAT，请管理员修正网络配置。")
 		}
 	}
 	return nil
@@ -358,7 +445,7 @@ func workerCreateBody(ctx context.Context, a *platform.App, r platform.Row) (pla
 		return nil, err
 	}
 	if platform.Text(r["image_type"]) == "virtual-machine" && platform.Text(binding["mode"]) == "macvlan" {
-		return nil, errors.New("macvlan is not approved for virtual machines")
+		return nil, platform.E(409, "configuration_conflict", "当前 macvlan 网络不支持虚拟机，请选择已批准的桥接网络。")
 	}
 	nic := platform.Row{"type": "nic", "name": "eth0"}
 	switch platform.Text(binding["mode"]) {
@@ -376,7 +463,7 @@ func workerCreateBody(ctx context.Context, a *platform.App, r platform.Row) (pla
 			nic["ipv6.address"] = address
 		}
 	default:
-		return nil, errors.New("unsupported approved network mode")
+		return nil, platform.E(409, "configuration_conflict", "当前批准的网络模式不受支持，请管理员检查网络绑定。")
 	}
 	if mtu := platform.Uint(binding["mtu"]); mtu != 0 {
 		nic["mtu"] = strconv.FormatUint(mtu, 10)
@@ -409,14 +496,14 @@ func workerCreateBody(ctx context.Context, a *platform.App, r platform.Row) (pla
 	}
 	if allocations > 0 {
 		if platform.Text(r["image_type"]) != "container" {
-			return nil, errors.New("GPU requires container")
+			return nil, platform.E(409, "configuration_conflict", "GPU 仅支持容器实例，请管理员核对实例类型与 GPU 申请。")
 		}
 		cfg["nvidia.runtime"] = "true"
 		cfg["nvidia.driver.capabilities"] = "compute,utility"
 	}
 	fingerprint := workerFingerprint(r["image_fingerprint"])
 	if fingerprint == "" {
-		return nil, errors.New("pinned image fingerprint missing")
+		return nil, platform.E(409, "configuration_conflict", "实例缺少已固定的镜像指纹，请管理员重新核对镜像配置。")
 	}
 	image, err := platform.Get(a.DB.WithContext(ctx), "images", platform.Uint(r["image_id"]), false)
 	if err != nil {
@@ -437,8 +524,24 @@ func runCreate(ctx context.Context, a *platform.App, j platform.Job) error {
 	if err != nil {
 		return err
 	}
+	prior, err := workerStep(ctx, a, j, "create.native")
+	if err != nil {
+		return workerUnknown(ctx, a, j, r, err)
+	}
+	// A recovered task without a mutation journal is not authorization to create.
+	// Reconciliation may enrich its diagnosis, but never replay a historical create.
+	if prior == nil {
+		if ctx.Value(workerRecoveryKey{}) == nil {
+			if err = a.Step(ctx, j, "create.preflight", "", "running"); err != nil {
+				return err
+			}
+		}
+	}
 	body, err := workerCreateBody(ctx, a, r)
 	if err != nil {
+		if prior == nil {
+			return workerCreatePreflightFailed(ctx, a, j, r, err)
+		}
 		return workerUnknown(ctx, a, j, r, err)
 	}
 	confirm := func() (bool, error) {
@@ -452,13 +555,15 @@ func runCreate(ctx context.Context, a *platform.App, j platform.Job) error {
 		}
 		return workerFingerprint(cfg["volatile.base_image"]) == workerFingerprint(r["image_fingerprint"]), nil
 	}
-	prior, err := workerStep(ctx, a, j, "create.native")
-	if err != nil {
-		return err
-	}
 	if prior == nil {
 		if err = workerDiskCapacity(ctx, a, r, platform.Uint(r["disk_bytes"])); err != nil {
-			return workerUnknown(ctx, a, j, r, err)
+			return workerCreatePreflightFailed(ctx, a, j, r, err)
+		}
+		if ctx.Value(workerRecoveryKey{}) != nil {
+			return workerUnknown(ctx, a, j, r, platform.E(409, "creation_dispatch_unconfirmed", "历史创建任务没有可确认的派发记录，未自动重新创建；请管理员核对节点与资源预留后处理。"))
+		}
+		if err = a.Step(ctx, j, "create.preflight", "", "succeeded"); err != nil {
+			return workerCreatePreflightFailed(ctx, a, j, r, err)
 		}
 	}
 	_, err = workerOperation(ctx, a, j, "create.native", func() (map[string]any, error) {
@@ -1020,16 +1125,19 @@ func workerAbsent(ctx context.Context, a *platform.App, r platform.Row) (bool, e
 		return false, err
 	}
 	list, ok := v["metadata"].([]any)
-	if !ok {
+	if !ok || platform.Text(v["type"]) == "error" || platform.Uint(v["error_code"]) >= 400 {
 		return false, errors.New("native instance enumeration incomplete")
 	}
 	for _, item := range list {
 		m := object(item)
+		if platform.Text(m["name"]) == "" {
+			return false, errors.New("native instance enumeration contains incomplete identity")
+		}
 		cfg := object(m["expanded_config"])
 		if len(cfg) == 0 {
 			cfg = object(m["config"])
 		}
-		if platform.Text(m["name"]) == platform.Text(r["incus_name"]) || platform.Text(cfg["volatile.uuid"]) == platform.Text(r["incus_uuid"]) {
+		if platform.Text(m["name"]) == platform.Text(r["incus_name"]) || (platform.Text(r["incus_uuid"]) != "" && platform.Text(cfg["volatile.uuid"]) == platform.Text(r["incus_uuid"])) || (platform.Text(cfg["user.101cloud.instance_id"]) != "" && platform.Text(cfg["user.101cloud.instance_id"]) == platform.Text(r["id"])) {
 			return false, nil
 		}
 	}
@@ -1545,7 +1653,7 @@ func runReconcile(ctx context.Context, a *platform.App, j platform.Job) error {
 			return errors.New("lost reconciliation lease before source completion")
 		}
 		for _, s := range sources {
-			result := db.Table("tasks").Where("id = ? AND status = 'unknown' AND lease_generation = ? AND revision = ?", s["id"], s["lease_generation"], s["revision"]).Updates(platform.Row{"status": "succeeded", "finished_at": a.Time(), "error_code": nil, "phase": "reconciled", "lease_owner": nil, "lease_until": nil, "revision": gorm.Expr("revision + 1")})
+			result := db.Table("tasks").Where("id = ? AND status = 'unknown' AND lease_generation = ? AND revision = ?", s["id"], s["lease_generation"], s["revision"]).Updates(platform.Row{"status": "succeeded", "finished_at": a.Time(), "error_code": nil, "result_redacted": gorm.Expr("JSON_REMOVE(COALESCE(result_redacted, JSON_OBJECT()), '$.error')"), "phase": "reconciled", "lease_owner": nil, "lease_until": nil, "revision": gorm.Expr("revision + 1")})
 			if result.Error != nil {
 				return result.Error
 			}
@@ -1648,12 +1756,13 @@ func workerImportNetwork(ctx context.Context, a *platform.App, nodeID uint64, sp
 	return nil
 }
 
-func workerDiskCapacity(ctx context.Context, a *platform.App, r platform.Row, needed uint64) error {
+// StorageCapacity performs read-only admission/pre-dispatch validation against Incus.
+func StorageCapacity(ctx context.Context, a *platform.App, node uint64, pool, project string, needed uint64) error {
 	if needed == 0 {
 		return nil
 	}
-	path := "/1.0/storage-pools/" + url.PathEscape(platform.Text(r["storage_pool"])) + "/resources?project=" + url.QueryEscape(platform.Text(r["project_name"]))
-	v, err := a.Agent(ctx, platform.Uint(r["node_id"]), http.MethodGet, path, nil)
+	path := "/1.0/storage-pools/" + url.PathEscape(pool) + "/resources?project=" + url.QueryEscape(project)
+	v, err := a.Agent(ctx, node, http.MethodGet, path, nil)
 	if err != nil {
 		return err
 	}
@@ -1661,15 +1770,27 @@ func workerDiskCapacity(ctx context.Context, a *platform.App, r platform.Row, ne
 	if err != nil {
 		return err
 	}
-	space := object(m["space"])
-	if space["total"] == nil || space["used"] == nil {
-		return errors.New("actual storage pool free capacity is unknown")
+	return storageCapacityError(object(m["space"]), pool, needed)
+}
+
+func storageCapacityError(space map[string]any, pool string, needed uint64) error {
+	total, totalErr := strconv.ParseUint(platform.Text(space["total"]), 10, 64)
+	used, usedErr := strconv.ParseUint(platform.Text(space["used"]), 10, 64)
+	if totalErr != nil || usedErr != nil {
+		return platform.EDetails(409, "storage_pool_capacity_unknown", "暂时无法确认节点存储池可用空间，未提交新的磁盘分配。", platform.Row{"scope": "storage_pool", "resource": "disk_bytes", "unit": "bytes", "pool": pool, "action": "请联系管理员检查节点存储池状态，确认容量后重新提交。", "stage": "storage.preflight"})
 	}
-	total, used := platform.Uint(space["total"]), platform.Uint(space["used"])
-	if total < used || total-used < needed {
-		return errors.New("actual storage pool free capacity is insufficient")
+	available := uint64(0)
+	if total >= used {
+		available = total - used
+	}
+	if total < used || available < needed {
+		return platform.EDetails(409, "storage_pool_capacity_exceeded", "节点存储池可用空间不足，无法分配申请的磁盘。", platform.Row{"scope": "storage_pool", "resource": "disk_bytes", "unit": "bytes", "pool": pool, "used": strconv.FormatUint(used, 10), "requested": strconv.FormatUint(needed, 10), "limit": strconv.FormatUint(total, 10), "total": strconv.FormatUint(total, 10), "available": strconv.FormatUint(available, 10), "field": "resources.disk_bytes", "action": "请减少磁盘申请量、选择其他节点，或联系管理员扩容存储池；提高用户配额不能增加实际磁盘空间。", "stage": "create.preflight"})
 	}
 	return nil
+}
+
+func workerDiskCapacity(ctx context.Context, a *platform.App, r platform.Row, needed uint64) error {
+	return StorageCapacity(ctx, a, platform.Uint(r["node_id"]), platform.Text(r["storage_pool"]), platform.Text(r["project_name"]), needed)
 }
 
 func workerIdleStop(ctx context.Context, a *platform.App, r platform.Row) error {

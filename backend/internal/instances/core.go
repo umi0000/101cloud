@@ -127,6 +127,7 @@ func permitted(c *gin.Context, r platform.Row, action string) error {
 }
 func instanceDTO(a *platform.App, r platform.Row) platform.Row {
 	out := platform.Public(r, "id", "product_type", "billing_mode", "desired_state", "observed_state", "provisioning_state", "observed_at", "revision", "created_at", "updated_at", "node_id", "user_id")
+	out["resource_reservations_released"] = platform.Text(r["provisioning_state"]) == "failed" && platform.Bool(object(r["incus_config_snapshot"])["creation_reservations_released"])
 	out["name"] = platform.Text(r["logical_name"])
 	out["instance_type"] = platform.Text(r["image_type"])
 	out["plan_id"] = nil
@@ -158,7 +159,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 	registerGPU(a, user, admin)
 	for _, g := range []*gin.RouterGroup{user, admin} {
 		g.GET("/instances", platform.Handle(func(c *gin.Context) (any, error) {
-			q := platform.DB(c, a).Table("instances").Select("id,user_id,node_id,logical_name,product_type,billing_mode,image_type,image_id,instance_plan_id,vcpus,memory_bytes,disk_bytes,desired_state,observed_state,provisioning_state,observed_at,allowed_user_actions,revision,created_at,updated_at").Where("deleted_at IS NULL")
+			q := platform.DB(c, a).Table("instances").Select("id,user_id,node_id,logical_name,product_type,billing_mode,image_type,image_id,instance_plan_id,vcpus,memory_bytes,disk_bytes,desired_state,observed_state,provisioning_state,observed_at,allowed_user_actions,incus_config_snapshot,revision,created_at,updated_at").Where("deleted_at IS NULL")
 			if !c.GetBool("admin") {
 				q = q.Where("user_id=?", platform.Current(c).ID)
 			}
@@ -593,17 +594,28 @@ func taskDTO(db *gorm.DB, r platform.Row) (platform.Row, error) {
 	out := platform.Public(r, "id", "instance_id", "node_id", "user_id", "status", "phase", "created_at", "started_at", "finished_at", "error_code", "revision")
 	out["type"] = platform.Text(r["task_type"])
 	var steps []platform.Row
-	if e := db.Table("task_steps").Select("step_key AS name,status,error_code,started_at,finished_at").Where("task_id=?", r["id"]).Order("id").Find(&steps).Error; e != nil {
+	if e := db.Table("task_steps").Select("step_key AS name,status,error_code,result_redacted,started_at,finished_at").Where("task_id=?", r["id"]).Order("id").Find(&steps).Error; e != nil {
 		return nil, platform.WrapDB(e)
 	}
 	safe := make([]platform.Row, 0, len(steps))
 	for _, step := range steps {
-		safe = append(safe, platform.Public(step))
+		view := platform.Public(step, "name", "status", "error_code", "started_at", "finished_at")
+		view["error"] = platform.StoredTaskError(step["result_redacted"], platform.Text(step["status"]), platform.Text(step["error_code"]))
+		safe = append(safe, view)
 	}
 	out["steps"] = safe
+	out["error"] = platform.StoredTaskError(r["result_redacted"], platform.Text(r["status"]), platform.Text(r["error_code"]))
+	out["resource_reservations_released"] = platform.Bool(object(r["result_redacted"])["creation_reservations_released"])
 	out["next_action"] = "wait"
 	if platform.Text(r["status"]) == "unknown" {
 		out["next_action"] = "administrator_reconcile"
+	} else if platform.Text(r["status"]) == "failed" {
+		out["next_action"] = "inspect_failure"
+		if platform.Bool(object(r["result_redacted"])["creation_reservations_released"]) {
+			out["next_action"] = "correct_and_resubmit"
+		}
+	} else if platform.Text(r["status"]) == "succeeded" || platform.Text(r["status"]) == "cancelled" {
+		out["next_action"] = "none"
 	}
 	return out, nil
 }

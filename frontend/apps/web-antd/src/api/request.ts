@@ -18,17 +18,20 @@ export const API_BASE = apiURL || '/api/v1';
 
 export type ErrorDetails = Record<string, unknown>;
 
+/** 安全公开错误；同步响应与任务错误使用同一边界结构。 */
+export const PublicErrorSchema = z.object({
+  code: z.string(),
+  details: z.record(z.unknown()).nullable(),
+  message: z.string(),
+});
+
+export type PublicError = z.infer<typeof PublicErrorSchema>;
+
 /** 后端统一信封：{data, request_id} 或 {error:{code,message,details}, request_id}。 */
 const Envelope = z
   .object({
     data: z.unknown().optional(),
-    error: z
-      .object({
-        code: z.string().catch(''),
-        details: z.record(z.unknown()).nullable().catch(null),
-        message: z.string().catch(''),
-      })
-      .optional(),
+    error: PublicErrorSchema.optional().catch(undefined),
     request_id: z.string().catch(''),
   })
   .partial()
@@ -52,7 +55,7 @@ export class ApiError extends Error {
     requestId: string,
     retryAfter: null | number,
   ) {
-    super(body?.message || `HTTP ${status}`);
+    super(body?.message || '');
     this.status = status;
     this.code = body?.code || (status === 0 ? 'network_error' : 'http_error');
     this.details = body?.details ?? null;

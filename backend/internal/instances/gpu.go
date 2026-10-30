@@ -19,7 +19,7 @@ import (
 func parseAddress(s string) ([]byte, error) {
 	ip, e := netip.ParseAddr(s)
 	if e != nil {
-		return nil, bad("Imported instance requires an explicit inventoried direct IP")
+		return nil, bad("导入实例必须指定已登记在地址库存中的直连 IP。")
 	}
 	return ip.AsSlice(), nil
 }
@@ -69,7 +69,7 @@ func registerGPU(a *platform.App, user, admin *gin.RouterGroup) {
 					return nil, e
 				}
 				if !c.GetBool("admin") && len(in.FixedUUIDs) > 0 {
-					return nil, bad("Fixed UUID selection is administrator-only")
+					return nil, bad("仅管理员可以指定固定 GPU UUID。")
 				}
 				ids := make([]uint64, 0, len(in.AllocationIDs))
 				for _, s := range in.AllocationIDs {
@@ -107,7 +107,7 @@ func QueueGPUDetach(ctx context.Context, a *platform.App, db *gorm.DB, instanceI
 		return nil, e
 	}
 	if platform.Uint(r["user_id"]) != userID {
-		return nil, platform.E(403, "forbidden", "Instance owner does not match")
+		return nil, platform.E(403, "forbidden", "实例所属用户不匹配，无权操作此实例。")
 	}
 	return queueGPU(ctx, a, db, r, "detach", ids, GPURequest{AllowLive: allowLive, Reason: reason})
 }
@@ -120,7 +120,7 @@ func QueueGPURebind(ctx context.Context, a *platform.App, db *gorm.DB, instanceI
 		return nil, e
 	}
 	if platform.Uint(r["user_id"]) != userID {
-		return nil, platform.E(403, "forbidden", "Instance owner does not match")
+		return nil, platform.E(403, "forbidden", "实例所属用户不匹配，无权操作此实例。")
 	}
 	return queueGPU(ctx, a, db, r, "rebind", ids, GPURequest{MaxHourlyPT: maxHourlyPT, AllowLive: allowLive, Reason: reason})
 }
@@ -130,30 +130,30 @@ func queueGPU(ctx context.Context, a *platform.App, db *gorm.DB, r platform.Row,
 		return nil, e
 	}
 	if platform.Text(r["image_type"]) != "container" {
-		return nil, conflict("unsupported_configuration", "GPU actions require a container")
+		return nil, conflict("unsupported_configuration", "GPU 操作仅支持容器实例。")
 	}
 	if platform.Text(r["provisioning_state"]) != "ready" {
-		return nil, conflict("instance_not_ready", "Instance is not ready")
+		return nil, conflict("instance_not_ready", "实例尚未就绪，请等待当前创建或恢复操作完成。")
 	}
 	state := platform.Text(r["observed_state"])
 	if state != "running" && state != "stopped" {
-		return nil, conflict("invalid_state", "Confirmed running or stopped state is required")
+		return nil, conflict("invalid_state", "需要确认实例处于运行或停止状态，请等待最新状态观测。")
 	}
 	if state == "running" && !in.AllowLive {
-		return nil, conflict("unsupported_configuration", "Explicit allow_live or stopped container is required")
+		return nil, conflict("unsupported_configuration", "请先停止容器，或明确设置 allow_live 允许在线操作。")
 	}
 	if a.Time().Sub(platform.Stamp(r["observed_at"])) > time.Minute {
-		return nil, conflict("observation_incomplete", "Instance state is stale")
+		return nil, conflict("observation_incomplete", "实例状态观测已过期，请等待节点刷新状态。")
 	}
 	var old []platform.Row
 	if action != "attach" {
 		if len(ids) == 0 {
-			return nil, bad("Specify allocation_ids")
+			return nil, bad("请通过 allocation_ids 指定要操作的 GPU 分配。")
 		}
 		seen := map[uint64]bool{}
 		for _, id := range ids {
 			if seen[id] {
-				return nil, bad("Duplicate allocation IDs")
+				return nil, bad("allocation_ids 不能包含重复的 GPU 分配 ID。")
 			}
 			seen[id] = true
 		}
@@ -161,7 +161,7 @@ func queueGPU(ctx context.Context, a *platform.App, db *gorm.DB, r platform.Row,
 			return nil, e
 		}
 		if len(old) != len(ids) {
-			return nil, bad("Allocation does not belong to instance or is not active")
+			return nil, bad("GPU 分配不属于此实例或已不再有效，请刷新分配列表。")
 		}
 		if state == "running" {
 			if e = storedIdle(ctx, a, db, r, old); e != nil {
@@ -175,14 +175,14 @@ func queueGPU(ctx context.Context, a *platform.App, db *gorm.DB, r platform.Row,
 			return nil, e
 		}
 		if !platform.Bool(image["gpu_ready"]) {
-			return nil, conflict("unsupported_configuration", "Image is not approved for GPU use")
+			return nil, conflict("unsupported_configuration", "镜像未获准用于 GPU，请选择 GPU 就绪镜像。")
 		}
 	}
 	if action == "rebind" {
 		var required uint64
 		for _, source := range old {
 			if source["memory_mib"] == nil {
-				return nil, conflict("observation_incomplete", "Source GPU memory capacity is unknown")
+				return nil, conflict("observation_incomplete", "源 GPU 显存容量未知，请等待完整资源观测后重新绑定。")
 			}
 			if value := platform.Uint(source["memory_mib"]); value > required {
 				required = value
@@ -202,12 +202,12 @@ func queueGPU(ctx context.Context, a *platform.App, db *gorm.DB, r platform.Row,
 			}
 			for _, source := range old {
 				if platform.Text(source["model"]) != in.Model || platform.Text(source["access_mode"]) != in.AccessMode {
-					return nil, bad("Rebind heterogeneous allocations separately")
+					return nil, bad("型号或访问模式不同的 GPU 分配需要分别重新绑定。")
 				}
 			}
 		}
 		if in.Count <= 0 || in.Count > 64 {
-			return nil, bad("count must be between 1 and 64")
+			return nil, bad("count 必须在 1–64 范围内。")
 		}
 		if in.MaxHourlyPT == "" {
 			in.MaxHourlyPT = platform.Text(r["max_gpu_hourly_pt"])
@@ -247,13 +247,13 @@ func queueGPU(ctx context.Context, a *platform.App, db *gorm.DB, r platform.Row,
 func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.Row, in GPURequest, old []platform.Row) ([]uint64, error) {
 	max, e := decimal.NewFromString(in.MaxHourlyPT)
 	if e != nil || max.IsNegative() || max.Exponent() < -6 {
-		return nil, bad("max_hourly_pt must be a nonnegative decimal with at most six places")
+		return nil, bad("max_hourly_pt 必须为非负十进制数，最多六位小数。")
 	}
 	if in.AccessMode != "shared" && in.AccessMode != "exclusive" {
-		return nil, bad("access_mode must be shared or exclusive")
+		return nil, bad("access_mode 必须为 shared 或 exclusive。")
 	}
 	if len(in.FixedUUIDs) > 0 && len(in.FixedUUIDs) != in.Count {
-		return nil, bad("fixed_uuids count mismatch")
+		return nil, bad("fixed_uuids 数量必须与申请的 GPU 数量一致。")
 	}
 	policy, e := a.Policy(ctx, "gpu-scheduling")
 	if e != nil {
@@ -261,18 +261,18 @@ func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.R
 	}
 	maxAge := time.Duration(platform.Uint(policy["metrics_max_age_seconds"])) * time.Second
 	if maxAge <= 0 {
-		return nil, platform.E(503, "policy_not_configured", "GPU observation age is not configured")
+		return nil, platform.E(503, "policy_not_configured", "GPU 观测有效期未配置，请管理员发布有效的调度策略。")
 	}
 	smWeight, memWeight := numeric(policy["sm_weight"]), numeric(policy["memory_weight"])
 	if smWeight < 0 || memWeight < 0 || smWeight+memWeight < 0.999999 || smWeight+memWeight > 1.000001 {
-		return nil, platform.E(503, "policy_not_configured", "GPU scheduling weights are invalid")
+		return nil, platform.E(503, "policy_not_configured", "GPU 调度权重无效，请管理员检查调度策略。")
 	}
 	n, e := platform.Get(db, "nodes", platform.Uint(r["node_id"]), true)
 	if e != nil {
 		return nil, e
 	}
 	if platform.Text(n["administrative_state"]) != "active" || platform.Text(n["health"]) != "online" || a.Time().Sub(platform.Stamp(n["resources_sampled_at"])) > maxAge {
-		return nil, conflict("gpu_capacity_unavailable", "Node GPU inventory is stale or unavailable")
+		return nil, conflict("gpu_capacity_unavailable", "节点 GPU 库存不可用或观测已过期，请管理员检查节点状态与资源采集。")
 	}
 	var limits platform.Row
 	if e = locked(db).Table("user_limits").Where("user_id=?", r["user_id"]).Take(&limits).Error; e != nil {
@@ -282,8 +282,8 @@ func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.R
 	if e = db.Table("gpu_allocations").Where("user_id=? AND active_slot=1", r["user_id"]).Count(&used).Error; e != nil {
 		return nil, e
 	}
-	if uint64(used)+uint64(in.Count) > platform.Uint(limits["max_gpu_allocations"]) {
-		return nil, conflict("quota_exceeded", "GPU allocation quota exceeded")
+	if uint64(in.Count) > platform.Uint(limits["max_gpu_allocations"]) || uint64(used) > platform.Uint(limits["max_gpu_allocations"])-uint64(in.Count) {
+		return nil, admissionCapacityError("quota_exceeded", "user_quota", "gpus", "GPU 分配数量", "count", uint64(used), uint64(in.Count), platform.Uint(limits["max_gpu_allocations"]), "请释放不再需要的 GPU 分配，或联系管理员提高 GPU 配额；重新绑定期间源分配仍计入占用。")
 	}
 	inventory := map[string]map[string]any{}
 	for _, v := range rows(object(n["resources"])["gpus"]) {
@@ -305,7 +305,7 @@ func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.R
 	fixed := map[string]bool{}
 	for _, uuid := range in.FixedUUIDs {
 		if fixed[uuid] {
-			return nil, bad("Duplicate fixed UUID")
+			return nil, bad("fixed_uuids 中存在重复的 GPU UUID，请移除重复项。")
 		}
 		fixed[uuid] = true
 	}
@@ -327,7 +327,7 @@ func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.R
 		}
 		expectedPrice = platform.Uint(published["source_id"])
 		if expectedPrice == 0 {
-			return nil, conflict("policy_changed", "Quoted GPU price source is missing")
+			return nil, conflict("policy_changed", "报价对应的 GPU 价格源已不存在，请重新获取报价。")
 		}
 	}
 	for _, g := range all {
@@ -369,14 +369,14 @@ func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.R
 	}
 	if in.Reason == "automatic_gpu_rebalance" {
 		if len(old) == 0 {
-			return nil, bad("Automatic rebind requires source allocations")
+			return nil, bad("自动重新绑定需要有效的源 GPU 分配。")
 		}
 		sourceScore := 101.0
 		sourceRate := max
 		for _, source := range old {
 			live := inventory[platform.Text(source["uuid"])]
 			if live == nil || live["utilization_percent"] == nil || live["memory_utilization_percent"] == nil {
-				return nil, conflict("observation_incomplete", "Source GPU load is unknown")
+				return nil, conflict("observation_incomplete", "源 GPU 负载未知，请等待最新的完整观测。")
 			}
 			score := smWeight*numeric(live["utilization_percent"]) + memWeight*numeric(live["memory_utilization_percent"])
 			if score < sourceScore {
@@ -410,7 +410,7 @@ func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.R
 		return platform.Text(candidates[i].row["uuid"]) < platform.Text(candidates[j].row["uuid"])
 	})
 	if len(candidates) < in.Count {
-		return nil, conflict("gpu_capacity_unavailable", "No compatible fresh GPU capacity satisfies admission")
+		return nil, platform.EDetails(409, "gpu_capacity_unavailable", "符合型号、显存、访问模式、价格上限和最新观测要求的 GPU 不足：本次申请 "+strconv.Itoa(in.Count)+"，当前可选 "+strconv.Itoa(len(candidates))+"。", platform.Row{"scope": "gpu", "resource": "gpus", "requested": strconv.Itoa(in.Count), "available": strconv.Itoa(len(candidates)), "unit": "count", "action": "请减少 GPU 数量、调整型号或价格上限，或联系管理员检查 GPU 库存、分配上限和观测状态。"})
 	}
 	ids := make([]uint64, 0, in.Count)
 	for _, c := range candidates[:in.Count] {
@@ -430,25 +430,25 @@ func numeric(v any) float64 { f, _ := strconv.ParseFloat(platform.Text(v), 64); 
 func storedIdle(ctx context.Context, a *platform.App, db *gorm.DB, r platform.Row, allocations []platform.Row) error {
 	var sample platform.Row
 	if e := db.Table("instance_metric_samples").Where("instance_id=?", r["id"]).Order("sampled_at DESC,id DESC").Take(&sample).Error; e != nil {
-		return conflict("observation_incomplete", "No complete GPU occupancy evidence")
+		return conflict("observation_incomplete", "缺少完整的 GPU 占用证据，请等待完整采集后重试。")
 	}
 	policy, e := a.Policy(ctx, "gpu-scheduling")
 	if e != nil {
 		return e
 	}
 	if a.Time().Sub(platform.Stamp(sample["sampled_at"])) > time.Duration(platform.Uint(policy["metrics_max_age_seconds"]))*time.Second || !platform.Bool(sample["collection_complete"]) || !platform.Bool(sample["attribution_complete"]) || platform.Text(sample["instance_uuid"]) != platform.Text(r["incus_uuid"]) {
-		return conflict("observation_incomplete", "GPU evidence is incomplete or stale")
+		return conflict("observation_incomplete", "GPU 占用证据不完整或已过期，请等待最新完整采集。")
 	}
 	for _, allocation := range allocations {
 		var g platform.Row
 		if e = db.Table("instance_gpu_metric_samples").Where("sample_id=? AND gpu_uuid=?", sample["id"], allocation["uuid"]).Take(&g).Error; e != nil {
-			return conflict("observation_incomplete", "GPU observation is missing")
+			return conflict("observation_incomplete", "缺少此 GPU 的观测记录，请等待资源采集。")
 		}
 		if !platform.Bool(g["attribution_complete"]) || platform.Text(g["reference_scan_quality"]) != "complete" || g["process_count"] == nil || g["reference_count"] == nil || g["memory_used_bytes"] == nil {
-			return conflict("observation_incomplete", "GPU device references are unresolved")
+			return conflict("observation_incomplete", "GPU 设备引用尚未完整确认，不能安全释放，请等待完整引用扫描。")
 		}
 		if platform.Uint(g["process_count"]) > 0 || platform.Uint(g["reference_count"]) > 0 || platform.Uint(g["memory_used_bytes"]) > 0 || platform.Text(g["gpu_state"]) != "idle_candidate" {
-			return conflict("gpu_in_use", "GPU is in use")
+			return conflict("gpu_in_use", "GPU 仍有进程、设备引用或显存占用，请结束使用并等待确认空闲后重试。")
 		}
 	}
 	return nil
@@ -459,7 +459,7 @@ func liveGPU(ctx context.Context, a *platform.App, r platform.Row) (map[string]m
 		return nil, e
 	}
 	if !platform.Bool(frame["collection_complete"]) {
-		return nil, conflict("observation_incomplete", "Live collection is incomplete")
+		return nil, conflict("observation_incomplete", "实时 GPU 采集不完整，请等待节点恢复完整采集。")
 	}
 	stamp := platform.Stamp(frame["collected_at"])
 	policy, e := a.Policy(ctx, "gpu-scheduling")
@@ -467,7 +467,7 @@ func liveGPU(ctx context.Context, a *platform.App, r platform.Row) (map[string]m
 		return nil, e
 	}
 	if stamp.IsZero() || a.Time().Sub(stamp) > time.Duration(platform.Uint(policy["metrics_max_age_seconds"]))*time.Second || stamp.After(a.Time().Add(time.Second)) {
-		return nil, conflict("observation_incomplete", "Live GPU sample is stale")
+		return nil, conflict("observation_incomplete", "实时 GPU 样本已过期，请等待最新采集。")
 	}
 	for _, item := range rows(frame["instances"]) {
 		instance := object(item)
@@ -476,7 +476,7 @@ func liveGPU(ctx context.Context, a *platform.App, r platform.Row) (map[string]m
 		}
 		q := object(instance["quality"])
 		if !platform.Bool(q["attribution_complete"]) {
-			return nil, conflict("observation_incomplete", "Live attribution is incomplete")
+			return nil, conflict("observation_incomplete", "实时 GPU 归属信息不完整，暂不能安全调整分配。")
 		}
 		out := map[string]map[string]any{"_frame": {"collected_at": stamp, "state": instance["state"], "started_at": instance["started_at"]}}
 		for _, v := range rows(instance["gpus"]) {
@@ -485,24 +485,24 @@ func liveGPU(ctx context.Context, a *platform.App, r platform.Row) (map[string]m
 		}
 		return out, nil
 	}
-	return nil, conflict("observation_incomplete", "Instance is missing from live evidence")
+	return nil, conflict("observation_incomplete", "实时采集中未找到此实例，暂不能安全调整 GPU。")
 }
 func safeLiveCard(g map[string]any, removed bool) error {
 	if g == nil {
-		return conflict("observation_incomplete", "GPU is absent from live evidence")
+		return conflict("observation_incomplete", "实时采集中未找到此 GPU，暂不能安全调整分配。")
 	}
 	q := object(g["quality"])
 	if !platform.Bool(q["attribution_complete"]) || g["process_count"] == nil || g["referencing_process_count"] == nil || g["used_memory_bytes"] == nil {
-		return conflict("observation_incomplete", "GPU reference scan is incomplete")
+		return conflict("observation_incomplete", "GPU 引用扫描不完整，请等待完整扫描。")
 	}
 	if platform.Uint(g["process_count"]) > 0 || platform.Uint(g["referencing_process_count"]) > 0 || platform.Uint(g["used_memory_bytes"]) > 0 {
-		return conflict("gpu_in_use", "GPU is in use")
+		return conflict("gpu_in_use", "GPU 仍有进程、设备引用或显存占用，请结束使用并等待确认空闲后重试。")
 	}
 	if removed && (platform.Bool(g["configured"]) || platform.Bool(g["observed"])) {
-		return conflict("observation_incomplete", "Old GPU still configured or observed")
+		return conflict("observation_incomplete", "源 GPU 仍被配置或观测为已连接，不能确认释放。")
 	}
 	if !removed && platform.Text(g["state"]) != "idle_candidate" {
-		return conflict("observation_incomplete", "GPU is not confirmed idle")
+		return conflict("observation_incomplete", "尚未确认 GPU 空闲，请停止使用并等待最新观测。")
 	}
 	return nil
 }
@@ -538,7 +538,7 @@ func runGPU(ctx context.Context, a *platform.App, job platform.Job) error {
 		id := platform.Uint(g["id"])
 		if old[id] {
 			if platform.Text(g["status"]) == "released" && !platform.Bool(g["release_verified"]) {
-				return platform.Unknown(conflict("observation_incomplete", "Source release has not been verified"))
+				return platform.Unknown(conflict("observation_incomplete", "源 GPU 的释放尚未验证，请等待独立观测确认。"))
 			}
 			removed = append(removed, g)
 			continue
@@ -549,7 +549,7 @@ func runGPU(ctx context.Context, a *platform.App, job platform.Job) error {
 		uuids = append(uuids, platform.Text(g["uuid"]))
 	}
 	if len(removed) != len(old) || len(targets) > 0 {
-		return platform.Unknown(conflict("observation_incomplete", "GPU allocation ownership changed"))
+		return platform.Unknown(conflict("observation_incomplete", "GPU 分配归属已变更，请刷新分配状态并等待对账。"))
 	}
 	state, e := a.Agent(ctx, job.NodeID, "GET", "/1.0/instances/"+url.PathEscape(platform.Text(r["incus_name"]))+"/state?project="+url.QueryEscape(platform.Text(r["project_name"])), nil)
 	if e != nil {
@@ -557,7 +557,7 @@ func runGPU(ctx context.Context, a *platform.App, job platform.Job) error {
 	}
 	st := strings.ToLower(platform.Text(object(state["metadata"])["status"]))
 	if st != "stopped" && st != "running" {
-		return platform.Unknown(conflict("invalid_state", "GPU state is not stable"))
+		return platform.Unknown(conflict("invalid_state", "实例尚未稳定处于运行或停止状态，不能安全变更 GPU。"))
 	}
 	if e = configureGPU(ctx, a, job, r, uuids, removed, p.AllowLive, st); e != nil {
 		return platform.Unknown(e)
@@ -604,7 +604,7 @@ func runGPU(ctx context.Context, a *platform.App, job platform.Job) error {
 				break
 			}
 			if !a.Time().Before(deadline) {
-				return platform.Unknown(conflict("observation_incomplete", "Awaiting independent post-change GPU release sample"))
+				return platform.Unknown(conflict("observation_incomplete", "正在等待变更后的独立 GPU 释放样本，暂不能确认资源已释放。"))
 			}
 			select {
 			case <-ctx.Done():
@@ -646,7 +646,7 @@ func configureGPU(ctx context.Context, a *platform.App, job platform.Job, r plat
 		}
 		native := object(response["metadata"])
 		if platform.Text(object(native["config"])["volatile.uuid"]) != platform.Text(r["incus_uuid"]) {
-			return false, conflict("instance_identity_changed", "Incus UUID changed")
+			return false, conflict("instance_identity_changed", "原生实例 UUID 已变化，为避免操作错误实例已停止变更，请联系管理员核对身份。")
 		}
 		inventory, e := a.Agent(ctx, job.NodeID, "GET", "/agent/v1/resources", nil)
 		if e != nil {
@@ -678,7 +678,7 @@ func configureGPU(ctx context.Context, a *platform.App, job platform.Job, r plat
 		return nil
 	}
 	if state == "running" && !allowLive {
-		return conflict("unsupported_configuration", "Stop container or explicitly allow live adjustment")
+		return conflict("unsupported_configuration", "请停止容器，或明确设置 allow_live 允许在线调整。")
 	}
 	prior, e := workerStep(ctx, a, job, "gpu.configure")
 	if e != nil {
@@ -701,7 +701,7 @@ func configureGPU(ctx context.Context, a *platform.App, job platform.Job, r plat
 				return nil
 			}
 		}
-		return platform.Unknown(conflict("observation_incomplete", "Prior GPU mutation must be reconciled; it will not be blindly replayed"))
+		return platform.Unknown(conflict("observation_incomplete", "上一次 GPU 变更结果尚未确认，需先完成对账；系统不会盲目重放。"))
 	}
 	if state == "running" {
 		live, e := liveGPU(ctx, a, r)
@@ -726,21 +726,21 @@ func configureGPU(ctx context.Context, a *platform.App, job platform.Job, r plat
 		return platform.Unknown(e)
 	}
 	if !platform.Bool(result["operation_completed"]) || platform.Text(result["configuration_state"]) != "observed" {
-		return platform.Unknown(conflict("observation_incomplete", "GPU operation configuration remains uncertain"))
+		return platform.Unknown(conflict("observation_incomplete", "GPU 操作后的配置状态仍不确定，请等待对账确认。"))
 	}
 	matches, e = observe()
 	if e != nil {
 		return platform.Unknown(e)
 	}
 	if !matches {
-		return platform.Unknown(conflict("observation_incomplete", "GPU configuration differs from requested UUIDs"))
+		return platform.Unknown(conflict("observation_incomplete", "观测到的 GPU 配置与请求 UUID 不一致，请等待对账或联系管理员。"))
 	}
 	return a.Step(ctx, job, "gpu.configure", operation, "succeeded")
 }
 func configuredGPUUUIDs(native, inventory platform.Row) ([]string, error) {
 	devices, ok := native["expanded_devices"].(map[string]any)
 	if !ok {
-		return nil, conflict("observation_incomplete", "Expanded native devices are unavailable")
+		return nil, conflict("observation_incomplete", "无法读取原生实例的展开设备配置，请检查节点观测状态。")
 	}
 	byPCI := map[string]string{}
 	byUUID := map[string]bool{}
@@ -755,7 +755,7 @@ func configuredGPUUUIDs(native, inventory platform.Row) ([]string, error) {
 			continue
 		}
 		if byPCI[pci] != "" || byUUID[uuid] {
-			return nil, conflict("observation_incomplete", "GPU inventory identity is ambiguous")
+			return nil, conflict("observation_incomplete", "GPU 库存标识存在歧义，请管理员核对 UUID 与 PCI 标识。")
 		}
 		byPCI[pci] = uuid
 		byUUID[uuid] = true
@@ -765,13 +765,13 @@ func configuredGPUUUIDs(native, inventory platform.Row) ([]string, error) {
 	for _, v := range devices {
 		device, ok := v.(map[string]any)
 		if !ok || platform.Text(device["type"]) == "" {
-			return nil, conflict("observation_incomplete", "Native device type is unavailable")
+			return nil, conflict("observation_incomplete", "原生设备类型信息缺失，无法安全识别 GPU。")
 		}
 		if platform.Text(device["type"]) != "gpu" {
 			continue
 		}
 		if kind := platform.Text(device["gputype"]); kind != "" && kind != "physical" {
-			return nil, conflict("unsupported_configuration", "Only physical UUID GPUs are supported")
+			return nil, conflict("unsupported_configuration", "仅支持通过 UUID 标识的物理 GPU。")
 		}
 		pci := strings.ToLower(platform.Text(device["pci"]))
 		if len(pci) == 7 {
@@ -779,7 +779,7 @@ func configuredGPUUUIDs(native, inventory platform.Row) ([]string, error) {
 		}
 		uuid := byPCI[pci]
 		if uuid == "" || seen[uuid] {
-			return nil, conflict("observation_incomplete", "GPU UUID cannot be resolved uniquely")
+			return nil, conflict("observation_incomplete", "无法唯一确定 GPU UUID，请管理员检查设备与库存标识。")
 		}
 		seen[uuid] = true
 		out = append(out, uuid)

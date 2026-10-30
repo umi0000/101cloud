@@ -51,7 +51,7 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 		for _, f := range []string{"administrative_state", "health"} {
 			if s := c.Query(f); s != "" {
 				if (f == "administrative_state" && !enum(s, "active", "disabled", "draining", "maintenance")) || (f == "health" && !enum(s, "unknown", "online", "offline")) {
-					return nil, invalid("invalid node filter")
+					return nil, invalid("节点筛选值无效，请检查 administrative_state 或 health。")
 				}
 				q = q.Where(f+" = ?", s)
 			}
@@ -70,7 +70,7 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 			return nil, err
 		}
 		if !textValid(in.Name, 128) || in.Connection == nil || in.Defaults == nil || in.Allocatable == nil {
-			return nil, invalid("name, connection, defaults and allocatable are required")
+			return nil, invalid("请填写节点名称、连接配置、默认配置及可分配容量。")
 		}
 		zid, err := platform.IDString(in.ZoneID)
 		if err != nil {
@@ -81,10 +81,10 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 			return nil, err
 		}
 		if platform.Text(zone["status"]) != "active" {
-			return nil, invalid("zone must be active")
+			return nil, invalid("节点必须属于已启用的可用区。")
 		}
 		if !textValid(in.Defaults.StoragePool, 255) || !codeValid(in.Defaults.ProjectName) || len(in.Defaults.ProjectName) > 63 {
-			return nil, invalid("invalid node defaults")
+			return nil, invalid("默认存储池或项目名无效，请检查 defaults。")
 		}
 		row, err := nodeCapacityChanges(*in.Allocatable)
 		if err != nil {
@@ -140,17 +140,17 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 		changes := platform.Row{}
 		if in.Name != nil {
 			if !textValid(*in.Name, 128) {
-				return nil, invalid("invalid node name")
+				return nil, invalid("节点名称不能为空且不能超过 128 个字符。")
 			}
 			changes["name"] = *in.Name
 		}
 		if in.AdministrativeState != nil {
 			state := *in.AdministrativeState
 			if !enum(state, "active", "disabled", "draining", "maintenance") {
-				return nil, invalid("invalid administrative_state")
+				return nil, invalid("administrative_state 必须为 active、disabled、draining 或 maintenance。")
 			}
 			if state == "active" && (platform.Stamp(r["connection_verified_at"]).IsZero() || platform.Text(r["health"]) != "online" || platform.Stamp(r["resources_sampled_at"]).IsZero()) {
-				return nil, platform.E(409, "node_unavailable", "probe the current connection successfully before activating the node")
+				return nil, platform.E(409, "node_unavailable", "请先成功探测当前连接并获取在线资源观测，再启用节点。")
 			}
 			changes["administrative_state"] = state
 			changes["status"] = state
@@ -168,7 +168,7 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 			}
 		}
 		if len(changes) == 0 {
-			return nil, invalid("at least one node field is required")
+			return nil, invalid("请至少提交一个要更新的节点字段。")
 		}
 		saved, err := platform.Save(c, a, "nodes", r, changes)
 		if err != nil {
@@ -185,7 +185,7 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 			return nil, err
 		}
 		if in.Connection == nil {
-			return nil, invalid("connection is required")
+			return nil, invalid("请提供 connection 连接配置。")
 		}
 		id, err := platform.ID(c, "id")
 		if err != nil {
@@ -230,7 +230,7 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 			return nil, err
 		}
 		if in.Mode != "prevent_new_allocations" {
-			return nil, invalid("mode must be prevent_new_allocations")
+			return nil, invalid("mode 必须为 prevent_new_allocations，以阻止新增分配。")
 		}
 		return nodeQueue(c, a, true)
 	}))
@@ -279,14 +279,14 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 		changes := platform.Row{}
 		if in.Status != nil {
 			if !enum(*in.Status, "available", "disabled", "maintenance") {
-				return nil, invalid("status must be available, disabled or maintenance")
+				return nil, invalid("GPU status 必须为 available、disabled 或 maintenance。")
 			}
 			changes["status"] = *in.Status
 		}
 		max := platform.Uint(r["max_allocations"])
 		if in.MaxAllocations != nil {
 			if *in.MaxAllocations == 0 || *in.MaxAllocations > 4294967295 {
-				return nil, invalid("max_allocations must be a positive uint32")
+				return nil, invalid("max_allocations 必须是大于零的 uint32 整数。")
 			}
 			max = *in.MaxAllocations
 			changes["max_allocations"] = max
@@ -296,7 +296,7 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 			return nil, platform.WrapDB(e)
 		}
 		if max < uint64(used) {
-			return nil, platform.E(409, "gpu_in_use", "allocation limit cannot be below active, reserved, releasing or unknown allocations")
+			return nil, catalogCapacityError("gpu_in_use", "gpu", "gpus", "GPU 分配上限", "count", uint64(used), 0, max, "max_allocations", "请先安全释放有效、预留、释放中或状态未知的 GPU 分配，再降低上限。")
 		}
 		// gpu_price_version_id is a gpu-pricing policy_versions ID externally;
 		// node_gpus references the legacy gpu_price_versions source row.
@@ -317,22 +317,22 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 				return nil, e
 			}
 			if platform.Text(price["status"]) != "active" || platform.Stamp(price["effective_at"]).After(a.Time()) || platform.Text(price["gpu_model"]) != platform.Text(r["model"]) {
-				return nil, invalid("GPU price must be published, effective and match the GPU model")
+				return nil, invalid("GPU 价格必须已发布、生效且匹配此 GPU 型号。")
 			}
 			if platform.Text(price["access_mode"]) == "exclusive" && max != 1 {
-				return nil, invalid("exclusive GPU pricing requires max_allocations=1")
+				return nil, invalid("独占 GPU 价格要求 max_allocations 为 1。")
 			}
 		}
 		if state == "available" {
 			if priceID == 0 {
-				return nil, invalid("available GPUs require published pricing")
+				return nil, invalid("启用 GPU 前必须配置已发布的 GPU 价格。")
 			}
 			if platform.Text(r["status"]) == "missing" || platform.Text(r["status"]) == "error" || platform.Text(n["health"]) != "online" || platform.Stamp(n["connection_verified_at"]).IsZero() || !nodeGPUObservedHealthy(r, n) {
-				return nil, platform.E(409, "observation_incomplete", "GPU must have a current healthy observation on a verified online node before it can be made available")
+				return nil, platform.E(409, "observation_incomplete", "启用 GPU 前需要已验证在线的节点及最新健康 GPU 观测，请检查节点与 GPU 状态。")
 			}
 		}
 		if len(changes) == 0 {
-			return nil, invalid("at least one GPU field is required")
+			return nil, invalid("请至少提交一个要更新的 GPU 字段。")
 		}
 		saved, e := platform.Save(c, a, "node_gpus", r, changes)
 		if e != nil {
@@ -368,22 +368,22 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 func nodeConnectionChanges(a *platform.App, in nodeConnection) (platform.Row, error) {
 	decoded, e := base64.RawURLEncoding.Strict().DecodeString(in.Token)
 	if e != nil || len(decoded) != 32 || len(in.Token) != 43 {
-		return nil, invalid("token must be a 32-byte unpadded base64url credential")
+		return nil, invalid("token 必须为 32 字节凭据的无填充 base64url 编码。")
 	}
 	pin, e := hex.DecodeString(in.ServerCertSHA256)
 	if e != nil || len(pin) != 32 || strings.ToLower(in.ServerCertSHA256) != in.ServerCertSHA256 {
-		return nil, invalid("server_cert_sha256 must contain 64 lowercase hexadecimal characters")
+		return nil, invalid("server_cert_sha256 必须为 64 位小写十六进制 SHA-256 指纹。")
 	}
 	u, e := url.Parse(in.Endpoint)
 	if e != nil || u.Scheme != "https" || u.Opaque != "" || u.User != nil || u.Hostname() == "" || (u.Path != "" && u.Path != "/") || u.RawPath != "" || u.RawQuery != "" || u.ForceQuery || strings.Contains(in.Endpoint, "#") || strings.ContainsAny(u.Host, "\r\n\t %\\") || strings.HasSuffix(u.Host, ":") {
-		return nil, invalid("endpoint must be an HTTPS origin")
+		return nil, invalid("endpoint 必须是 HTTPS 源地址，不能包含用户信息、路径、查询参数或片段。")
 	}
 	host := strings.ToLower(u.Hostname())
 	port := u.Port()
 	if port != "" {
 		p, e := strconv.Atoi(port)
 		if e != nil || p < 1 || p > 65535 {
-			return nil, invalid("invalid endpoint port")
+			return nil, invalid("endpoint 端口必须在 1–65535 范围内。")
 		}
 		if p == 443 {
 			port = ""
@@ -401,7 +401,7 @@ func nodeConnectionChanges(a *platform.App, in nodeConnection) (platform.Row, er
 	u.Path = ""
 	endpoint := u.String()
 	if len(endpoint) > 512 {
-		return nil, invalid("endpoint is too long")
+		return nil, invalid("endpoint 不能超过 512 字节。")
 	}
 	if e = a.CheckEndpoint(endpoint); e != nil {
 		return nil, e
@@ -413,33 +413,44 @@ func nodeConnectionChanges(a *platform.App, in nodeConnection) (platform.Row, er
 	return platform.Row{"agent_endpoint": endpoint, "token_ciphertext": ciphertext, "server_cert_sha256": pin, "key_version": 1}, nil
 }
 func nodeCapacityChanges(in nodeAllocatable) (platform.Row, error) {
+	parse := func(field, value string, positive bool) (uint64, error) {
+		n, err := unsigned(value, positive)
+		if err != nil {
+			constraint := "非负"
+			if positive {
+				constraint = "大于零的"
+			}
+			return 0, platform.EDetails(422, "validation_failed", "allocatable."+field+" 必须为"+constraint+"十进制整数字符串。", platform.Row{"field": "allocatable." + field, "action": "请以字节为单位填写整数，不要附带 GiB 等单位。"})
+		}
+		return n, nil
+	}
 	if in.VCPUs == nil || in.ResidentVCPUs == nil || *in.VCPUs == 0 || *in.VCPUs > 4294967295 || *in.ResidentVCPUs > *in.VCPUs {
-		return nil, invalid("vcpus must be positive uint32 and resident_vcpus must not exceed it")
+		return nil, invalid("vcpus 必须是正 uint32 整数，resident_vcpus 不能超过 vcpus。")
 	}
-	memory, e := unsigned(in.MemoryBytes, true)
+	memory, e := parse("memory_bytes", in.MemoryBytes, true)
 	if e != nil {
 		return nil, e
 	}
-	disk, e := unsigned(in.DiskBytes, true)
+	disk, e := parse("disk_bytes", in.DiskBytes, true)
 	if e != nil {
 		return nil, e
 	}
-	rm, e := unsigned(in.ResidentMemoryBytes, false)
+	rm, e := parse("resident_memory_bytes", in.ResidentMemoryBytes, false)
 	if e != nil {
 		return nil, e
 	}
-	rd, e := unsigned(in.ResidentDiskBytes, false)
+	rd, e := parse("resident_disk_bytes", in.ResidentDiskBytes, false)
 	if e != nil {
 		return nil, e
 	}
 	if rm > memory || rd > disk {
-		return nil, invalid("resident budgets cannot exceed allocatable capacity")
+		return nil, invalid("常驻内存或磁盘预算不能超过对应可分配容量，请检查 resident_memory_bytes 和 resident_disk_bytes。")
 	}
 	return platform.Row{"allocatable_vcpus": *in.VCPUs, "allocatable_memory_bytes": memory, "allocatable_disk_bytes": disk, "resident_vcpu_budget": *in.ResidentVCPUs, "resident_memory_budget_bytes": rm, "resident_disk_budget_bytes": rd}, nil
 }
 func nodeCheckCommitments(db *gorm.DB, id uint64, capacity platform.Row) error {
 	var rows []platform.Row
-	if e := db.Table("instances").Select("billing_mode,vcpus,memory_bytes,disk_bytes").Where("node_id = ? AND deleted_at IS NULL AND provisioning_state <> 'deleted'", id).Find(&rows).Error; e != nil {
+	if e := db.Table("instances").Select("billing_mode,vcpus,memory_bytes,disk_bytes").Where("node_id = ? AND deleted_at IS NULL AND provisioning_state <> 'deleted' AND NOT (provisioning_state='failed' AND incus_uuid IS NULL AND COALESCE(JSON_EXTRACT(incus_config_snapshot,'$.creation_reservations_released') = true, 0))", id).Find(&rows).Error; e != nil {
 		return platform.WrapDB(e)
 	}
 	remaining := platform.Row{}
@@ -451,7 +462,11 @@ func nodeCheckCommitments(db *gorm.DB, id uint64, capacity platform.Row) error {
 			v := platform.Uint(r[pair[0]])
 			left := platform.Uint(remaining[pair[1]])
 			if v > left {
-				return platform.E(409, "capacity_in_use", "capacity cannot be reduced below committed instance resources")
+				unit := "bytes"
+				if pair[0] == "vcpus" {
+					unit = "count"
+				}
+				return catalogCapacityError("capacity_in_use", "node_capacity", pair[0], "节点容量", unit, platform.Uint(capacity[pair[1]])-left, v, platform.Uint(capacity[pair[1]]), "allocatable."+pair[0], "新容量不能低于已承诺实例资源，请先释放资源或提高本次配置值。")
 			}
 			remaining[pair[1]] = left - v
 		}
@@ -460,7 +475,11 @@ func nodeCheckCommitments(db *gorm.DB, id uint64, capacity platform.Row) error {
 				v := platform.Uint(r[pair[0]])
 				left := platform.Uint(remaining[pair[1]])
 				if v > left {
-					return platform.E(409, "capacity_in_use", "resident budget cannot be reduced below committed resources")
+					unit := "bytes"
+					if pair[0] == "vcpus" {
+						unit = "count"
+					}
+					return catalogCapacityError("capacity_in_use", "resident_capacity", pair[0], "常驻资源预算", unit, platform.Uint(capacity[pair[1]])-left, v, platform.Uint(capacity[pair[1]]), "allocatable.resident_"+pair[0], "新常驻预算不能低于已承诺资源，请先释放常驻资源或提高本次预算。")
 				}
 				remaining[pair[1]] = left - v
 			}
@@ -535,7 +554,7 @@ func nodeGPU(c *gin.Context, a *platform.App, lock bool) (platform.Row, platform
 		return nil, nil, e
 	}
 	if platform.Uint(r["node_id"]) != id {
-		return nil, nil, platform.E(404, "not_found", "GPU not found on node")
+		return nil, nil, platform.E(404, "not_found", "此节点上未找到指定 GPU，请刷新 GPU 列表。")
 	}
 	var counts struct {
 		AllocationCount  uint64
@@ -621,4 +640,12 @@ func nodeResources(v any) map[string]any {
 		return nil
 	}
 	return out
+}
+
+func catalogCapacityError(code, scope, resource, label, unit string, used, requested, limit uint64, field, action string) error {
+	available := uint64(0)
+	if used < limit {
+		available = limit - used
+	}
+	return platform.EDetails(409, code, label+"不足（"+resource+"）：已用 "+strconv.FormatUint(used, 10)+" + 本次需保留 "+strconv.FormatUint(requested, 10)+"，超过配置上限 "+strconv.FormatUint(limit, 10)+"（"+unit+"）。", platform.Row{"scope": scope, "resource": resource, "used": strconv.FormatUint(used, 10), "requested": strconv.FormatUint(requested, 10), "limit": strconv.FormatUint(limit, 10), "available": strconv.FormatUint(available, 10), "unit": unit, "field": field, "action": action})
 }

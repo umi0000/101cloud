@@ -11,11 +11,13 @@ import { Button, Card, Descriptions, DescriptionsItem, Drawer, Input, Select, Sp
 import { opsApi } from '#/api/backend';
 import ConfirmAction from '#/components/confirm-action.vue';
 import CursorPager from '#/components/cursor-pager.vue';
+import ErrorFeedback from '#/components/error-feedback.vue';
 import StatusTag from '#/components/status-tag.vue';
 import TimeText from '#/components/time-text.vue';
 import UserName from '#/components/user-name.vue';
 import { errorToast, trackAccepted, useAction, useCursorList, useResource } from '#/composables/api';
-import { ENUMS, TASK_TYPES } from '#/locales/enums';
+import { ENUMS, TASK_NEXT_ACTIONS, TASK_TYPES } from '#/locales/enums';
+import { describeTaskError } from '#/locales/errors';
 
 const route = useRoute();
 type TaskFilters = Record<'instance_id' | 'node_id' | 'status' | 'user_id', string | undefined>;
@@ -38,7 +40,7 @@ const columns = [
   { key: 'user', title: '用户' },
   { key: 'created', title: '创建', width: 130 },
   { key: 'finished', title: '结束', width: 130 },
-  { dataIndex: 'error_code', title: '错误码' },
+  { key: 'error', title: '失败原因 / 处理建议', width: 300 },
 ];
 
 const selectedId = ref<null | string>(null);
@@ -116,6 +118,9 @@ onMounted(() => list.load());
           <template v-else-if="column.key === 'user'"><UserName :id="record.user_id" /></template>
           <template v-else-if="column.key === 'created'"><TimeText :value="record.created_at" /></template>
           <template v-else-if="column.key === 'finished'"><TimeText :value="record.finished_at" /></template>
+          <template v-else-if="column.key === 'error'">
+            <ErrorFeedback :feedback="describeTaskError(record, list.requestId.value)" />
+          </template>
         </template>
       </Table>
       <CursorPager
@@ -144,12 +149,21 @@ onMounted(() => list.load());
           <DescriptionsItem label="类型">{{ TASK_TYPES[detail.data.value.type] ?? detail.data.value.type }}</DescriptionsItem>
           <DescriptionsItem label="状态"><StatusTag kind="task" :value="detail.data.value.status" /></DescriptionsItem>
           <DescriptionsItem label="阶段"><span class="font-mono">{{ detail.data.value.phase || '—' }}</span></DescriptionsItem>
-          <DescriptionsItem label="下一步"><span class="font-mono">{{ detail.data.value.next_action }}</span></DescriptionsItem>
+          <DescriptionsItem label="下一步">
+            {{ TASK_NEXT_ACTIONS[detail.data.value.next_action] ?? (detail.data.value.next_action ? '请查看任务状态与处理建议' : '—') }}
+            <details v-if="detail.data.value.next_action" class="text-muted-foreground mt-1 text-xs">
+              <summary class="cursor-pointer">技术详情</summary>
+              <span class="font-mono">{{ detail.data.value.next_action }}</span>
+            </details>
+          </DescriptionsItem>
           <DescriptionsItem label="创建"><TimeText :value="detail.data.value.created_at" /></DescriptionsItem>
           <DescriptionsItem label="开始"><TimeText :value="detail.data.value.started_at" /></DescriptionsItem>
           <DescriptionsItem label="结束"><TimeText :value="detail.data.value.finished_at" /></DescriptionsItem>
-          <DescriptionsItem label="错误码"><span class="font-mono">{{ detail.data.value.error_code ?? '—' }}</span></DescriptionsItem>
         </Descriptions>
+        <ErrorFeedback class="mt-3" :feedback="describeTaskError(detail.data.value, detail.requestId.value)" />
+        <div v-if="detail.data.value.status === 'failed'" class="text-muted-foreground mt-3 text-sm">
+          任务已失败，不会自动重试。请先修正失败原因；是否需要重新提交应以资源实际状态为准。
+        </div>
         <div v-if="detail.data.value.status === 'unknown'" class="mt-3 text-sm text-orange-500">
           外部操作结果未确认。核对只重查实际状态，不会重放操作；后台不提供"手动标记成功"。
         </div>
@@ -160,7 +174,7 @@ onMounted(() => list.load());
             { key: 'status', title: '状态' },
             { key: 'started', title: '开始' },
             { key: 'finished', title: '结束' },
-            { dataIndex: 'error_code', title: '错误码' },
+            { key: 'error', title: '失败原因 / 处理建议' },
           ]"
           :data-source="detail.data.value.steps"
           :pagination="false"
@@ -171,6 +185,9 @@ onMounted(() => list.load());
             <template v-if="column.key === 'status'"><StatusTag kind="task" :value="record.status" /></template>
             <template v-else-if="column.key === 'started'"><TimeText :value="record.started_at" /></template>
             <template v-else-if="column.key === 'finished'"><TimeText :value="record.finished_at" /></template>
+            <template v-else-if="column.key === 'error'">
+              <ErrorFeedback :feedback="describeTaskError(record, detail.requestId.value)" />
+            </template>
           </template>
         </Table>
       </template>

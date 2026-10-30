@@ -4,17 +4,22 @@ import type { Query } from '#/api/backend';
 import type { ApiResult } from '#/api/request';
 import type { Page, TaskAccepted } from '#/api/types';
 
-import { onBeforeUnmount, ref, shallowRef, watch } from 'vue';
+import { h, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 
-import { message } from 'ant-design-vue';
+import { message, notification } from 'ant-design-vue';
 
 import { ApiError, newIdempotencyKey } from '#/api/request';
+import ErrorFeedback from '#/components/error-feedback.vue';
 import { describeError } from '#/locales/errors';
 import { useTaskStore } from '#/store/tasks';
 
 export function errorToast(error: unknown) {
   const d = describeError(error);
-  message.error(d.requestId ? `${d.text}（${d.requestId}）` : d.text);
+  notification.error({
+    description: () => h(ErrorFeedback, { feedback: d, hideMessage: true }),
+    duration: 8,
+    message: d.text,
+  });
 }
 
 /**
@@ -29,6 +34,7 @@ export function useCursorList<T, F extends Query = Query>(
   const loading = ref(false);
   const stack = ref<(string | undefined)[]>([undefined]);
   const next = ref<null | string>(null);
+  const requestId = ref('');
   let seq = 0;
 
   async function load() {
@@ -40,6 +46,7 @@ export function useCursorList<T, F extends Query = Query>(
       if (mine !== seq) return;
       items.value = r.data.items;
       next.value = r.data.next_cursor;
+      requestId.value = r.requestId;
     } catch (error) {
       if (mine !== seq) return;
       if (error instanceof ApiError && error.code === 'invalid_cursor' && stack.value.length > 1) {
@@ -81,6 +88,7 @@ export function useCursorList<T, F extends Query = Query>(
     nextPage,
     page: () => stack.value.length,
     prevPage,
+    requestId,
     reset,
   };
 }
@@ -91,6 +99,7 @@ export function useResource<T>(fetcher: () => null | Promise<ApiResult<T>>) {
   const etag = ref<null | string>(null);
   const loading = ref(false);
   const error = shallowRef<unknown>(null);
+  const requestId = ref('');
 
   async function reload() {
     loading.value = true;
@@ -100,6 +109,7 @@ export function useResource<T>(fetcher: () => null | Promise<ApiResult<T>>) {
       const r = await pending;
       data.value = r.data;
       etag.value = r.etag;
+      requestId.value = r.requestId;
       error.value = null;
     } catch (error_) {
       error.value = error_;
@@ -109,7 +119,7 @@ export function useResource<T>(fetcher: () => null | Promise<ApiResult<T>>) {
     }
   }
 
-  return { data, error, etag, loading, reload };
+  return { data, error, etag, loading, reload, requestId };
 }
 
 /**

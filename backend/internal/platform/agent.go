@@ -119,18 +119,18 @@ func (a *App) AgentConditional(ctx context.Context, nodeID uint64, method, path 
 	}
 	resp, e := client.Do(req)
 	if e != nil {
-		return nil, "", E(503, "node_unavailable", "node request failed")
+		return nil, "", E(503, "node_unavailable", "无法连接节点或等待节点响应超时，请联系管理员检查节点连接；操作已提交时请勿重复执行。")
 	}
 	defer resp.Body.Close()
 	b, e := io.ReadAll(io.LimitReader(resp.Body, (16<<20)+1))
 	if e != nil || len(b) > 16<<20 {
-		return nil, "", E(503, "node_unavailable", "invalid node response size")
+		return nil, "", E(503, "node_unavailable", "节点响应不完整或超出大小限制，请联系管理员检查节点状态。")
 	}
 	var out map[string]any
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.UseNumber()
 	if d.Decode(&out) != nil {
-		return nil, "", E(503, "node_unavailable", "invalid node JSON response")
+		return nil, "", E(503, "node_unavailable", "节点返回了无法识别的响应，请联系管理员检查节点状态。")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		code := "node_unavailable"
@@ -139,7 +139,7 @@ func (a *App) AgentConditional(ctx context.Context, nodeID uint64, method, path 
 			code = "configuration_conflict"
 			status = 409
 		}
-		return out, resp.Header.Get("ETag"), E(status, code, "node rejected operation")
+		return out, resp.Header.Get("ETag"), E(status, code, "节点拒绝了本次操作，请刷新实例状态并联系管理员检查节点配置。")
 	}
 	return out, resp.Header.Get("ETag"), nil
 }
@@ -168,7 +168,7 @@ func (a *App) WaitOperation(ctx context.Context, nodeID uint64, operation string
 			if status == 200 {
 				return result, nil
 			}
-			return result, E(409, "operation_failed", "node operation failed")
+			return result, E(409, "operation_failed", "节点执行操作失败，请联系管理员检查节点任务及实例状态后再决定下一步。")
 		}
 		select {
 		case <-ctx.Done():

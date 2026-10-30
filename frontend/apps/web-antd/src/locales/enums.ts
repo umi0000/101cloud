@@ -134,6 +134,12 @@ export const TASK_TYPES: Record<string, string> = {
   'node.probe': '节点探测',
 };
 
+export const TASK_NEXT_ACTIONS: Record<string, string> = {
+  administrator_reconcile: '请管理员核对实际状态，不会重放原操作',
+  correct_and_resubmit: '修正失败原因后可重新提交创建，不会自动重试',
+  inspect_failure: '请先检查失败原因与资源实际状态，再决定后续操作',
+};
+
 export const AUDIT_EVENTS: Record<string, string> = {
   'api.mutation': '写操作',
   'auth.bootstrap': '初始化管理员',
@@ -190,8 +196,9 @@ export const GPU_PERMISSION_NAMES: Record<string, string> = {
   rebalance: '自动均衡开关',
 };
 
-/** 实例组合状态，附录 A.1：stale > provisioning > observed。 */
-export function instanceState(i: Pick<Instance, 'observed_state' | 'provisioning_state' | 'state_stale'>): EnumLabel {
+/** 已确认未派发且释放预留的创建失败优先；其他实例仍以 stale 为先。 */
+export function instanceState(i: Pick<Instance, 'observed_state' | 'provisioning_state' | 'resource_reservations_released' | 'state_stale'>): EnumLabel {
+  if (i.provisioning_state === 'failed' && i.resource_reservations_released === true) return L('创建失败', 'error');
   if (i.state_stale) return L('状态未知', 'warning');
   switch (i.provisioning_state) {
     case 'creating':
