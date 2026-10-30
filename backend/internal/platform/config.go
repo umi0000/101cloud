@@ -18,7 +18,7 @@ import (
 )
 
 func LoadConfig() (Config, error) {
-	c := Config{Listen: env("CLOUD_LISTEN", "127.0.0.1:8080"), Origin: os.Getenv("CLOUD_ORIGIN"), DSN: os.Getenv("CLOUD_MYSQL_DSN"), SessionTTL: 12 * time.Hour, ConsoleTTL: 10 * time.Minute, ConsoleMaxConcurrent: 4}
+	c := Config{Listen: env("CLOUD_LISTEN", "127.0.0.1:8080"), Origin: os.Getenv("CLOUD_ORIGIN"), DSN: os.Getenv("CLOUD_MYSQL_DSN"), SessionTTL: 12 * time.Hour, ConsoleMaxConcurrent: 4}
 	if e := validOrigin(c.Origin); e != nil {
 		return c, e
 	}
@@ -41,14 +41,12 @@ func LoadConfig() (Config, error) {
 	if e != nil || len(c.MasterKey) != 32 {
 		return c, errors.New("master key must contain base64 of 32 random bytes")
 	}
-	for name, target := range map[string]*time.Duration{"CLOUD_SESSION_TTL": &c.SessionTTL, "CLOUD_CONSOLE_TTL": &c.ConsoleTTL} {
-		if text := os.Getenv(name); text != "" {
-			v, e := time.ParseDuration(text)
-			if e != nil || v <= 0 {
-				return c, errors.New("invalid positive duration " + name)
-			}
-			*target = v
+	if text := os.Getenv("CLOUD_SESSION_TTL"); text != "" {
+		v, e := time.ParseDuration(text)
+		if e != nil || v <= 0 {
+			return c, errors.New("invalid positive duration CLOUD_SESSION_TTL")
 		}
+		c.SessionTTL = v
 	}
 	if s := os.Getenv("CLOUD_CONSOLE_MAX_CONCURRENT"); s != "" {
 		n, e := strconv.Atoi(s)

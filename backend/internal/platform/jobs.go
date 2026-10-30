@@ -317,4 +317,10 @@ func (a *App) Run(ctx context.Context) {
 		}(p)
 	}
 	wg.Wait()
+	a.mu.RLock()
+	hooks := append([]func(){}, a.shutdownHooks...)
+	a.mu.RUnlock()
+	for _, hook := range hooks {
+		hook()
+	}
 }

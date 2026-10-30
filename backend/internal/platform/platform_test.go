@@ -2,11 +2,15 @@ package platform
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"net/http/httptest"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -113,6 +117,35 @@ func TestTrustedProxiesParsing(t *testing.T) {
 	for _, list := range []string{"127.0.0.1,", "localhost", "10.0.0.0/33", "fe80::1%eth0", "::ffff:127.0.0.1", "1.2.3"} {
 		if _, e := trustedProxies(list); e == nil {
 			t.Fatalf("invalid proxy list %q accepted", list)
+		}
+	}
+}
+
+func TestConfigPreservesLoginExpiryAndConsoleConcurrency(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), "master.key")
+	if err := os.WriteFile(keyPath, []byte(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("CLOUD_ORIGIN", "https://cloud.example")
+	t.Setenv("CLOUD_MYSQL_DSN", "unused-config-test")
+	t.Setenv("CLOUD_MASTER_KEY_FILE", keyPath)
+	t.Setenv("CLOUD_SESSION_TTL", "")
+	t.Setenv("CLOUD_CONSOLE_MAX_CONCURRENT", "")
+	t.Setenv("CLOUD_NODE_ALLOW_CIDRS", "127.0.0.1/32")
+	t.Setenv("CLOUD_TRUSTED_PROXIES", "")
+	cfg, err := LoadConfig()
+	if err != nil || cfg.SessionTTL != 12*time.Hour || cfg.ConsoleMaxConcurrent != 4 {
+		t.Fatalf("login expiry or console concurrency default changed: cfg=%+v error=%v", cfg, err)
+	}
+	t.Setenv("CLOUD_SESSION_TTL", "2h")
+	cfg, err = LoadConfig()
+	if err != nil || cfg.SessionTTL != 2*time.Hour {
+		t.Fatalf("explicit login expiry no longer honored: duration=%v error=%v", cfg.SessionTTL, err)
+	}
+	for _, value := range []string{"0s", "-1h", "invalid"} {
+		t.Setenv("CLOUD_SESSION_TTL", value)
+		if _, err := LoadConfig(); err == nil {
+			t.Fatalf("invalid login duration %q accepted", value)
 		}
 	}
 }

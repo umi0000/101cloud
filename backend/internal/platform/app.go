@@ -26,7 +26,6 @@ type Config struct {
 	DSN                  string
 	MasterKey            []byte
 	SessionTTL           time.Duration
-	ConsoleTTL           time.Duration
 	ConsoleMaxConcurrent int
 	NodeAllowCIDRs       []netip.Prefix
 	TrustedProxies       []netip.Prefix
@@ -58,20 +57,28 @@ func DB(c *gin.Context, a *App) *gorm.DB {
 }
 
 type App struct {
-	DB           *gorm.DB
-	Config       Config
-	Location     *time.Location
-	mu           sync.RWMutex
-	jobs         map[string]JobHandler
-	reconcilers  map[string]JobHandler
-	pollers      []poller
-	agentClients sync.Map
+	DB            *gorm.DB
+	Config        Config
+	Location      *time.Location
+	mu            sync.RWMutex
+	jobs          map[string]JobHandler
+	reconcilers   map[string]JobHandler
+	pollers       []poller
+	agentClients  sync.Map
+	shutdownHooks []func()
 }
 
 func New(db *gorm.DB, cfg Config) *App {
 	return &App{DB: db, Config: cfg, Location: time.FixedZone("UTC+8", 8*3600), jobs: make(map[string]JobHandler)}
 }
 func (a *App) Time() time.Time { return time.Now().In(a.Location).Truncate(time.Microsecond) }
+
+// AddShutdownHook registers cleanup run after all workers and pollers stop.
+func (a *App) AddShutdownHook(fn func()) {
+	a.mu.Lock()
+	a.shutdownHooks = append(a.shutdownHooks, fn)
+	a.mu.Unlock()
+}
 func (a *App) Encrypt(p []byte) ([]byte, error) {
 	b, e := aes.NewCipher(a.Config.MasterKey)
 	if e != nil {

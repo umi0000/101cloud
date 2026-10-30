@@ -13084,6 +13084,7 @@
       },
       "ConsoleSession": {
         "type": "object",
+        "description": "No fixed console duration. The bound login session and permissions must remain valid; expired is retained only for historical records.",
         "properties": {
           "session_id": {
             "type": "string"
@@ -13103,10 +13104,6 @@
             "type": "string",
             "pattern": "^[0-9]+$"
           },
-          "expires_at": {
-            "type": "string",
-            "format": "date-time"
-          },
           "websocket_path": {
             "type": "string"
           },
@@ -13120,8 +13117,7 @@
         },
         "required": [
           "session_id",
-          "status",
-          "expires_at"
+          "status"
         ],
         "additionalProperties": true
       },

@@ -13,7 +13,6 @@ const MESSAGES: Record<string, string> = {
   capacity_in_use: '资源仍在使用，不能修改',
   configuration_conflict: '实际配置与记录不一致',
   conflict: '当前配置或资源状态存在冲突，请刷新后检查',
-  console_expired: '控制台会话已过期',
   console_limit: '同时打开的控制台已达上限',
   console_not_ready: '控制台会话不可用，请重新连接',
   console_process_mismatch: '控制台会话不可用，请重新连接',

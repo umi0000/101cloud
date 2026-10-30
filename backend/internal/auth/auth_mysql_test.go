@@ -84,3 +84,68 @@ func TestMySQLLoginRateLimitBinaryBuckets(t *testing.T) {
 		}
 	}
 }
+
+func TestMySQLValidateSessionKeepsLoginAuthorizationBoundary(t *testing.T) {
+	dsn := os.Getenv("CLOUD_TEST_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("set CLOUD_TEST_MYSQL_DSN for login authorization consumer regression")
+	}
+	db, err := platform.OpenDB(platform.Config{DSN: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pool.Close()
+	tx := db.Begin()
+	if tx.Error != nil {
+		t.Fatal(tx.Error)
+	}
+	defer tx.Rollback()
+	for _, statement := range []string{
+		"CREATE TEMPORARY TABLE users(id BIGINT PRIMARY KEY,status VARCHAR(24)) ENGINE=InnoDB",
+		"CREATE TEMPORARY TABLE user_sessions(id BIGINT PRIMARY KEY,user_id BIGINT,revoked_at DATETIME(6),expires_at DATETIME(6),created_at DATETIME(6)) ENGINE=InnoDB",
+		"INSERT INTO users VALUES(1,'active')",
+	} {
+		if err := tx.Exec(statement).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	a := platform.New(tx, platform.Config{SessionTTL: 12 * time.Hour})
+	now := a.Time()
+	if err := tx.Table("user_sessions").Create(platform.Row{"id": 2, "user_id": 1, "expires_at": now.Add(11 * time.Hour), "created_at": now.Add(-time.Hour)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateSession(context.Background(), a, 2, 1); err != nil {
+		t.Fatalf("valid one-hour-old bound login rejected: %v", err)
+	}
+	for _, change := range []string{"logout", "login_expired", "user_disabled", "wrong_user"} {
+		t.Run(change, func(t *testing.T) {
+			if err := tx.Table("user_sessions").Where("id=2").Updates(platform.Row{"revoked_at": nil, "expires_at": now.Add(11 * time.Hour)}).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := tx.Table("users").Where("id=1").Update("status", "active").Error; err != nil {
+				t.Fatal(err)
+			}
+			userID := uint64(1)
+			switch change {
+			case "logout":
+				err = tx.Table("user_sessions").Where("id=2").Update("revoked_at", now).Error
+			case "login_expired":
+				err = tx.Table("user_sessions").Where("id=2").Update("expires_at", now.Add(-time.Second)).Error
+			case "user_disabled":
+				err = tx.Table("users").Where("id=1").Update("status", "disabled").Error
+			case "wrong_user":
+				userID = 3
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := ValidateSession(context.Background(), a, 2, userID); err == nil {
+				t.Fatalf("%s login remained authorized", change)
+			}
+		})
+	}
+}

@@ -5,6 +5,9 @@ import (
 	"net"
 	"testing"
 	"time"
+
+	"101cloud/backend/internal/platform"
+	"github.com/gin-gonic/gin"
 )
 
 func TestIncusTerminalEOFBarrierAcknowledged(t *testing.T) {
@@ -47,5 +50,23 @@ func TestIncusTerminalEOFBarrierAcknowledged(t *testing.T) {
 	}
 	if _, ok := <-bridge.frames; ok {
 		t.Fatal("terminal did not close its output channel")
+	}
+}
+
+func TestConsolePublicHasNoFixedExpiryAndPreservesHistory(t *testing.T) {
+	s := &consoleService{a: platform.New(nil, platform.Config{})}
+	c, _ := gin.CreateTestContext(nil)
+	for _, status := range []string{"preparing", "ready", "active", "closed", "failed", "expired"} {
+		row := consoleSession{ID: "console-ticket", Kind: "terminal", Status: status, Revision: 7, CreatedAt: s.a.Time().Add(-24 * time.Hour)}
+		response := s.public(c, row).(map[string]any)
+		if response["status"] != status {
+			t.Fatalf("stored %s status was rewritten: %v", status, response)
+		}
+		if _, exists := response["expires_at"]; exists {
+			t.Fatal("console response advertises a fixed expiry")
+		}
+		if response["protocol"] != "101cloud.terminal.v1" || response["revision"] != "7" {
+			t.Fatalf("console protocol or revision changed: %v", response)
+		}
 	}
 }

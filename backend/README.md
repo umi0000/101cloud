@@ -80,7 +80,6 @@ CLOUD_MYSQL_DSN='101cloud_app:替换为运行账户密码@tcp(127.0.0.1:3306)/10
 CLOUD_MASTER_KEY_FILE='/usr/local/etc/101cloud/master.key'
 CLOUD_NODE_ALLOW_CIDRS='192.168.0.111/32'
 CLOUD_SESSION_TTL='12h'
-CLOUD_CONSOLE_TTL='10m'
 CLOUD_CONSOLE_MAX_CONCURRENT='4'
 CLOUD_TRUSTED_PROXIES='127.0.0.1/32,::1/128'
 ```
@@ -204,6 +203,10 @@ sudo systemctl reload nginx
 
 当前控制台上游预连接属于准备该会话的进程，推荐先单后端进程部署。多进程或多副本需要会话亲和，不能让控制台创建和 WebSocket 连接随机落到不同进程。
 
+控制台没有固定时长上限，也不通过自动续期延长会话；`CLOUD_SESSION_TTL` 默认12h的登录有效期仍然适用。每2秒核对绑定登录、用户启用状态、实例权限和运行状态；注销、登录到期、用户禁用、权限撤销或实例停止会关闭连接。默认每用户最多4个 preparing/ready/active 会话，帧/输入限制、准备超时及网络心跳继续生效；网络断开或服务停止同样会关闭连接，不保证永久在线。
+
+正常停服只关闭本进程持有的预连接并记录 closed。异常退出可能留下 ready/active 行；缺少持久化进程归属信息时不能把本进程看不到的连接当作其他进程已失效。此类记录仍占并发名额，可由原登录通过 DELETE 会话接口关闭；绑定登录到期/撤销或用户禁用后后台也会关闭记录。不要按控制台年龄清理；多副本场景不得无差别关闭其他进程的会话。
+
 ## 10. 检查是否启动成功
 
 服务器本机：
@@ -244,6 +247,8 @@ curl -f https://cloud.example.com/api/v1/health/ready
 更新顺序：备份数据库和主密钥 → 停止后端 → 上传新二进制 → 用迁移账户执行 migrate → 启动服务 → 检查健康与日志。不要在不兼容的旧程序继续写库时升级结构。
 
 自定义申请退役升级需在停服及备份后执行 `CLOUD_MYSQL_DSN='<迁移账户DSN>' /usr/local/bin/101cloud-backend migrate`。新增 `20261030_80_retire_custom_requests.sql` 删除custom_instance_requests、residency_requests和instances.custom_reason；不会删除实例、任务、用户或通用审计。首次install同样按顺序执行旧建表及前向删除迁移；不得修改已应用的init.sql或历史迁移。
+
+移除控制台固定时限的升级迁移为 `20261031_90_console_no_fixed_expiry.sql`，仅删除 console_sessions.expires_at 及两个过期索引，新增 user_id/status 索引；既有 closed/failed/expired 历史状态不变，不重新打开过期会话。升级前停止全部后端进程；确认旧连接均已终止后，可在迁移窗口将遗留 preparing/ready/active 行更新为 closed、写入 closed_at、清空 secrets_ciphertext 并递增 revision，避免遗留记录占用并发名额。迁移本身不盲目关闭可能仍由其他进程持有的会话；旧迁移保持不变。
 
 至少备份：数据库、master.key、backend.env、外部 HTTPS 入口配置；节点导出的原始连接文件也按管理员凭据保护。恢复时数据库与主密钥必须匹配。
 

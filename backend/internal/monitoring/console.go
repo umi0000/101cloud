@@ -47,7 +47,6 @@ type consoleSession struct {
 	PrepareStartedAt  *time.Time
 	ConnectedAt       *time.Time
 	ClosedAt          *time.Time
-	ExpiresAt         time.Time
 	Revision          uint64
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
@@ -105,7 +104,8 @@ func RegisterConsole(a *platform.App, user, admin *gin.RouterGroup) {
 		group.GET("/console-sessions/:session_id/stream", s.stream)
 	}
 	a.RegisterJob("monitoring.console.prepare", s.prepare)
-	a.AddPoller("monitoring.console.expire", 2*time.Second, s.expire)
+	a.AddPoller("monitoring.console.revoke", 2*time.Second, s.revoke)
+	a.AddShutdownHook(s.shutdown)
 }
 
 func (s *consoleService) create(c *gin.Context) (any, error) {
@@ -159,7 +159,7 @@ func (s *consoleService) create(c *gin.Context) (any, error) {
 		return nil, platform.E(409, "console_unsupported", "此实例不支持该控制台类型")
 	}
 	var count int64
-	if err = db.Table("console_sessions").Where("user_id = ? AND status IN ? AND expires_at > ?", u.ID, []string{"preparing", "ready", "active"}, s.a.Time()).Count(&count).Error; err != nil {
+	if err = db.Table("console_sessions").Where("user_id = ? AND status IN ?", u.ID, []string{"preparing", "ready", "active"}).Count(&count).Error; err != nil {
 		return nil, platform.WrapDB(err)
 	}
 	if count >= int64(s.a.Config.ConsoleMaxConcurrent) {
@@ -170,7 +170,7 @@ func (s *consoleService) create(c *gin.Context) (any, error) {
 		return nil, err
 	}
 	now := s.a.Time()
-	row := consoleSession{ID: base64.RawURLEncoding.EncodeToString(ticket), UserID: u.ID, AuthSessionID: u.SessionID, InstanceID: id, NodeID: platform.Uint(inst["node_id"]), InstanceOwnerID: platform.Uint(inst["user_id"]), IsAdmin: admin, Kind: req.Kind, Status: "preparing", Cols: req.Cols, Rows: req.Rows, ExpiresAt: now.Add(s.a.Config.ConsoleTTL), Revision: 1, CreatedAt: now, UpdatedAt: now}
+	row := consoleSession{ID: base64.RawURLEncoding.EncodeToString(ticket), UserID: u.ID, AuthSessionID: u.SessionID, InstanceID: id, NodeID: platform.Uint(inst["node_id"]), InstanceOwnerID: platform.Uint(inst["user_id"]), IsAdmin: admin, Kind: req.Kind, Status: "preparing", Cols: req.Cols, Rows: req.Rows, Revision: 1, CreatedAt: now, UpdatedAt: now}
 	if err = db.Table("console_sessions").Create(&row).Error; err != nil {
 		return nil, platform.WrapDB(err)
 	}
@@ -198,15 +198,11 @@ func (s *consoleService) public(c *gin.Context, row consoleSession) any {
 	if c.GetBool("admin") {
 		prefix += "/admin"
 	}
-	status := row.Status
-	if !row.ExpiresAt.After(s.a.Time()) && (status == "preparing" || status == "ready" || status == "active") {
-		status = "expired"
-	}
 	protocol := "101cloud.terminal.v1"
 	if row.Kind == "vga" {
 		protocol = "101cloud.vnc.v1"
 	}
-	return map[string]any{"session_id": row.ID, "status": status, "kind": row.Kind, "expires_at": row.ExpiresAt.In(s.a.Location).Format(time.RFC3339Nano), "websocket_path": prefix + "/console-sessions/" + row.ID + "/stream", "protocol": protocol, "revision": strconv.FormatUint(row.Revision, 10)}
+	return map[string]any{"session_id": row.ID, "status": row.Status, "kind": row.Kind, "websocket_path": prefix + "/console-sessions/" + row.ID + "/stream", "protocol": protocol, "revision": strconv.FormatUint(row.Revision, 10)}
 }
 
 func consoleTicket(v string) bool {
@@ -262,9 +258,6 @@ func (s *consoleService) authorized(ctx context.Context, row consoleSession, liv
 	}
 	if live && (inst["deleted_at"] != nil || platform.Text(inst["observed_state"]) != "running" || platform.Text(inst["provisioning_state"]) != "ready") {
 		return platform.E(403, "console_revoked", "实例状态已改变")
-	}
-	if live && !row.ExpiresAt.After(s.a.Time()) {
-		return platform.E(410, "console_expired", "控制台会话已过期")
 	}
 	return nil
 }
@@ -409,9 +402,9 @@ func (s *consoleService) prepare(ctx context.Context, a *platform.App, job platf
 	if err = a.DB.WithContext(ctx).Table("console_sessions").Where("id = ?", row.ID).Updates(map[string]any{"operation_path": opPath, "secrets_ciphertext": encrypted, "revision": gorm.Expr("revision + 1")}).Error; err != nil {
 		return fail(platform.Unknown(err))
 	}
-	// The task context ends when the task succeeds. Prepared sockets live until
-	// the console deadline, independently of that task's lease context.
-	liveCtx, cancelLive := context.WithDeadline(context.Background(), row.ExpiresAt)
+	// The task lease ends on success; live channels have no fixed lifetime.
+	// Shutdown closes only bridges owned by this process.
+	liveCtx, cancelLive := context.WithCancel(context.Background())
 	control, err := s.connect(liveCtx, row.NodeID, opPath, project, controlSecret)
 	if err != nil {
 		cancelLive()
@@ -441,7 +434,7 @@ func (s *consoleService) prepare(ctx context.Context, a *platform.App, job platf
 			}
 		}
 	}()
-	result = a.DB.WithContext(ctx).Table("console_sessions").Where("id = ? AND status = 'preparing' AND expires_at > ?", row.ID, a.Time()).Updates(map[string]any{"status": "ready", "revision": gorm.Expr("revision + 1")})
+	result = a.DB.WithContext(ctx).Table("console_sessions").Where("id = ? AND status = 'preparing'", row.ID).Updates(map[string]any{"status": "ready", "revision": gorm.Expr("revision + 1")})
 	if result.Error != nil || result.RowsAffected != 1 {
 		bridge.close(1008, "会话已撤销")
 		s.forget(row.ID, bridge)
@@ -514,13 +507,8 @@ func (s *consoleService) guard(ctx context.Context, row consoleSession, b *conso
 	for {
 		select {
 		case <-ctx.Done():
-			select {
-			case <-b.done:
-				s.finish(row.ID, "closed")
-			default:
-				b.close(1008, "会话已过期")
-				s.finish(row.ID, "expired")
-			}
+			b.close(1000, "会话已结束")
+			s.finish(row.ID, "closed")
 			return
 		case <-b.done:
 			s.finish(row.ID, "closed")
@@ -545,8 +533,21 @@ func (s *consoleService) guard(ctx context.Context, row consoleSession, b *conso
 	}
 }
 
-func (s *consoleService) expire(ctx context.Context, a *platform.App) error {
-	return a.DB.WithContext(ctx).Table("console_sessions").Where("expires_at <= ? AND status IN ?", a.Time(), []string{"preparing", "ready", "active"}).Updates(map[string]any{"status": "expired", "closed_at": a.Time(), "secrets_ciphertext": nil, "revision": gorm.Expr("revision + 1")}).Error
+// Revoke abandoned rows only when their bound login is no longer authorized.
+// Process-local absence alone is not evidence that another replica's bridge died.
+func (s *consoleService) revoke(ctx context.Context, a *platform.App) error {
+	return a.DB.WithContext(ctx).Exec("UPDATE console_sessions c LEFT JOIN user_sessions s ON s.id=c.auth_session_id AND s.user_id=c.user_id LEFT JOIN users u ON u.id=c.user_id SET c.status='closed', c.closed_at=?, c.secrets_ciphertext=NULL, c.revision=c.revision+1 WHERE c.status IN ('preparing','ready','active') AND (s.id IS NULL OR s.revoked_at IS NOT NULL OR s.expires_at<=? OR u.id IS NULL OR u.status<>'active')", a.Time(), a.Time()).Error
+}
+
+func (s *consoleService) shutdown() {
+	s.mu.Lock()
+	bridges := s.bridges
+	s.bridges = make(map[string]*consoleBridge)
+	s.mu.Unlock()
+	for id, bridge := range bridges {
+		bridge.close(1001, "服务已停止")
+		s.finish(id, "closed")
+	}
 }
 
 func (s *consoleService) stream(c *gin.Context) {
@@ -588,7 +589,7 @@ func (s *consoleService) stream(c *gin.Context) {
 		fail(platform.E(409, "console_process_mismatch", "控制台流必须连接准备该会话的后端进程"))
 		return
 	}
-	result := platform.DB(c, s.a).WithContext(c.Request.Context()).Table("console_sessions").Where("id = ? AND status = 'ready' AND connected_at IS NULL AND expires_at > ?", row.ID, s.a.Time()).Updates(map[string]any{"status": "active", "connected_at": s.a.Time(), "secrets_ciphertext": nil, "revision": gorm.Expr("revision + 1")})
+	result := platform.DB(c, s.a).WithContext(c.Request.Context()).Table("console_sessions").Where("id = ? AND status = 'ready' AND connected_at IS NULL", row.ID).Updates(map[string]any{"status": "active", "connected_at": s.a.Time(), "secrets_ciphertext": nil, "revision": gorm.Expr("revision + 1")})
 	if result.Error != nil {
 		fail(platform.WrapDB(result.Error))
 		return

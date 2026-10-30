@@ -26,8 +26,6 @@ import { errorToast, useAction } from '#/composables/api';
 import { enumLabel } from '#/locales/enums';
 import { describeError } from '#/locales/errors';
 
-import { formatCountdown, useNow } from './shared';
-
 const props = defineProps<{ etag: null | string; instance: Instance }>();
 
 type Phase = 'connected' | 'connecting' | 'ended' | 'failed' | 'preparing';
@@ -41,7 +39,6 @@ const notice = ref<ErrorText | string>('');
 const session = shallowRef<ConsoleSession | null>(null);
 const termEl = ref<HTMLDivElement>();
 const vncEl = ref<HTMLDivElement>();
-const now = useNow();
 const createAction = useAction();
 let gen = 0;
 
@@ -77,16 +74,9 @@ async function waitForElements(): Promise<boolean> {
   return false;
 }
 
-const remaining = computed(() => {
-  const s = session.value;
-  if (!s) return null;
-  const t = Date.parse(s.expires_at);
-  return Number.isNaN(t) ? null : t - now.value;
-});
 const title = computed(() => {
   const name = kind.value === 'vga' ? 'VGA 控制台' : kind.value === 'serial' ? '串口控制台' : '终端';
-  const r = remaining.value;
-  return `${name} · ${props.instance.name}${r === null ? '' : ` · 剩余 ${formatCountdown(r)}`}`;
+  return `${name} · ${props.instance.name}`;
 });
 
 /* ---------- xterm ---------- */
@@ -244,7 +234,7 @@ function handleControl(text: string) {
 
 const CLOSE_TEXT: Record<number, string> = {
   1000: '会话已结束',
-  1008: '会话已过期或权限已变化',
+  1008: '登录会话已失效或权限已变化',
   1011: '后端或上游连接失败',
 };
 

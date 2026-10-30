@@ -614,7 +614,6 @@ export type ConsoleKind = 'serial' | 'terminal' | 'vga';
 export type ConsoleStatus = 'active' | 'closed' | 'expired' | 'failed' | 'preparing' | 'ready';
 
 export interface ConsoleSession {
-  expires_at: Time;
   kind: ConsoleKind;
   protocol: '101cloud.terminal.v1' | '101cloud.vnc.v1';
   revision: string;
