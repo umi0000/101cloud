@@ -8,7 +8,9 @@
 -- are application responsibilities. CPU uses its own counter observation window.
 -- Verified with MySQL 8.4.11 in an owned temporary schema; test fixtures rolled back.
 SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
-SET SESSION time_zone = '+00:00';
+SET SESSION time_zone = '+08:00';
+-- DATETIME values use UTC+8 (+08:00); convert Agent timestamps before insertion.
+-- This session setting does not convert existing DATETIME values or configure future application connections.
 
 CREATE TABLE instance_metric_samples (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -222,8 +224,8 @@ CREATE TABLE node_metric_cursors (
     project_scope VARCHAR(63) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '*' COMMENT 'Backend collection scope, not a project identity relation',
     agent_boot_id BINARY(16) NOT NULL,
     last_sequence BIGINT UNSIGNED NOT NULL,
-    last_sampled_at DATETIME(6) NULL COMMENT 'UTC sample time; NULL before any sample has been ingested',
-    last_ingested_at DATETIME(6) NOT NULL COMMENT 'UTC time of the last committed ingestion checkpoint',
+    last_sampled_at DATETIME(6) NULL COMMENT 'UTC+8 sample time; NULL before any sample has been ingested',
+    last_ingested_at DATETIME(6) NOT NULL COMMENT 'UTC+8 time of the last committed ingestion checkpoint',
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     PRIMARY KEY (node_id, project_scope),
     CONSTRAINT fk_nmc_node FOREIGN KEY (node_id) REFERENCES nodes (id),

@@ -5,7 +5,7 @@
 -- 执行方式：mysql --default-character-set=utf8mb4 -u <DBA用户> -p < backend/sql/init.sql
 -- 已在MySQL 8.4.11唯一临时库验证37表初始化、原32表增量升级及指标约束；测试事务已回滚。
 -- DDL会隐式提交，不能以事务回滚整个初始化；出错后应检查已完成的DDL再处理。
--- 应用的每个数据库连接同样必须使用UTC时间和严格SQL模式。
+-- 应用的每个数据库连接同样必须使用UTC+8（+08:00）时间和严格SQL模式；外部时间入库前显式转换。
 -- 内存/磁盘容量使用bytes；GPU观测memory_mib是明确标注的MiB指标。
 -- 金额与费率使用DECIMAL(20,6)，不得经浮点数计算。
 -- 所有外键省略referential actions，使用MySQL默认RESTRICT/NO ACTION，禁止级联抹除历史。
@@ -17,14 +17,14 @@
 -- Token只保存密文；主密钥位于数据库之外。所有JSON快照/参数/日志必须去除秘密。
 
 SET NAMES utf8mb4 COLLATE utf8mb4_0900_ai_ci;
-SET SESSION time_zone = '+00:00';
+SET SESSION time_zone = '+08:00';
 
 CREATE DATABASE IF NOT EXISTS `101cloud`
   DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
 USE `101cloud`;
 
 -- Core identity, configuration, inventory, instances, and GPU allocation history.
--- Timestamps are UTC. Rates and policy values must be explicitly configured.
+-- Timestamps use UTC+8 (+08:00). Rates and policy values must be explicitly configured.
 
 CREATE TABLE users (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -1026,7 +1026,7 @@ CREATE TABLE `audit_logs` (
 -- Host Agent only exposes snapshots. A future backend collector must resolve instance IDs,
 -- ingest/deduplicate samples, build rollups, and implement retention; this DDL does none of these.
 -- Raw and rollup retention days and bucket sizes are independently configurable, never hardcoded.
--- All metric timestamps are UTC. Missing/unsupported observations remain NULL, never synthetic zero.
+-- All metric timestamps use UTC+8 (+08:00); convert Agent timestamps before insertion. Missing/unsupported observations remain NULL, never synthetic zero.
 -- No PID, process name, command line, filesystem path, or unredacted payload JSON is stored here.
 -- Historical instance_id and node_id references are independent: moving an instance must not
 -- rewrite its history or be blocked by a composite FK to instances' current node_id.
@@ -1243,8 +1243,8 @@ CREATE TABLE node_metric_cursors (
     project_scope VARCHAR(63) CHARACTER SET ascii COLLATE ascii_bin NOT NULL DEFAULT '*' COMMENT 'Backend collection scope, not a project identity relation',
     agent_boot_id BINARY(16) NOT NULL,
     last_sequence BIGINT UNSIGNED NOT NULL,
-    last_sampled_at DATETIME(6) NULL COMMENT 'UTC sample time; NULL before any sample has been ingested',
-    last_ingested_at DATETIME(6) NOT NULL COMMENT 'UTC time of the last committed ingestion checkpoint',
+    last_sampled_at DATETIME(6) NULL COMMENT 'UTC+8 sample time; NULL before any sample has been ingested',
+    last_ingested_at DATETIME(6) NOT NULL COMMENT 'UTC+8 time of the last committed ingestion checkpoint',
     updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     PRIMARY KEY (node_id, project_scope),
     CONSTRAINT fk_nmc_node FOREIGN KEY (node_id) REFERENCES nodes (id),

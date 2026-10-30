@@ -441,7 +441,7 @@ UUID和序号仅示例，应替换为实际返回值。后端建议以project=*�
 
 **边界：本次实现Agent采样与SQL结构，没有实现尚未开发的业务后端采集器、历史查询API、定时聚合或前端图表。** 后续后端负责：按实例UUID匹配业务归属 → 写入/去重原始点 → 同事务推进游标 → 依配置汇总、保留和清理。原始点唯一键包含node、agent_boot_id、sample_sequence和instance_id；不要只按实例名匹配删除后重建的实例。历史node是采样时位置，不复合绑定实例当前node，避免指标历史额外阻止迁移。
 
-所有时间转UTC微秒，CPU独立cpu_sampled_at/cpu_window_seconds不能用慢GPU的frame窗口代替；首次/重启没有CPU差分则为null。按CPU实际窗口计算CPU有效时长，按各自观察窗口切分到统计桶。覆盖时间取时间窗并集并裁到桶边界，不能把重叠窗口的秒数相加。支持按分钟、小时、天等配置bucket_seconds，但MySQL不自动生成汇总。
+Agent接口时间仍为UTC；后端入库前统一转为UTC+8（+08:00），保留微秒精度，并确保数据库连接时区与驱动解析位置一致。已有DATETIME历史值不会因SET SESSION time_zone自动转换，不能直接混入新时区数据。CPU独立cpu_sampled_at/cpu_window_seconds不能用慢GPU的frame窗口代替；首次/重启没有CPU差分则为null。按CPU实际窗口计算CPU有效时长，按各自观察窗口切分到统计桶。覆盖时间取时间窗并集并裁到桶边界，不能把重叠窗口的秒数相加。支持按分钟、小时、天等配置bucket_seconds，但MySQL不自动生成汇总。
 
 - 平均使用核数：有效CPU增量纳秒之和 / 1e9 / CPU有效秒数。
 - 相对配置使用率的时间平均：cpu_utilization_pct_seconds / cpu_allocation_valid_seconds；如果选择容量加权，则用同一已知分配子集的cpu_normalized_usage_delta_ns / 1e9 / allocated_cpu_seconds × 100，不能混用不同有效子集。
