@@ -264,7 +264,7 @@ function formatSchema() {
       <div class="text-muted-foreground mb-2 text-xs leading-5">
         JSON Schema 子集。允许的键：type、properties、required、additionalProperties、enum、minimum、maximum、minLength、maxLength、items、maxItems、description、title。
         根节点必须是 object；每个 object 都要有 properties，并显式写 <code>"additionalProperties": false</code>。不能包含密码、密钥、令牌、cloud-init 等字样。
-        参数值由管理员在审批自定义实例时填写。成员端读不到 schema，标准套餐创建实例时参数固定为空对象，所以套餐引用的模板不应有 required 参数。
+        参数值由管理员在直接下发自定义实例时填写。成员端读不到 schema，标准套餐创建实例时参数固定为空对象，所以套餐引用的模板不应有 required 参数。
       </div>
       <Textarea
         v-model:value="form.schema"

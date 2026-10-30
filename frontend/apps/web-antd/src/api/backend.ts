@@ -9,7 +9,6 @@ import type {
   CreditAccount,
   CreditEnforcement,
   CustomConfig,
-  CustomRequest,
   GPUAllocation,
   GPUOption,
   GPUPolicy,
@@ -98,7 +97,12 @@ export const authApi = {
 
 export const usersApi = {
   create: (
-    body: { email: null | string; initial_password: string; role: 'admin' | 'user'; username: string },
+    body: {
+      email: null | string;
+      initial_password: string;
+      role: 'admin' | 'user';
+      username: string;
+    },
     w: Write,
   ) => post<User>('/admin/users', body, w),
   get: (id: ID) => detail<User>(`/admin/users/${id}`),
@@ -110,7 +114,11 @@ export const usersApi = {
     post<null>(`/admin/users/${id}/reset-password`, body, w),
   update: (
     id: ID,
-    body: Partial<{ email: null | string; role: 'admin' | 'user'; status: 'active' | 'disabled' }>,
+    body: Partial<{
+      email: null | string;
+      role: 'admin' | 'user';
+      status: 'active' | 'disabled';
+    }>,
     w: Write,
   ) => patch<User>(`/admin/users/${id}`, body, w),
 };
@@ -128,31 +136,52 @@ export interface NodeCreate {
 export const nodesApi = {
   create: (body: NodeCreate, w: Write) => post<Node>('/admin/nodes', body, w),
   drain: (id: ID, w: Write) =>
-    post<TaskAccepted>(`/admin/nodes/${id}/drain`, { mode: 'prevent_new_allocations' }, w),
+    post<TaskAccepted>(
+      `/admin/nodes/${id}/drain`,
+      { mode: 'prevent_new_allocations' },
+      w,
+    ),
   get: (id: ID) => detail<Node>(`/admin/nodes/${id}`),
-  gpu: (id: ID, gpuId: ID) => detail<NodeGPU>(`/admin/nodes/${id}/gpus/${gpuId}`),
+  gpu: (id: ID, gpuId: ID) =>
+    detail<NodeGPU>(`/admin/nodes/${id}/gpus/${gpuId}`),
   gpus: (id: ID, q?: Query) => list<NodeGPU>(`/admin/nodes/${id}/gpus`, q),
   importInstance: (
     id: ID,
-    body: { approved_config: CustomConfig; incus_uuid: string; owner_user_id: ID },
+    body: {
+      approved_config: CustomConfig;
+      incus_uuid: string;
+      owner_user_id: ID;
+    },
     w: Write,
   ) => post<TaskAccepted>(`/admin/nodes/${id}/instance-imports`, body, w),
   list: (q?: Query) => list<Node>('/admin/nodes', q),
-  probe: (id: ID, w: Write) => post<TaskAccepted>(`/admin/nodes/${id}/probe`, {}, w),
-  replaceConnection: (id: ID, body: { connection: NodeConnectionInput }, w: Write) =>
-    put<Node>(`/admin/nodes/${id}/connection`, body, w),
+  probe: (id: ID, w: Write) =>
+    post<TaskAccepted>(`/admin/nodes/${id}/probe`, {}, w),
+  replaceConnection: (
+    id: ID,
+    body: { connection: NodeConnectionInput },
+    w: Write,
+  ) => put<Node>(`/admin/nodes/${id}/connection`, body, w),
   resources: (id: ID) => detail<NodeResources>(`/admin/nodes/${id}/resources`),
   unmanaged: (id: ID, q?: Query) =>
     list<UnmanagedInstance>(`/admin/nodes/${id}/unmanaged-instances`, q),
   update: (
     id: ID,
-    body: Partial<{ administrative_state: Node['administrative_state']; allocatable: Node['allocatable']; name: string }>,
+    body: Partial<{
+      administrative_state: Node['administrative_state'];
+      allocatable: Node['allocatable'];
+      name: string;
+    }>,
     w: Write,
   ) => patch<Node>(`/admin/nodes/${id}`, body, w),
   updateGPU: (
     id: ID,
     gpuId: ID,
-    body: Partial<{ gpu_price_version_id: ID | null; max_allocations: number; status: NodeGPU['status'] }>,
+    body: Partial<{
+      gpu_price_version_id: ID | null;
+      max_allocations: number;
+      status: NodeGPU['status'];
+    }>,
     w: Write,
   ) => patch<NodeGPU>(`/admin/nodes/${id}/gpus/${gpuId}`, body, w),
 };
@@ -161,11 +190,17 @@ export const nodesApi = {
 
 export const networkApi = {
   addAddresses: (poolId: ID, addresses: string[], w: Write) =>
-    post<{ registered: string }>(`/admin/network-pools/${poolId}/addresses`, { addresses }, w),
+    post<{ registered: string }>(
+      `/admin/network-pools/${poolId}/addresses`,
+      { addresses },
+      w,
+    ),
   addresses: (poolId: ID, q?: Query) =>
     list<IPAddress>(`/admin/network-pools/${poolId}/addresses`, q),
-  binding: (id: ID) => detail<NetworkBinding>(`/admin/node-network-bindings/${id}`),
-  bindings: (q?: Query) => list<NetworkBinding>('/admin/node-network-bindings', q),
+  binding: (id: ID) =>
+    detail<NetworkBinding>(`/admin/node-network-bindings/${id}`),
+  bindings: (q?: Query) =>
+    list<NetworkBinding>('/admin/node-network-bindings', q),
   createBinding: (
     body: {
       incus_network_name?: string;
@@ -195,7 +230,14 @@ export const networkApi = {
     patch<NetworkBinding>(`/admin/node-network-bindings/${id}`, { status }, w),
   updatePool: (
     id: ID,
-    body: Partial<{ dns_servers: string[]; gateway: string; name: string; status: 'active' | 'disabled' }>,
+    body: Partial<{
+      dns_servers: string[];
+      gateway: string;
+      name: string;
+      range_start: string;
+      range_end: string;
+      status: 'active' | 'disabled';
+    }>,
     w: Write,
   ) => patch<NetworkPool>(`/admin/network-pools/${id}`, body, w),
   validateBinding: (id: ID, w: Write) =>
@@ -218,19 +260,28 @@ export interface AttachBody {
 const ai = (id: ID, path = '') => `/admin/instances/${id}${path}`;
 
 export const instancesApi = {
-  attachGPU: (id: ID, body: AttachBody, w: Write) => post<TaskAccepted>(ai(id, '/gpu-attachments'), body, w),
+  attachGPU: (id: ID, body: AttachBody, w: Write) =>
+    post<TaskAccepted>(ai(id, '/gpu-attachments'), body, w),
   createCustom: (
     body: { approved_config: CustomConfig; name: string; owner_user_id: ID },
     w: Write,
   ) => post<TaskAccepted>('/admin/custom-instances', body, w),
-  delete: (id: ID, body: { confirm_name: string; delete_data: true }, w: Write) =>
-    del<TaskAccepted>(ai(id), body, w),
-  detachGPU: (id: ID, body: { allocation_ids: ID[]; allow_live: boolean }, w: Write) =>
-    post<TaskAccepted>(ai(id, '/gpu-detachments'), body, w),
+  delete: (
+    id: ID,
+    body: { confirm_name: string; delete_data: true },
+    w: Write,
+  ) => del<TaskAccepted>(ai(id), body, w),
+  detachGPU: (
+    id: ID,
+    body: { allocation_ids: ID[]; allow_live: boolean },
+    w: Write,
+  ) => post<TaskAccepted>(ai(id, '/gpu-detachments'), body, w),
   get: (id: ID) => detail<Instance>(ai(id)),
-  gpuAllocations: (id: ID) => detail<GPUAllocation[]>(ai(id, '/gpu-allocations')),
+  gpuAllocations: (id: ID) =>
+    detail<GPUAllocation[]>(ai(id, '/gpu-allocations')),
   gpuPolicy: (id: ID) => detail<GPUPolicy>(ai(id, '/gpu-policy')),
-  history: (id: ID, q: Query) => api.get<MetricsHistory>(ai(id, '/metrics/history'), { params: clean(q) }),
+  history: (id: ID, q: Query) =>
+    api.get<MetricsHistory>(ai(id, '/metrics/history'), { params: clean(q) }),
   latest: (id: ID) => detail<LatestMetrics>(ai(id, '/metrics/latest')),
   list: (q?: Query) => list<Instance>('/admin/instances', q),
   network: (id: ID) => detail<InstanceNetwork[]>(ai(id, '/network')),
@@ -242,17 +293,29 @@ export const instancesApi = {
   ) => post<TaskAccepted>(ai(id, `/${action}`), body, w),
   putGPUPolicy: (
     id: ID,
-    body: GPUPolicyConfig & { allowed_user_actions?: string[]; gpu_user_permissions?: Record<string, boolean> },
+    body: GPUPolicyConfig & {
+      allowed_user_actions?: string[];
+      gpu_user_permissions?: Record<string, boolean>;
+    },
     w: Write,
   ) => put<GPUPolicy>(ai(id, '/gpu-policy'), body, w),
   rebindGPU: (
     id: ID,
-    body: { allocation_ids: ID[]; allow_live: boolean; fixed_uuids?: string[]; max_hourly_pt: string },
+    body: {
+      allocation_ids: ID[];
+      allow_live: boolean;
+      fixed_uuids?: string[];
+      max_hourly_pt: string;
+    },
     w: Write,
   ) => post<TaskAccepted>(ai(id, '/gpu-rebindings'), body, w),
-  rename: (id: ID, name: string, w: Write) => patch<Instance>(ai(id), { name }, w),
-  resize: (id: ID, body: { policy_versions?: PolicyVersions; resources: Resources }, w: Write) =>
-    post<TaskAccepted>(ai(id, '/resize'), body, w),
+  rename: (id: ID, name: string, w: Write) =>
+    patch<Instance>(ai(id), { name }, w),
+  resize: (
+    id: ID,
+    body: { policy_versions?: PolicyVersions; resources: Resources },
+    w: Write,
+  ) => post<TaskAccepted>(ai(id, '/resize'), body, w),
 };
 
 /* ---------------- 管理端：控制台 ---------------- */
@@ -265,18 +328,8 @@ export const consoleApi = {
     body: { cols?: number; kind: ConsoleKind; rows?: number },
     w: Write,
   ) => post<ConsoleSession>(ai(instanceId, '/console-sessions'), body, w),
-  get: (sessionId: string) => detail<ConsoleSession>(`/admin/console-sessions/${sessionId}`),
-};
-
-/* ---------------- 管理端：自定义申请 ---------------- */
-
-export const requestsApi = {
-  approve: (id: ID, body: { approved_config: CustomConfig; review_note: string }, w: Write) =>
-    post<TaskAccepted>(`/admin/custom-instance-requests/${id}/approve`, body, w),
-  get: (id: ID) => detail<CustomRequest>(`/admin/custom-instance-requests/${id}`),
-  list: (q?: Query) => list<CustomRequest>('/admin/custom-instance-requests', q),
-  reject: (id: ID, review_note: string, w: Write) =>
-    post<CustomRequest>(`/admin/custom-instance-requests/${id}/reject`, { review_note }, w),
+  get: (sessionId: string) =>
+    detail<ConsoleSession>(`/admin/console-sessions/${sessionId}`),
 };
 
 /* ---------------- 管理端：产品目录 ---------------- */
@@ -293,18 +346,25 @@ export const catalogApi = {
     },
     w: Write,
   ) => post<Image>('/admin/images', body, w),
-  createPlan: (body: PlanInput, w: Write) => post<Plan>('/admin/plans', body, w),
-  createTemplate: (body: InitTemplateInput, w: Write) => post<InitTemplate>('/admin/init-templates', body, w),
-  createZone: (body: { code: string; name: string }, w: Write) => post<Zone>('/admin/zones', body, w),
+  createPlan: (body: PlanInput, w: Write) =>
+    post<Plan>('/admin/plans', body, w),
+  createTemplate: (body: InitTemplateInput, w: Write) =>
+    post<InitTemplate>('/admin/init-templates', body, w),
+  createZone: (body: { code: string; name: string }, w: Write) =>
+    post<Zone>('/admin/zones', body, w),
   gpuOptions: (q?: Query) => list<GPUOption>('/catalog/gpu-options', q),
   image: (id: ID) => detail<Image>(`/admin/images/${id}`),
   images: (q?: Query) => list<Image>('/admin/images', q),
-  networkOptions: (q: Query) => list<NetworkOption>('/catalog/network-options', q),
+  networkOptions: (q: Query) =>
+    list<NetworkOption>('/catalog/network-options', q),
   plan: (id: ID) => detail<Plan>(`/admin/plans/${id}`),
   plans: (q?: Query) => list<Plan>('/admin/plans', q),
-  publishPlan: (id: ID, w: Write) => post<Plan>(`/admin/plans/${id}/publish`, {}, w),
-  publishTemplate: (id: ID, w: Write) => post<InitTemplate>(`/admin/init-templates/${id}/publish`, {}, w),
-  retirePlan: (id: ID, w: Write) => post<Plan>(`/admin/plans/${id}/retire`, {}, w),
+  publishPlan: (id: ID, w: Write) =>
+    post<Plan>(`/admin/plans/${id}/publish`, {}, w),
+  publishTemplate: (id: ID, w: Write) =>
+    post<InitTemplate>(`/admin/init-templates/${id}/publish`, {}, w),
+  retirePlan: (id: ID, w: Write) =>
+    post<Plan>(`/admin/plans/${id}/retire`, {}, w),
   retireTemplate: (id: ID, w: Write) =>
     post<InitTemplate>(`/admin/init-templates/${id}/retire`, {}, w),
   template: (id: ID) => detail<InitTemplate>(`/admin/init-templates/${id}`),
@@ -315,25 +375,38 @@ export const catalogApi = {
     w: Write,
   ) => patch<Image>(`/admin/images/${id}`, body, w),
   /** 后端只接受草稿套餐的这些字段；code/version/status 不可改。 */
-  updatePlan: (id: ID, body: Partial<Omit<PlanInput, 'code' | 'version'>>, w: Write) =>
-    patch<Plan>(`/admin/plans/${id}`, body, w),
+  updatePlan: (
+    id: ID,
+    body: Partial<Omit<PlanInput, 'code' | 'version'>>,
+    w: Write,
+  ) => patch<Plan>(`/admin/plans/${id}`, body, w),
   /** 后端只接受草稿模板的 name/script/parameter_schema/timeout_seconds/phase。 */
-  updateTemplate: (id: ID, body: Partial<Omit<InitTemplateInput, 'code' | 'version'>>, w: Write) =>
-    patch<InitTemplate>(`/admin/init-templates/${id}`, body, w),
-  updateZone: (id: ID, body: Partial<{ name: string; status: Zone['status'] }>, w: Write) =>
-    patch<Zone>(`/admin/zones/${id}`, body, w),
+  updateTemplate: (
+    id: ID,
+    body: Partial<Omit<InitTemplateInput, 'code' | 'version'>>,
+    w: Write,
+  ) => patch<InitTemplate>(`/admin/init-templates/${id}`, body, w),
+  updateZone: (
+    id: ID,
+    body: Partial<{ name: string; status: Zone['status'] }>,
+    w: Write,
+  ) => patch<Zone>(`/admin/zones/${id}`, body, w),
   zone: (id: ID) => detail<Zone>(`/admin/zones/${id}`),
   zones: (q?: Query) => list<Zone>('/admin/zones', q),
 };
 
 /* ---------------- 管理端：政策 ---------------- */
 
-const pv = (kind: PolicyKind, path = '') => `/admin/policies/${kind}/versions${path}`;
+const pv = (kind: PolicyKind, path = '') =>
+  `/admin/policies/${kind}/versions${path}`;
 
 export const policiesApi = {
   bindings: () => detail<PlatformBindings>('/admin/platform-policy-bindings'),
-  create: (kind: PolicyKind, body: { code: string; config: Record<string, unknown>; version: string }, w: Write) =>
-    post<PolicyVersion>(pv(kind), body, w),
+  create: (
+    kind: PolicyKind,
+    body: { code: string; config: Record<string, unknown>; version: string },
+    w: Write,
+  ) => post<PolicyVersion>(pv(kind), body, w),
   get: (kind: PolicyKind, id: ID) => detail<PolicyVersion>(pv(kind, `/${id}`)),
   list: (kind: PolicyKind, q?: Query) => list<PolicyVersion>(pv(kind), q),
   publish: (kind: PolicyKind, id: ID, effective_at: string, w: Write) =>
@@ -342,8 +415,12 @@ export const policiesApi = {
     put<PlatformBindings>('/admin/platform-policy-bindings', body, w),
   retire: (kind: PolicyKind, id: ID, w: Write) =>
     post<PolicyVersion>(pv(kind, `/${id}/retire`), {}, w),
-  update: (kind: PolicyKind, id: ID, config: Record<string, unknown>, w: Write) =>
-    patch<PolicyVersion>(pv(kind, `/${id}`), { config }, w),
+  update: (
+    kind: PolicyKind,
+    id: ID,
+    config: Record<string, unknown>,
+    w: Write,
+  ) => patch<PolicyVersion>(pv(kind, `/${id}`), { config }, w),
 };
 
 /* ---------------- 管理端：财务 ---------------- */
@@ -351,22 +428,37 @@ export const policiesApi = {
 export const financeApi = {
   account: (id: ID) => detail<CreditAccount>(`/admin/credit-accounts/${id}`),
   accounts: (q?: Query) => list<CreditAccount>('/admin/credit-accounts', q),
-  adjust: (id: ID, body: { amount_pt: string; expires_at: null | string }, w: Write) =>
-    post<Record<string, unknown>>(`/admin/credit-accounts/${id}/adjustments`, body, w),
-  codes: (q?: Query) => list<RedemptionCode>('/admin/redemption-codes', q),
-  createCodes: (
-    body: { amount_pt: string; count: number; expires_at: string; max_redemptions: number },
+  adjust: (
+    id: ID,
+    body: { amount_pt: string; expires_at: null | string },
     w: Write,
   ) =>
-    post<{ codes_revealable?: boolean; items?: RedemptionCode[]; record_ids?: ID[] }>(
-      '/admin/redemption-codes',
+    post<Record<string, unknown>>(
+      `/admin/credit-accounts/${id}/adjustments`,
       body,
       w,
     ),
+  codes: (q?: Query) => list<RedemptionCode>('/admin/redemption-codes', q),
+  createCodes: (
+    body: {
+      amount_pt: string;
+      count: number;
+      expires_at: string;
+      max_redemptions: number;
+    },
+    w: Write,
+  ) =>
+    post<{
+      codes_revealable?: boolean;
+      items?: RedemptionCode[];
+      record_ids?: ID[];
+    }>('/admin/redemption-codes', body, w),
   disableCode: (id: ID, w: Write) =>
     post<RedemptionCode>(`/admin/redemption-codes/${id}/disable`, {}, w),
-  enforcement: (id: ID) => detail<CreditEnforcement>(`/admin/credit-enforcements/${id}`),
-  enforcements: (q?: Query) => list<CreditEnforcement>('/admin/credit-enforcements', q),
+  enforcement: (id: ID) =>
+    detail<CreditEnforcement>(`/admin/credit-enforcements/${id}`),
+  enforcements: (q?: Query) =>
+    list<CreditEnforcement>('/admin/credit-enforcements', q),
   extend: (id: ID, body: { shutdown_deadline: string }, w: Write) =>
     post<CreditEnforcement>(`/admin/credit-enforcements/${id}/extend`, body, w),
   ledger: (q?: Query) => list<LedgerEntry>('/admin/credit-ledger', q),

@@ -154,7 +154,7 @@ func instanceDTO(a *platform.App, r platform.Row) platform.Row {
 func Register(a *platform.App, user, admin *gin.RouterGroup) {
 	billing.SetStopHook(QueueStop)
 	registerWorkers(a)
-	registerRequests(a, user, admin)
+	registerProvisioning(a, user, admin)
 	registerGPU(a, user, admin)
 	for _, g := range []*gin.RouterGroup{user, admin} {
 		g.GET("/instances", platform.Handle(func(c *gin.Context) (any, error) {
@@ -277,7 +277,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		if e != nil {
 			return nil, e
 		}
-		requestAccepted(c, r)
+		taskAccepted(c, r)
 		return nil, nil
 	}))
 	admin.POST("/tasks/:id/reconcile", platform.Handle(func(c *gin.Context) (any, error) {
@@ -302,7 +302,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		if e != nil {
 			return nil, e
 		}
-		requestAccepted(c, out)
+		taskAccepted(c, out)
 		return nil, nil
 	}))
 }
@@ -359,7 +359,7 @@ func lifecycle(c *gin.Context, a *platform.App, action string) (any, error) {
 		if e != nil {
 			return nil, e
 		}
-		requestAccepted(c, out)
+		taskAccepted(c, out)
 		return nil, nil
 	}
 	if platform.Text(r["provisioning_state"]) != "ready" {
@@ -463,7 +463,7 @@ func lifecycle(c *gin.Context, a *platform.App, action string) (any, error) {
 	if e != nil {
 		return nil, e
 	}
-	requestAccepted(c, out)
+	taskAccepted(c, out)
 	return nil, nil
 }
 func QueueStop(ctx context.Context, a *platform.App, db *gorm.DB, instanceID, userID uint64, force bool, reason string) (platform.Row, error) {

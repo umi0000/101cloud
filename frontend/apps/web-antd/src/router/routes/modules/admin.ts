@@ -78,23 +78,6 @@ const routes: RouteRecordRaw[] = [
     path: '/admin/instances/:id',
   },
   {
-    component: () => import('#/views/admin/requests/index.vue'),
-    meta: { ...admin, icon: 'lucide:clipboard-check', title: '自定义申请' },
-    name: 'AdminRequests',
-    path: '/admin/requests',
-  },
-  {
-    component: () => import('#/views/admin/requests/detail.vue'),
-    meta: {
-      ...admin,
-      activePath: '/admin/requests',
-      hideInMenu: true,
-      title: '申请审批',
-    },
-    name: 'AdminRequestDetail',
-    path: '/admin/requests/:id',
-  },
-  {
     component: () => import('#/views/admin/catalog/index.vue'),
     meta: { ...admin, icon: 'lucide:package', title: '产品目录' },
     name: 'AdminCatalog',

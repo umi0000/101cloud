@@ -51,11 +51,12 @@ const MESSAGES: Record<string, string> = {
   policy_changed: '价格或政策已变化，请重新确认',
   policy_not_configured: '平台尚未配置所需政策',
   pool_in_use: '地址池仍在使用，不能修改',
+  pool_range_in_use:
+    '新分配范围不能排除已登记的 IP（包括已绑定、预留及空闲地址）',
   precondition_required: '缺少版本号，请刷新后重试',
   quota_exceeded: '超出资源配额',
   quota_not_configured: '账号尚未配置配额',
   rate_limited: '操作过于频繁',
-  request_not_pending: '申请已处理，不能再修改',
   resident_capacity_unavailable: '节点常驻资源不足',
   revision_conflict: '数据已被其他操作修改，已为你刷新',
   service_unavailable: '服务暂不可用',
@@ -79,7 +80,6 @@ const SHOW_BACKEND_MESSAGE: Record<string, true> = {
   invalid_query: true,
   invalid_request: true,
   invalid_size: true,
-  reason_required: true,
   validation_failed: true,
 };
 

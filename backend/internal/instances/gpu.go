@@ -92,7 +92,7 @@ func registerGPU(a *platform.App, user, admin *gin.RouterGroup) {
 				if e != nil {
 					return nil, e
 				}
-				requestAccepted(c, out)
+				taskAccepted(c, out)
 				return nil, nil
 			}))
 		}

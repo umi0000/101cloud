@@ -16,8 +16,6 @@ import (
 	"gorm.io/gorm"
 )
 
-// Separate submission and approval types keep administrative fields out of the
-// user decoder, including fields whose zero value would otherwise hide misuse.
 type customConfigFields struct {
 	InstanceType          string         `json:"instance_type"`
 	ZoneID                string         `json:"zone_id"`
@@ -27,40 +25,30 @@ type customConfigFields struct {
 	InitParameters        map[string]any `json:"init_parameters"`
 	InitTemplateVersionID string         `json:"init_template_version_id,omitempty"`
 }
-type customRequestGPU struct {
+type customGPUConfig struct {
 	Count       *int    `json:"count"`
 	Model       *string `json:"model"`
 	AccessMode  string  `json:"access_mode"`
 	MaxHourlyPT string  `json:"max_hourly_pt"`
 }
-type customRequestConfig struct {
-	customConfigFields
-	GPU customRequestGPU `json:"gpu"`
-}
-type customApprovedGPU struct {
-	customRequestGPU
+type customProvisioningGPU struct {
+	customGPUConfig
 	FixedUUIDs []string `json:"fixed_uuids,omitempty"`
 }
-type customApprovedConfig struct {
+type customProvisioningConfig struct {
 	customConfigFields
-	GPU                customApprovedGPU `json:"gpu"`
-	NodeID             string            `json:"node_id,omitempty"`
-	AllowedUserActions []string          `json:"allowed_user_actions"`
-	GPUUserPermissions map[string]bool   `json:"gpu_user_permissions"`
+	GPU                customProvisioningGPU `json:"gpu"`
+	NodeID             string                `json:"node_id,omitempty"`
+	AllowedUserActions []string              `json:"allowed_user_actions"`
+	GPUUserPermissions map[string]bool       `json:"gpu_user_permissions"`
 }
 
 var customActions = map[string]bool{"start": true, "stop": true, "restart": true, "resize": true, "delete": true, "gpu_attach": true, "gpu_detach": true, "gpu_rebind": true, "gpu_policy": true, "console": true}
 var customGPUPermissions = map[string]bool{"idle": true, "idle_timeout": true, "idle_action": true, "rebalance": true, "allow_live": true, "max_hourly_pt": true}
 var maximumPolicyPrice = decimal.RequireFromString("99999999999999.999999")
 
-func requestText(s string, max int) bool {
+func validCustomText(s string, max int) bool {
 	return strings.TrimSpace(s) != "" && utf8.RuneCountInString(s) <= max
-}
-func requestReason(s string) error {
-	if !requestText(s, 4000) {
-		return bad("reason must contain 1–4000 characters")
-	}
-	return nil
 }
 func policyMoney(s string) (decimal.Decimal, error) {
 	// Prices are exact DECIMAL(20,6), not floats or exponent notation.
@@ -107,7 +95,7 @@ func validateCustomPermissions(actions []string, permissions map[string]bool) er
 	}
 	return nil
 }
-func validateCustomFields(c *gin.Context, a *platform.App, f customConfigFields, g customRequestGPU) error {
+func validateCustomFields(c *gin.Context, a *platform.App, f customConfigFields, g customGPUConfig) error {
 	if f.InstanceType != "container" && f.InstanceType != "virtual-machine" {
 		return bad("instance_type must be container or virtual-machine")
 	}
@@ -138,7 +126,7 @@ func validateCustomFields(c *gin.Context, a *platform.App, f customConfigFields,
 	if _, e = policyMoney(g.MaxHourlyPT); e != nil {
 		return e
 	}
-	if (*g.Count == 0 && g.Model != nil) || (*g.Count > 0 && (g.Model == nil || !requestText(*g.Model, 255))) {
+	if (*g.Count == 0 && g.Model != nil) || (*g.Count > 0 && (g.Model == nil || !validCustomText(*g.Model, 255))) {
 		return bad("gpu.model must be null for zero GPUs and a model string otherwise")
 	}
 	db := platform.DB(c, a)
@@ -168,7 +156,7 @@ func validateCustomFields(c *gin.Context, a *platform.App, f customConfigFields,
 	}
 	return catalog.ValidateInit(c.Request.Context(), db, templateID, f.InitParameters)
 }
-func approvedSpec(name string, cfg customApprovedConfig) Spec {
+func customProvisioningSpec(name string, cfg customProvisioningConfig) Spec {
 	model := ""
 	if cfg.GPU.Model != nil {
 		model = *cfg.GPU.Model
@@ -183,8 +171,8 @@ func approvedSpec(name string, cfg customApprovedConfig) Spec {
 	}
 	return Spec{Name: name, InstanceType: cfg.InstanceType, ZoneID: cfg.ZoneID, ImageID: cfg.ImageID, NetworkOptionID: cfg.NetworkOptionID, NodeID: cfg.NodeID, Resources: cfg.Resources, GPU: GPURequest{Count: *cfg.GPU.Count, Model: model, AccessMode: cfg.GPU.AccessMode, MaxHourlyPT: cfg.GPU.MaxHourlyPT, FixedUUIDs: cfg.GPU.FixedUUIDs}, InitParameters: cfg.InitParameters, InitTemplateVersionID: cfg.InitTemplateVersionID, AllowedUserActions: actions, GPUUserPermissions: permissions}
 }
-func validateApproved(c *gin.Context, a *platform.App, cfg customApprovedConfig) error {
-	if e := validateCustomFields(c, a, cfg.customConfigFields, cfg.GPU.customRequestGPU); e != nil {
+func validateCustomProvisioning(c *gin.Context, a *platform.App, cfg customProvisioningConfig) error {
+	if e := validateCustomFields(c, a, cfg.customConfigFields, cfg.GPU.customGPUConfig); e != nil {
 		return e
 	}
 	if e := validateCustomPermissions(cfg.AllowedUserActions, cfg.GPUUserPermissions); e != nil {
@@ -200,60 +188,12 @@ func validateApproved(c *gin.Context, a *platform.App, cfg customApprovedConfig)
 	}
 	seen := make(map[string]bool, len(cfg.GPU.FixedUUIDs))
 	for _, id := range cfg.GPU.FixedUUIDs {
-		if !requestText(id, 128) || strings.TrimSpace(id) != id || seen[id] {
+		if !validCustomText(id, 128) || strings.TrimSpace(id) != id || seen[id] {
 			return bad("fixed_uuids must contain unique GPU UUIDs")
 		}
 		seen[id] = true
 	}
 	return nil
-}
-func requestDTO(r platform.Row) platform.Row {
-	out := platform.Public(r, "id", "user_id", "name", "reason", "status", "reviewed_by_user_id", "review_note", "reviewed_at", "instance_id", "delivery_task_id", "revision", "created_at", "updated_at")
-	out["requested_config"] = object(r["requested_config"])
-	out["approved_config"] = nil
-	if r["approved_config"] != nil {
-		out["approved_config"] = object(r["approved_config"])
-	}
-	return out
-}
-func requestRecord(c *gin.Context, a *platform.App, lock bool) (platform.Row, error) {
-	id, e := platform.ID(c, "id")
-	if e != nil {
-		return nil, e
-	}
-	r, e := platform.Get(platform.DB(c, a), "custom_instance_requests", id, lock)
-	if e != nil {
-		return nil, e
-	}
-	if !c.GetBool("admin") && platform.Uint(r["user_id"]) != platform.Current(c).ID {
-		return nil, platform.E(404, "not_found", "custom instance request not found")
-	}
-	return r, nil
-}
-func requestList(c *gin.Context, a *platform.App) (any, error) {
-	q := platform.DB(c, a).Table("custom_instance_requests")
-	filters := []string{"status"}
-	if c.GetBool("admin") {
-		filters = append(filters, "user_id")
-		if s := c.Query("user_id"); s != "" {
-			id, e := platform.IDString(s)
-			if e != nil {
-				return nil, e
-			}
-			q = q.Where("user_id = ?", id)
-		}
-	} else {
-		q = q.Where("user_id = ?", platform.Current(c).ID)
-	}
-	if status := c.Query("status"); status != "" {
-		switch status {
-		case "pending", "approved", "rejected", "cancelled":
-		default:
-			return nil, bad("invalid request status")
-		}
-		q = q.Where("status = ?", status)
-	}
-	return platform.ListMap(c, a, q, filters, func(r platform.Row) (platform.Row, error) { return requestDTO(r), nil })
 }
 func activeOwner(c *gin.Context, a *platform.App, s string) (uint64, error) {
 	id, e := platform.IDString(s)
@@ -270,51 +210,8 @@ func activeOwner(c *gin.Context, a *platform.App, s string) (uint64, error) {
 	return id, nil
 }
 
-func registerRequests(a *platform.App, user, admin *gin.RouterGroup) {
-	user.POST("/custom-instance-requests", platform.Handle(func(c *gin.Context) (any, error) {
-		var in struct {
-			Name            string              `json:"name"`
-			Reason          string              `json:"reason"`
-			RequestedConfig customRequestConfig `json:"requested_config"`
-		}
-		if e := platform.Decode(c, &in); e != nil {
-			return nil, e
-		}
-		if !requestText(in.Name, 128) {
-			return nil, bad("name must contain 1–128 characters")
-		}
-		if e := requestReason(in.Reason); e != nil {
-			return nil, e
-		}
-		if e := validateCustomFields(c, a, in.RequestedConfig.customConfigFields, in.RequestedConfig.GPU); e != nil {
-			return nil, e
-		}
-		db := platform.DB(c, a)
-		r := platform.Row{"user_id": platform.Current(c).ID, "name": in.Name, "reason": in.Reason, "requested_config": jsonText(in.RequestedConfig), "status": "pending", "revision": uint64(1), "created_at": a.Time(), "updated_at": a.Time()}
-		if e := db.Table("custom_instance_requests").Create(&r).Error; e != nil {
-			return nil, platform.WrapDB(e)
-		}
-		if _, e := platform.InsertedID(r); e != nil {
-			return nil, e
-		}
-		r, e := platform.Get(db, "custom_instance_requests", platform.Uint(r["id"]), false)
-		if e != nil {
-			return nil, e
-		}
-		platform.SetETag(c, r)
-		platform.Reply(c, http.StatusCreated, requestDTO(r))
-		return nil, nil
-	}))
+func registerProvisioning(a *platform.App, user, admin *gin.RouterGroup) {
 	for _, g := range []*gin.RouterGroup{user, admin} {
-		g.GET("/custom-instance-requests", platform.Handle(func(c *gin.Context) (any, error) { return requestList(c, a) }))
-		g.GET("/custom-instance-requests/:id", platform.Handle(func(c *gin.Context) (any, error) {
-			r, e := requestRecord(c, a, false)
-			if e != nil {
-				return nil, e
-			}
-			platform.SetETag(c, r)
-			return requestDTO(r), nil
-		}))
 		g.GET("/instances/:id/gpu-policy", platform.Handle(func(c *gin.Context) (any, error) {
 			r, e := owned(c, a)
 			if e != nil {
@@ -324,123 +221,37 @@ func registerRequests(a *platform.App, user, admin *gin.RouterGroup) {
 		}))
 		g.PUT("/instances/:id/gpu-policy", platform.Handle(func(c *gin.Context) (any, error) { return putGPUPolicy(c, a) }))
 	}
-	user.POST("/custom-instance-requests/:id/cancel", platform.Handle(func(c *gin.Context) (any, error) {
-		var in struct{}
-		if e := platform.Decode(c, &in); e != nil {
-			return nil, e
-		}
-		r, e := requestRecord(c, a, true)
-		if e != nil {
-			return nil, e
-		}
-		if platform.Text(r["status"]) != "pending" {
-			return nil, conflict("request_not_pending", "only pending requests can be cancelled")
-		}
-		r, e = platform.Save(c, a, "custom_instance_requests", r, platform.Row{"status": "cancelled"})
-		if e != nil {
-			return nil, e
-		}
-		platform.SetETag(c, r)
-		return requestDTO(r), nil
-	}))
-	admin.POST("/custom-instance-requests/:id/reject", platform.Handle(func(c *gin.Context) (any, error) {
-		var in struct {
-			ReviewNote string `json:"review_note"`
-		}
-		if e := platform.Decode(c, &in); e != nil {
-			return nil, e
-		}
-		if e := requestReason(in.ReviewNote); e != nil {
-			return nil, e
-		}
-		r, e := requestRecord(c, a, true)
-		if e != nil {
-			return nil, e
-		}
-		if platform.Text(r["status"]) != "pending" {
-			return nil, conflict("request_not_pending", "only pending requests can be rejected")
-		}
-		r, e = platform.Save(c, a, "custom_instance_requests", r, platform.Row{"status": "rejected", "reviewed_by_user_id": platform.Current(c).ID, "review_note": in.ReviewNote, "reviewed_at": a.Time()})
-		if e != nil {
-			return nil, e
-		}
-		platform.SetETag(c, r)
-		return requestDTO(r), nil
-	}))
-	admin.POST("/custom-instance-requests/:id/approve", platform.Handle(func(c *gin.Context) (any, error) {
-		var in struct {
-			ApprovedConfig customApprovedConfig `json:"approved_config"`
-			ReviewNote     string               `json:"review_note"`
-		}
-		if e := platform.Decode(c, &in); e != nil {
-			return nil, e
-		}
-		if e := requestReason(in.ReviewNote); e != nil {
-			return nil, e
-		}
-		r, e := requestRecord(c, a, true)
-		if e != nil {
-			return nil, e
-		}
-		if e = platform.Revision(c, r); e != nil {
-			return nil, e
-		}
-		if platform.Text(r["status"]) != "pending" {
-			return nil, conflict("request_not_pending", "only pending requests can be approved")
-		}
-		if e = validateApproved(c, a, in.ApprovedConfig); e != nil {
-			return nil, e
-		}
-		owner, e := activeOwner(c, a, strconv.FormatUint(platform.Uint(r["user_id"]), 10))
-		if e != nil {
-			return nil, e
-		}
-		out, e := createInstance(c.Request.Context(), a, platform.DB(c, a), owner, approvedSpec(platform.Text(r["name"]), in.ApprovedConfig), true, nil)
-		if e != nil {
-			return nil, e
-		}
-		// Approval and immutable approved snapshot commit with the delivery task. The
-		// worker owns delivery status only; a failed delivery never reverses review.
-		r, e = platform.Save(c, a, "custom_instance_requests", r, platform.Row{"status": "approved", "approved_config": jsonText(in.ApprovedConfig), "reviewed_by_user_id": platform.Current(c).ID, "review_note": in.ReviewNote, "reviewed_at": a.Time(), "instance_id": platform.Uint(out["instance_id"]), "delivery_task_id": platform.Uint(out["task_id"])})
-		if e != nil {
-			return nil, e
-		}
-		out["request"] = requestDTO(r)
-		platform.SetETag(c, r)
-		requestAccepted(c, out)
-		return nil, nil
-	}))
 	admin.POST("/custom-instances", platform.Handle(func(c *gin.Context) (any, error) {
 		var in struct {
-			OwnerUserID    string               `json:"owner_user_id"`
-			Name           string               `json:"name"`
-			ApprovedConfig customApprovedConfig `json:"approved_config"`
+			OwnerUserID    string                   `json:"owner_user_id"`
+			Name           string                   `json:"name"`
+			ApprovedConfig customProvisioningConfig `json:"approved_config"`
 		}
 		if e := platform.Decode(c, &in); e != nil {
 			return nil, e
 		}
-		if !requestText(in.Name, 128) {
+		if !validCustomText(in.Name, 128) {
 			return nil, bad("name must contain 1–128 characters")
 		}
-		if e := validateApproved(c, a, in.ApprovedConfig); e != nil {
+		if e := validateCustomProvisioning(c, a, in.ApprovedConfig); e != nil {
 			return nil, e
 		}
 		owner, e := activeOwner(c, a, in.OwnerUserID)
 		if e != nil {
 			return nil, e
 		}
-		out, e := createInstance(c.Request.Context(), a, platform.DB(c, a), owner, approvedSpec(in.Name, in.ApprovedConfig), true, nil)
+		out, e := createInstance(c.Request.Context(), a, platform.DB(c, a), owner, customProvisioningSpec(in.Name, in.ApprovedConfig), true, nil)
 		if e != nil {
 			return nil, e
 		}
-		requestAccepted(c, out)
+		taskAccepted(c, out)
 		return nil, nil
 	}))
 	admin.POST("/nodes/:id/instance-imports", platform.Handle(func(c *gin.Context) (any, error) {
 		var in struct {
-			IncusUUID      string               `json:"incus_uuid"`
-			OwnerUserID    string               `json:"owner_user_id"`
-			ApprovedConfig customApprovedConfig `json:"approved_config"`
+			IncusUUID      string                   `json:"incus_uuid"`
+			OwnerUserID    string                   `json:"owner_user_id"`
+			ApprovedConfig customProvisioningConfig `json:"approved_config"`
 		}
 		if e := platform.Decode(c, &in); e != nil {
 			return nil, e
@@ -460,7 +271,7 @@ func registerRequests(a *platform.App, user, admin *gin.RouterGroup) {
 			return nil, bad("approved node_id must match the route node")
 		}
 		in.ApprovedConfig.NodeID = strconv.FormatUint(node, 10)
-		if e = validateApproved(c, a, in.ApprovedConfig); e != nil {
+		if e = validateCustomProvisioning(c, a, in.ApprovedConfig); e != nil {
 			return nil, e
 		}
 		if platform.Uint(nr["availability_zone_id"]) != mustUint(in.ApprovedConfig.ZoneID) {
@@ -479,16 +290,16 @@ func registerRequests(a *platform.App, user, admin *gin.RouterGroup) {
 		}
 		// Discovery and exact native identity/config verification happen in the worker,
 		// before reserveImported adopts and reserves actual IP/GPU inventory atomically.
-		spec := approvedSpec("Imported "+in.IncusUUID, in.ApprovedConfig)
+		spec := customProvisioningSpec("Imported "+in.IncusUUID, in.ApprovedConfig)
 		out, e := platform.Enqueue(platform.DB(c, a), "instance.import", owner, node, 0, false, platform.Row{"owner_user_id": strconv.FormatUint(owner, 10), "incus_uuid": in.IncusUUID, "approved_config": spec})
 		if e != nil {
 			return nil, e
 		}
-		requestAccepted(c, out)
+		taskAccepted(c, out)
 		return nil, nil
 	}))
 }
-func requestAccepted(c *gin.Context, out platform.Row) {
+func taskAccepted(c *gin.Context, out platform.Row) {
 	prefix := "/api/v1/tasks/"
 	if c.GetBool("admin") {
 		prefix = "/api/v1/admin/tasks/"

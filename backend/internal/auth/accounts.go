@@ -383,7 +383,7 @@ func limitsDTO(row platform.Row) gin.H {
 	return gin.H{"id": strconv.FormatUint(platform.Uint(row["id"]), 10), "user_id": strconv.FormatUint(platform.Uint(row["user_id"]), 10), "revision": strconv.FormatUint(platform.Uint(row["revision"]), 10), "max_instances": platform.Uint(row["max_instances"]), "max_resident_instances": platform.Uint(row["max_resident_instances"]), "max_vcpus": platform.Uint(row["max_vcpus"]), "max_memory_bytes": strconv.FormatUint(platform.Uint(row["max_memory_bytes"]), 10), "max_disk_bytes": strconv.FormatUint(platform.Uint(row["max_disk_bytes"]), 10), "max_gpus": platform.Uint(row["max_gpu_allocations"])}
 }
 func permissions(row platform.Row) []string {
-	effective := []string{"catalog:read", "instances:own", "requests:own", "billing:own", "sessions:own", "profile:own"}
+	effective := []string{"catalog:read", "instances:own", "billing:own", "sessions:own", "profile:own"}
 	if platform.Text(row["role"]) == "admin" {
 		effective = append(effective, "admin")
 	}

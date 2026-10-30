@@ -153,14 +153,3 @@ func TestAdminGPUPolicyAcceptsNoOperationReason(t *testing.T) {
 		}
 	}
 }
-
-func TestCustomRequestAndReviewTextRemainRequired(t *testing.T) {
-	for _, text := range []string{"", "   ", strings.Repeat("界", 4001)} {
-		requireCode(t, requestReason(text), "invalid_request")
-	}
-	for _, text := range []string{"A member's requested workload", "Approved for the requested workload", strings.Repeat("界", 4000)} {
-		if err := requestReason(text); err != nil {
-			t.Fatalf("valid business text rejected: %v", err)
-		}
-	}
-}

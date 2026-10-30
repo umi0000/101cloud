@@ -699,24 +699,6 @@ export interface CustomConfig {
   zone_id: ID;
 }
 
-export interface CustomRequest {
-  approved_config: CustomConfig | null;
-  created_at: Time;
-  delivery_task_id: ID | null;
-  id: ID;
-  instance_id: ID | null;
-  name: string;
-  reason: string;
-  requested_config: CustomConfig;
-  review_note: null | string;
-  reviewed_at: null | Time;
-  reviewed_by_user_id: ID | null;
-  revision: string;
-  status: 'approved' | 'cancelled' | 'pending' | 'rejected';
-  updated_at: Time;
-  user_id: ID;
-}
-
 /* ---------- policies & finance ---------- */
 
 export interface PolicyVersion {

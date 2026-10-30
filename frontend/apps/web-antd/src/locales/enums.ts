@@ -97,12 +97,6 @@ export const ENUMS: Record<string, Dict> = {
   poolStatus: { active: L('启用', 'success'), disabled: L('停用'), exhausted: L('已用尽', 'warning') },
   productType: { custom: L('自定义', 'processing'), elastic: L('标准') },
   quality: { cached: L('正常', 'success'), stale: L('已过期', 'warning'), unavailable: L('无数据') },
-  requestStatus: {
-    approved: L('已批准', 'success'),
-    cancelled: L('已撤销'),
-    pending: L('待审批', 'processing'),
-    rejected: L('已拒绝', 'error'),
-  },
   role: { admin: L('管理员', 'processing'), user: L('成员') },
   simpleStatus: { active: L('启用', 'success'), disabled: L('停用') },
   task: {

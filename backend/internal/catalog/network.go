@@ -177,6 +177,8 @@ func registerNetworks(a *platform.App, user, admin *gin.RouterGroup) {
 			Status  *string   `json:"status"`
 			Gateway *string   `json:"gateway"`
 			DNS     *[]string `json:"dns_servers"`
+			Start   *string   `json:"range_start"`
+			End     *string   `json:"range_end"`
 		}
 		if e = platform.Decode(c, &in); e != nil {
 			return nil, e
@@ -194,6 +196,49 @@ func registerNetworks(a *platform.App, user, admin *gin.RouterGroup) {
 			}
 			changes["status"] = *in.Status
 		}
+		p := networkPrefix(r)
+		start, end := networkAddr(r["range_start"]), networkAddr(r["range_end"])
+		rangeChanged := in.Start != nil || in.End != nil
+		if rangeChanged {
+			if in.Start != nil {
+				start, e = netip.ParseAddr(*in.Start)
+				if e != nil {
+					return nil, networkError("invalid range start")
+				}
+			}
+			if in.End != nil {
+				end, e = netip.ParseAddr(*in.End)
+				if e != nil {
+					return nil, networkError("invalid range end")
+				}
+			}
+			if start.Is4In6() || end.Is4In6() || !p.Contains(start) || !p.Contains(end) || start.Compare(end) > 0 {
+				return nil, networkError("allocation range must be ordered and inside the existing subnet")
+			}
+			if !networkUsable(p, start) || !networkUsable(p, end) {
+				return nil, networkError("allocation range includes reserved subnet addresses")
+			}
+			var outside int64
+			if e = platform.DB(c, a).Table("ip_addresses").Where("network_pool_id=? AND (address < ? OR address > ?)", r["id"], start.AsSlice(), end.AsSlice()).Count(&outside).Error; e != nil {
+				return nil, platform.WrapDB(e)
+			}
+			if outside > 0 {
+				return nil, platform.E(409, "pool_range_in_use", "allocation range cannot exclude any registered IP address")
+			}
+			changes["range_start"], changes["range_end"] = start.AsSlice(), end.AsSlice()
+		}
+		if rangeChanged || in.Gateway != nil {
+			gateway := networkAddr(r["gateway"])
+			if in.Gateway != nil {
+				gateway, e = netip.ParseAddr(*in.Gateway)
+				if e != nil || gateway.Is4In6() || !p.Contains(gateway) || !networkUsable(p, gateway) {
+					return nil, networkError("invalid gateway")
+				}
+			}
+			if gateway.IsValid() && gateway.Compare(start) >= 0 && gateway.Compare(end) <= 0 {
+				return nil, networkError("gateway must be outside the allocation range")
+			}
+		}
 		if in.Gateway != nil || in.DNS != nil {
 			var count int64
 			if e = platform.DB(c, a).Table("ip_addresses").Where("network_pool_id=? AND status <> 'available'", r["id"]).Count(&count).Error; e != nil {
@@ -202,10 +247,9 @@ func registerNetworks(a *platform.App, user, admin *gin.RouterGroup) {
 			if count > 0 {
 				return nil, platform.E(409, "pool_in_use", "network semantics cannot change while addresses are allocated")
 			}
-			p := networkPrefix(r)
 			if in.Gateway != nil {
 				g, err := netip.ParseAddr(*in.Gateway)
-				if err != nil || !p.Contains(g) || !networkUsable(p, g) || g.Compare(networkAddr(r["range_start"])) >= 0 && g.Compare(networkAddr(r["range_end"])) <= 0 {
+				if err != nil || !p.Contains(g) || !networkUsable(p, g) || g.Compare(start) >= 0 && g.Compare(end) <= 0 {
 					return nil, networkError("invalid gateway")
 				}
 				changes["gateway"] = g.AsSlice()

@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 /**
- * approved_config 编辑表单（frontend/前端设计.md 7.5），用于管理员直接下发自定义实例，可复用于审批与纳管。
+ * approved_config 编辑表单（frontend/前端设计.md 7.4），用于管理员直接下发自定义实例。
  * props.initial 为初始值；表单合法时 emit('update:value', config)，否则 emit null。
  */
 import type {

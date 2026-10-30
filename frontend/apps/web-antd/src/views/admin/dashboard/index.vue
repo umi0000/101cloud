@@ -2,7 +2,6 @@
 import type {
   AuditLog,
   CreditEnforcement,
-  CustomRequest,
   Instance,
   Node,
   NodeGPU,
@@ -17,7 +16,7 @@ import { Page } from '@vben/common-ui';
 
 import { Alert, Button, Card, Empty, Progress, Space, Table } from 'ant-design-vue';
 
-import { financeApi, instancesApi, listAll, nodesApi, opsApi, requestsApi } from '#/api/backend';
+import { financeApi, instancesApi, listAll, nodesApi, opsApi } from '#/api/backend';
 import StatusTag from '#/components/status-tag.vue';
 import TimeText from '#/components/time-text.vue';
 import UserName from '#/components/user-name.vue';
@@ -36,7 +35,6 @@ interface NodeView {
 
 const nodes = shallowRef<null | PageOf<NodeView>>(null);
 const running = shallowRef<null | PageOf<Instance>>(null);
-const pendingRequests = shallowRef<null | PageOf<CustomRequest>>(null);
 const unknownTasks = shallowRef<null | PageOf<Task>>(null);
 const grace = shallowRef<null | PageOf<CreditEnforcement>>(null);
 const audit = shallowRef<AuditLog[] | null>(null);
@@ -66,7 +64,6 @@ async function refresh() {
   const jobs: [string, () => Promise<void>][] = [
     ['节点', async () => void (nodes.value = await loadNodes())],
     ['运行中实例', async () => void (running.value = (await instancesApi.list({ limit: 100, observed_state: 'running' })).data)],
-    ['待审批申请', async () => void (pendingRequests.value = (await requestsApi.list({ limit: 100, status: 'pending' })).data)],
     ['结果未知任务', async () => void (unknownTasks.value = (await opsApi.tasks({ limit: 100, status: 'unknown' })).data)],
     ['额度宽限', async () => void (grace.value = (await financeApi.enforcements({ limit: 100, status: 'grace' })).data)],
     ['审计', async () => void (audit.value = (await opsApi.audit({ limit: 8 })).data.items)],
@@ -160,7 +157,7 @@ onMounted(refresh);
       type="warning"
     />
 
-    <div class="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
       <Card size="small">
         <div class="text-muted-foreground text-xs">节点</div>
         <div class="text-2xl font-semibold tabular-nums">{{ count(nodes) }}</div>
@@ -188,16 +185,6 @@ onMounted(refresh);
             {{ gpuSlots.missingNodes }} 个节点 GPU 未知
           </span>
         </div>
-      </Card>
-      <Card size="small">
-        <div class="text-muted-foreground text-xs">待审批申请</div>
-        <RouterLink
-          class="text-2xl font-semibold tabular-nums"
-          :class="positive(pendingRequests) ? 'text-orange-500' : ''"
-          to="/admin/requests"
-        >
-          {{ count(pendingRequests) }}
-        </RouterLink>
       </Card>
       <Card size="small">
         <div class="text-muted-foreground text-xs">结果未知的任务</div>
@@ -289,21 +276,6 @@ onMounted(refresh);
             <RouterLink class="ml-auto text-xs" to="/admin/finance">处理</RouterLink>
           </div>
         </div>
-        <div v-if="pendingRequests?.items.length" class="mb-3">
-          <div class="mb-1 flex justify-between text-sm font-medium">
-            <span>待审批申请</span>
-            <RouterLink class="text-xs" to="/admin/requests">全部</RouterLink>
-          </div>
-          <div
-            v-for="r in pendingRequests.items.slice(0, PENDING_SHOWN)"
-            :key="r.id"
-            class="flex items-center gap-2 py-0.5 text-sm"
-          >
-            <RouterLink :to="`/admin/requests/${r.id}`">{{ r.name }}</RouterLink>
-            <UserName :id="r.user_id" />
-            <span class="ml-auto"><TimeText :value="r.created_at" /></span>
-          </div>
-        </div>
         <div v-if="unknownTasks?.items.length">
           <div class="mb-1 flex justify-between text-sm font-medium">
             <span>结果未知任务</span>
@@ -323,7 +295,7 @@ onMounted(refresh);
           </div>
         </div>
         <Empty
-          v-if="grace && pendingRequests && unknownTasks && !grace.items.length && !pendingRequests.items.length && !unknownTasks.items.length"
+          v-if="grace && unknownTasks && !grace.items.length && !unknownTasks.items.length"
           description="没有待处理事项"
         />
       </Card>
