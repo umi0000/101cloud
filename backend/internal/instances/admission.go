@@ -52,10 +52,6 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 	if spec.InitParameters == nil {
 		spec.InitParameters = map[string]any{}
 	}
-	zone, e := platform.IDString(spec.ZoneID)
-	if e != nil {
-		return nil, e
-	}
 	imageID, e := platform.IDString(spec.ImageID)
 	if e != nil {
 		return nil, e
@@ -71,7 +67,7 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 		if spec.GPU.Model != "" {
 			model = &spec.GPU.Model
 		}
-		validated, err := catalog.ValidateElastic(ctx, db, a, catalog.CreateElasticSpec{Name: spec.Name, ZoneID: spec.ZoneID, PlanID: spec.PlanID, ImageID: spec.ImageID, NetworkOptionID: spec.NetworkOptionID, Resources: catalog.Resources{VCPUs: spec.Resources.VCPUs, MemoryBytes: spec.Resources.MemoryBytes, DiskBytes: spec.Resources.DiskBytes}, GPU: catalog.GPURequest{Count: uint64(spec.GPU.Count), Model: model, AccessMode: spec.GPU.AccessMode, MaxHourlyPT: spec.GPU.MaxHourlyPT}, InitParameters: spec.InitParameters}, versions)
+		validated, err := catalog.ValidateElastic(ctx, db, a, catalog.CreateElasticSpec{Name: spec.Name, PlanID: spec.PlanID, ImageID: spec.ImageID, NetworkOptionID: spec.NetworkOptionID, Resources: catalog.Resources{VCPUs: spec.Resources.VCPUs, MemoryBytes: spec.Resources.MemoryBytes, DiskBytes: spec.Resources.DiskBytes}, GPU: catalog.GPURequest{Count: uint64(spec.GPU.Count), Model: model, AccessMode: spec.GPU.AccessMode, MaxHourlyPT: spec.GPU.MaxHourlyPT}, InitParameters: spec.InitParameters}, versions)
 		if err != nil {
 			return nil, err
 		}
@@ -141,9 +137,6 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 	if e != nil {
 		return nil, e
 	}
-	if platform.Uint(node["availability_zone_id"]) != zone {
-		return nil, bad("节点不属于所选可用区，请重新选择。")
-	}
 	if platform.Text(node["administrative_state"]) != "active" || platform.Text(node["health"]) != "online" || platform.Stamp(node["connection_verified_at"]).IsZero() || a.Time().Sub(platform.Stamp(node["resources_sampled_at"])) > time.Minute || a.Time().Sub(platform.Stamp(node["last_heartbeat_at"])) > time.Minute {
 		return nil, conflict("node_unavailable", "节点未通过连接验证、未在线或资源观测已过期，请管理员检查节点连接与采集状态。")
 	}
@@ -156,8 +149,8 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 	if e != nil {
 		return nil, e
 	}
-	if platform.Text(pool["status"]) != "active" || platform.Uint(pool["availability_zone_id"]) != zone {
-		return nil, conflict("network_unavailable", "地址池未启用或不属于所选可用区，请检查网络选项。")
+	if platform.Text(pool["status"]) != "active" {
+		return nil, conflict("network_unavailable", "地址池未启用，请检查网络选项。")
 	}
 	pricing, e := platform.Get(db, "pricing_versions", pricingID, false)
 	if e != nil {

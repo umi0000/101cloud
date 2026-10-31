@@ -11,10 +11,6 @@ import (
 	"gorm.io/gorm"
 )
 
-type zoneInput struct {
-	Code string `json:"code"`
-	Name string `json:"name"`
-}
 type imageInput struct {
 	Code         string         `json:"code"`
 	Version      string         `json:"version"`
@@ -27,7 +23,6 @@ type planInput struct {
 	Code                  string            `json:"code"`
 	Version               string            `json:"version"`
 	Name                  string            `json:"name"`
-	ZoneID                string            `json:"zone_id"`
 	InstanceType          string            `json:"instance_type"`
 	Resources             Resources         `json:"resources"`
 	GPU                   GPURequest        `json:"gpu"`
@@ -48,9 +43,6 @@ type templateInput struct {
 }
 
 func registerProducts(a *platform.App, user, admin *gin.RouterGroup) {
-	user.GET("/catalog/zones", platform.Handle(func(c *gin.Context) (any, error) {
-		return listProducts(c, a, platform.DB(c, a).Table("availability_zones").Select("id,code,name,'available' AS availability,created_at").Where("status = 'active'"), nil)
-	}))
 	user.GET("/catalog/plans", platform.Handle(func(c *gin.Context) (any, error) { return planList(c, a, false) }))
 	user.GET("/catalog/plans/:plan_id", platform.Handle(func(c *gin.Context) (any, error) {
 		id, e := platform.ID(c, "plan_id")
@@ -71,66 +63,14 @@ func registerProducts(a *platform.App, user, admin *gin.RouterGroup) {
 	user.GET("/catalog/gpu-options", platform.Handle(func(c *gin.Context) (any, error) {
 		// Option IDs are gpu-pricing policy_versions IDs, the value accepted by plans and quotes.
 		inner := platform.DB(c, a).Table("gpu_price_versions p").Select("pv.id,p.gpu_model AS model,p.access_mode,p.gpu_hourly_pt,p.created_at,(SELECT MAX(g.memory_mib) FROM node_gpus g WHERE g.gpu_price_version_id=p.id) AS memory_mib,CASE WHEN EXISTS (SELECT 1 FROM node_gpus g JOIN nodes n ON n.id=g.node_id WHERE g.gpu_price_version_id=p.id AND g.status='available' AND n.administrative_state='active' AND n.health='online') THEN 'available' ELSE 'unavailable' END AS availability").Joins("JOIN policy_versions pv ON pv.kind='gpu-pricing' AND pv.source_id=p.id").Where("p.status='active' AND p.effective_at<=?", a.Time())
-		if s := c.Query("zone_id"); s != "" {
+		if s := c.Query("node_id"); s != "" {
 			id, e := platform.IDString(s)
 			if e != nil {
 				return nil, e
 			}
-			inner = inner.Where("EXISTS (SELECT 1 FROM node_gpus g JOIN nodes n ON n.id=g.node_id WHERE g.gpu_price_version_id=p.id AND n.availability_zone_id=?)", id)
+			inner = inner.Where("EXISTS (SELECT 1 FROM node_gpus g WHERE g.gpu_price_version_id=p.id AND g.node_id=?)", id)
 		}
-		return listProducts(c, a, platform.DB(c, a).Table("(?) AS options", inner), []string{"zone_id"})
-	}))
-	admin.GET("/zones", platform.Handle(func(c *gin.Context) (any, error) {
-		return listProducts(c, a, platform.DB(c, a).Table("availability_zones").Select("id,code,name,status,revision,created_at,updated_at"), nil)
-	}))
-	admin.POST("/zones", platform.Handle(func(c *gin.Context) (any, error) {
-		var b zoneInput
-		if e := platform.Decode(c, &b); e != nil {
-			return nil, e
-		}
-		if !codeValid(b.Code) || !textValid(b.Name, 128) {
-			return nil, invalid("invalid zone code/name")
-		}
-		r, e := insert(c, a, "availability_zones", platform.Row{"code": b.Code, "name": b.Name, "status": "active"})
-		if e != nil {
-			return nil, e
-		}
-		platform.Reply(c, 201, platform.Public(r, "id", "code", "name", "status", "revision", "created_at", "updated_at"))
-		return nil, nil
-	}))
-	admin.GET("/zones/:id", platform.Handle(func(c *gin.Context) (any, error) {
-		r, e := detail(c, a, "availability_zones")
-		if e != nil {
-			return nil, e
-		}
-		return platform.Public(r, "id", "code", "name", "status", "revision", "created_at", "updated_at"), nil
-	}))
-	admin.PATCH("/zones/:id", platform.Handle(func(c *gin.Context) (any, error) {
-		var b struct {
-			Name   *string `json:"name"`
-			Status *string `json:"status"`
-		}
-		if e := platform.Decode(c, &b); e != nil {
-			return nil, e
-		}
-		r, e := detail(c, a, "availability_zones")
-		if e != nil {
-			return nil, e
-		}
-		ch := platform.Row{}
-		if b.Name != nil {
-			if !textValid(*b.Name, 128) {
-				return nil, invalid("invalid name")
-			}
-			ch["name"] = *b.Name
-		}
-		if b.Status != nil {
-			if !enum(*b.Status, "active", "disabled") {
-				return nil, invalid("invalid status")
-			}
-			ch["status"] = *b.Status
-		}
-		return platform.Save(c, a, "availability_zones", r, ch)
+		return listProducts(c, a, platform.DB(c, a).Table("(?) AS options", inner), []string{"node_id"})
 	}))
 	admin.GET("/images", platform.Handle(func(c *gin.Context) (any, error) { return imageList(c, a, true) }))
 	admin.POST("/images", platform.Handle(func(c *gin.Context) (any, error) {
@@ -223,7 +163,7 @@ func registerProducts(a *platform.App, user, admin *gin.RouterGroup) {
 		if e := platform.Decode(c, &b); e != nil {
 			return nil, e
 		}
-		if e := platform.ValidateKeys(b, "name", "zone_id", "instance_type", "resources", "gpu", "image_ids", "network_option_ids", "allowed_overrides", "policy_versions", "init_template_version_id"); e != nil {
+		if e := platform.ValidateKeys(b, "name", "instance_type", "resources", "gpu", "image_ids", "network_option_ids", "allowed_overrides", "policy_versions", "init_template_version_id"); e != nil {
 			return nil, e
 		}
 		r, e := detail(c, a, "instance_plans")
@@ -238,7 +178,7 @@ func registerProducts(a *platform.App, user, admin *gin.RouterGroup) {
 			return nil, e
 		}
 		merged := platform.Row{}
-		for _, k := range []string{"code", "version", "name", "zone_id", "instance_type", "resources", "gpu", "image_ids", "network_option_ids", "allowed_overrides", "policy_versions", "init_template_version_id"} {
+		for _, k := range []string{"code", "version", "name", "instance_type", "resources", "gpu", "image_ids", "network_option_ids", "allowed_overrides", "policy_versions", "init_template_version_id"} {
 			merged[k] = dto[k]
 		}
 		for k, v := range b {
@@ -279,7 +219,7 @@ func registerProducts(a *platform.App, user, admin *gin.RouterGroup) {
 		}
 		var b planInput
 		fields := platform.Row{}
-		for _, k := range []string{"code", "version", "name", "zone_id", "instance_type", "resources", "gpu", "image_ids", "network_option_ids", "allowed_overrides", "policy_versions", "init_template_version_id"} {
+		for _, k := range []string{"code", "version", "name", "instance_type", "resources", "gpu", "image_ids", "network_option_ids", "allowed_overrides", "policy_versions", "init_template_version_id"} {
 			fields[k] = dto[k]
 		}
 		if e = decodeMap(fields, &b); e != nil {
@@ -418,14 +358,7 @@ func imageList(c *gin.Context, a *platform.App, admin bool) (any, error) {
 	if s := c.Query("architecture"); s != "" {
 		q = q.Where("images.architecture=?", s)
 	}
-	if s := c.Query("zone_id"); s != "" {
-		id, e := platform.IDString(s)
-		if e != nil {
-			return nil, e
-		}
-		q = q.Where("EXISTS (SELECT 1 FROM plan_images pi JOIN instance_plans p ON p.id=pi.plan_id WHERE pi.image_id=images.id AND p.availability_zone_id=? AND p.status='active')", id)
-	}
-	return listDTO(c, a, q, []string{"zone_id", "instance_type", "architecture"}, imageDTO)
+	return listDTO(c, a, q, []string{"instance_type", "architecture"}, imageDTO)
 }
 func planList(c *gin.Context, a *platform.App, admin bool) (any, error) {
 	db := platform.DB(c, a)
@@ -433,18 +366,13 @@ func planList(c *gin.Context, a *platform.App, admin bool) (any, error) {
 	if !admin {
 		q = q.Where("status='active'")
 	}
-	var e error
-	q, e = listFilterID(c, q, "zone_id", "availability_zone_id")
-	if e != nil {
-		return nil, e
-	}
 	if s := c.Query("instance_type"); s != "" {
 		if !enum(s, "container", "virtual-machine") {
 			return nil, invalid("invalid instance type")
 		}
 		q = q.Where("image_type=?", s)
 	}
-	return platform.ListMap(c, a, q, []string{"zone_id", "instance_type"}, func(r platform.Row) (platform.Row, error) { return planDTO(db, r) })
+	return platform.ListMap(c, a, q, []string{"instance_type"}, func(r platform.Row) (platform.Row, error) { return planDTO(db, r) })
 }
 func validateImageProperties(p map[string]any) error {
 	if p == nil {
@@ -490,17 +418,6 @@ func planValues(c *gin.Context, a *platform.App, b planInput, publish bool) (pla
 	if e := validPlanGPU(b.GPU, b.InstanceType, platform.Uint(object(b.AllowedOverrides["gpu_count"])["max"])); e != nil {
 		return nil, e
 	}
-	zone, e := platform.IDString(b.ZoneID)
-	if e != nil {
-		return nil, e
-	}
-	zr, e := platform.Get(platform.DB(c, a), "availability_zones", zone, true)
-	if e != nil {
-		return nil, e
-	}
-	if publish && platform.Text(zr["status"]) != "active" {
-		return nil, missingReference("zone")
-	}
 	pol, e := resolvePolicies(c.Request.Context(), platform.DB(c, a), a, b.PolicyVersions, publish)
 	if e != nil {
 		return nil, e
@@ -540,21 +457,11 @@ func planValues(c *gin.Context, a *platform.App, b planInput, publish bool) (pla
 			return nil, e
 		}
 		if publish {
-			if _, e = ValidateNetworkOption(platform.DB(c, a), id, zone, b.InstanceType); e != nil {
+			if _, e = ValidateNetworkOption(platform.DB(c, a), id, b.InstanceType); e != nil {
 				return nil, e
 			}
-		} else {
-			r, e := platform.Get(platform.DB(c, a), "node_network_bindings", id, true)
-			if e != nil {
-				return nil, e
-			}
-			n, e := platform.Get(platform.DB(c, a), "nodes", platform.Uint(r["node_id"]), false)
-			if e != nil {
-				return nil, e
-			}
-			if platform.Uint(n["availability_zone_id"]) != zone {
-				return nil, invalid("network option zone mismatch")
-			}
+		} else if _, e = platform.Get(platform.DB(c, a), "node_network_bindings", id, true); e != nil {
+			return nil, e
 		}
 	}
 	var template any
@@ -576,7 +483,7 @@ func planValues(c *gin.Context, a *platform.App, b planInput, publish bool) (pla
 	if b.GPU.Model != nil {
 		model = *b.GPU.Model
 	}
-	return platform.Row{"availability_zone_id": zone, "code": b.Code, "version": b.Version, "name": b.Name, "image_type": b.InstanceType, "vcpus": b.Resources.VCPUs, "memory_bytes": mustUnsigned(b.Resources.MemoryBytes), "disk_bytes": mustUnsigned(b.Resources.DiskBytes), "gpu_count": b.GPU.Count, "gpu_model": model, "gpu_access_mode": b.GPU.AccessMode, "gpu_max_hourly_pt": b.GPU.MaxHourlyPT, "pricing_version_id": platform.Uint(pol["pricing"]["source_id"]), "credit_policy_version_id": platform.Uint(pol["credit"]["source_id"]), "idle_policy_version_id": platform.Uint(pol["gpu-idle"]["source_id"]), "init_template_version_id": template, "init_parameters": "{}", "allow_residency": false, "status": "draft", "policy_versions": jsonString(b.PolicyVersions), "allowed_overrides": jsonString(b.AllowedOverrides)}, nil
+	return platform.Row{"code": b.Code, "version": b.Version, "name": b.Name, "image_type": b.InstanceType, "vcpus": b.Resources.VCPUs, "memory_bytes": mustUnsigned(b.Resources.MemoryBytes), "disk_bytes": mustUnsigned(b.Resources.DiskBytes), "gpu_count": b.GPU.Count, "gpu_model": model, "gpu_access_mode": b.GPU.AccessMode, "gpu_max_hourly_pt": b.GPU.MaxHourlyPT, "pricing_version_id": platform.Uint(pol["pricing"]["source_id"]), "credit_policy_version_id": platform.Uint(pol["credit"]["source_id"]), "idle_policy_version_id": platform.Uint(pol["gpu-idle"]["source_id"]), "init_template_version_id": template, "init_parameters": "{}", "allow_residency": false, "status": "draft", "policy_versions": jsonString(b.PolicyVersions), "allowed_overrides": jsonString(b.AllowedOverrides)}, nil
 }
 func savePlanRelations(db *gorm.DB, id uint64, b planInput) error {
 	for _, v := range []struct {

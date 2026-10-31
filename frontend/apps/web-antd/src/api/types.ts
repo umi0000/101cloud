@@ -77,16 +77,6 @@ export type InstanceType = 'container' | 'virtual-machine';
 export type AccessMode = 'exclusive' | 'shared';
 export type CatalogStatus = 'active' | 'disabled' | 'draft' | 'retired';
 
-export interface Zone {
-  code: string;
-  created_at: Time;
-  id: ID;
-  name: string;
-  revision: string;
-  status: 'active' | 'disabled';
-  updated_at: Time;
-}
-
 export interface ImageProperties {
   [key: string]: unknown;
   gpu_ready: boolean;
@@ -171,7 +161,6 @@ export interface Plan {
   status: CatalogStatus;
   updated_at: Time;
   version: string;
-  zone_id: ID;
 }
 
 export interface PlanInput {
@@ -186,7 +175,6 @@ export interface PlanInput {
   policy_versions: PolicyVersions;
   resources: Resources;
   version: string;
-  zone_id: ID;
 }
 
 export type TemplatePhase = 'cloud_init' | 'post_start';
@@ -230,6 +218,7 @@ export interface NetworkOption {
   created_at: Time;
   id: ID;
   mode: NetworkMode;
+  node_id: ID;
 }
 
 /* ---------- nodes ---------- */
@@ -274,7 +263,6 @@ export interface Node {
   resources_sampled_at: null | Time;
   revision: string;
   updated_at: Time;
-  zone_id: ID;
 }
 
 export interface NodeGPUObservation {
@@ -373,7 +361,6 @@ export type NetworkMode = 'bridge' | 'macvlan' | 'managed_bridge';
 
 export interface NetworkPool {
   address_family: number;
-  availability_zone_id: ID;
   cidr: string;
   created_at: Time;
   dns_servers: string[];
@@ -469,7 +456,6 @@ export interface Instance {
   state_stale: boolean;
   updated_at: Time;
   user_id: ID;
-  zone_id: ID;
 }
 
 export interface InstanceNetwork {
@@ -699,9 +685,8 @@ export interface CustomConfig {
   init_template_version_id?: ID;
   instance_type: InstanceType;
   network_option_id: ID;
-  node_id?: ID;
+  node_id: ID;
   resources: Resources;
-  zone_id: ID;
 }
 
 /* ---------- policies & finance ---------- */

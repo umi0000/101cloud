@@ -57,9 +57,6 @@ watch(node, async (n) => {
   interfaces.value = [];
   if (!n) return;
   form.value.project_name = n.defaults.project_name;
-  if (form.value.pool_id && !props.pools.some((p) => p.id === form.value.pool_id && p.availability_zone_id === n.zone_id)) {
-    form.value.pool_id = undefined;
-  }
   try {
     const r = await nodesApi.resources(n.id);
     interfaces.value = (r.data.resources?.network_interfaces ?? []).filter((i) => !i.loopback).map((i) => i.name);
@@ -69,11 +66,7 @@ watch(node, async (n) => {
 });
 
 const nodeOptions = computed(() => props.nodes.map((n) => ({ label: `${n.name} #${n.id}`, value: n.id })));
-const poolOptions = computed(() =>
-  props.pools
-    .filter((p) => !node.value || p.availability_zone_id === node.value.zone_id)
-    .map((p) => ({ label: `${p.name}（${p.cidr}）`, value: p.id })),
-);
+const poolOptions = computed(() => props.pools.map((p) => ({ label: `${p.name}（${p.cidr}）`, value: p.id })));
 const modeOptions = [
   { label: 'macvlan 直连', value: 'macvlan' },
   { label: '网桥 bridge', value: 'bridge' },
@@ -122,12 +115,7 @@ async function submit() {
       <FormItem label="节点" name="node_id" :rules="[{ message: '请选择节点', required: true }]">
         <Select v-model:value="form.node_id" option-filter-prop="label" :options="nodeOptions" show-search />
       </FormItem>
-      <FormItem
-        extra="只列出与节点同一可用区的地址池"
-        label="地址池"
-        name="pool_id"
-        :rules="[{ message: '请选择地址池', required: true }]"
-      >
+      <FormItem label="地址池" name="pool_id" :rules="[{ message: '请选择地址池', required: true }]">
         <Select v-model:value="form.pool_id" :options="poolOptions" />
       </FormItem>
       <FormItem label="Incus 项目" name="project_name" :rules="nameRule('Incus 项目')">

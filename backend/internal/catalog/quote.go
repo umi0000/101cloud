@@ -26,7 +26,6 @@ type GPURequest struct {
 }
 type CreateElasticSpec struct {
 	Name            string         `json:"name"`
-	ZoneID          string         `json:"zone_id"`
 	PlanID          string         `json:"plan_id"`
 	ImageID         string         `json:"image_id"`
 	NetworkOptionID string         `json:"network_option_id"`
@@ -166,20 +165,6 @@ func ValidateElastic(ctx context.Context, db *gorm.DB, a *platform.App, s Create
 	if platform.Text(plan["status"]) != "active" {
 		return nil, conflict("套餐尚未发布，请选择已发布套餐。")
 	}
-	zone, e := platform.IDString(s.ZoneID)
-	if e != nil {
-		return nil, e
-	}
-	if zone != platform.Uint(plan["availability_zone_id"]) {
-		return nil, invalid("套餐不属于所选可用区，请重新选择。")
-	}
-	zr, e := platform.Get(db, "availability_zones", zone, false)
-	if e != nil {
-		return nil, e
-	}
-	if platform.Text(zr["status"]) != "active" {
-		return nil, conflict("可用区已停用，请选择其他可用区。")
-	}
 	typ := platform.Text(plan["image_type"])
 	if e = validGPU(s.GPU, typ); e != nil {
 		return nil, e
@@ -215,7 +200,7 @@ func ValidateElastic(ctx context.Context, db *gorm.DB, a *platform.App, s Create
 	if n != 1 {
 		return nil, invalid("套餐不允许此网络选项，请选择套餐允许的网络。")
 	}
-	nr, e := ValidateNetworkOption(db, network, zone, typ)
+	nr, e := ValidateNetworkOption(db, network, typ)
 	if e != nil {
 		return nil, e
 	}

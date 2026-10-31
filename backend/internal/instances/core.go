@@ -35,7 +35,6 @@ type GPURequest struct {
 type Spec struct {
 	Name                  string          `json:"name"`
 	InstanceType          string          `json:"instance_type,omitempty"`
-	ZoneID                string          `json:"zone_id"`
 	PlanID                string          `json:"plan_id,omitempty"`
 	ImageID               string          `json:"image_id"`
 	NetworkOptionID       string          `json:"network_option_id"`
@@ -171,10 +170,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 			if v := c.Query("owner_user_id"); v != "" && c.GetBool("admin") {
 				q = q.Where("user_id=?", v)
 			}
-			if v := c.Query("zone_id"); v != "" {
-				q = q.Where("node_id IN (SELECT id FROM nodes WHERE availability_zone_id=?)", v)
-			}
-			return platform.ListMap(c, a, q, []string{"product_type", "observed_state", "zone_id", "owner_user_id", "node_id"}, func(r platform.Row) (platform.Row, error) { return instanceView(c, a, r) })
+			return platform.ListMap(c, a, q, []string{"product_type", "observed_state", "owner_user_id", "node_id"}, func(r platform.Row) (platform.Row, error) { return instanceView(c, a, r) })
 		}))
 		g.GET("/instances/:id", platform.Handle(func(c *gin.Context) (any, error) {
 			r, e := owned(c, a)
@@ -562,11 +558,6 @@ func lockOwnerAccount(db *gorm.DB, owner uint64) error {
 func instanceView(c *gin.Context, a *platform.App, r platform.Row) (platform.Row, error) {
 	out := instanceDTO(a, r)
 	db := platform.DB(c, a)
-	var node platform.Row
-	if e := db.Table("nodes").Select("availability_zone_id").Where("id=?", r["node_id"]).Take(&node).Error; e != nil {
-		return nil, e
-	}
-	out["zone_id"] = strconv.FormatUint(platform.Uint(node["availability_zone_id"]), 10)
 	var active []platform.Row
 	if e := db.Table("tasks").Select("id").Where("instance_id=? AND is_instance_mutation=1 AND status IN ?", r["id"], []string{"queued", "running", "waiting", "unknown"}).Order("id DESC").Limit(1).Find(&active).Error; e != nil {
 		return nil, e

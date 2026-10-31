@@ -1,13 +1,13 @@
 <script lang="ts" setup>
 import type { FormInstance } from 'ant-design-vue';
 
-import type { Node, NodeConnectionInput, Zone } from '#/api/types';
+import type { Node, NodeConnectionInput } from '#/api/types';
 
 import type { AllocatableForm } from './node-forms';
 
 import { ref, watch } from 'vue';
 
-import { Alert, Button, Col, Divider, Drawer, Form, FormItem, Input, Row, Select } from 'ant-design-vue';
+import { Alert, Button, Col, Divider, Drawer, Form, FormItem, Input, Row } from 'ant-design-vue';
 
 import { nodesApi } from '#/api/backend';
 import { useAction } from '#/composables/api';
@@ -16,7 +16,6 @@ import AllocatableFields from './allocatable-fields.vue';
 import ConnectionFields from './connection-fields.vue';
 import { allocatableFromForm, connectionBody, emptyAllocatable, emptyConnection } from './node-forms';
 
-const props = defineProps<{ zones: Zone[] }>();
 const emit = defineEmits<{ created: [node: Node] }>();
 const open = defineModel<boolean>('open', { default: false });
 
@@ -25,7 +24,6 @@ interface RegisterForm {
   connection: NodeConnectionInput;
   defaults: { project_name: string; storage_pool: string };
   name: string;
-  zone_id: string | undefined;
 }
 
 const blank = (): RegisterForm => ({
@@ -33,7 +31,6 @@ const blank = (): RegisterForm => ({
   connection: emptyConnection(),
   defaults: { project_name: 'default', storage_pool: 'default' },
   name: '',
-  zone_id: undefined,
 });
 
 const form = ref<RegisterForm>(blank());
@@ -68,8 +65,6 @@ async function submit() {
     return;
   }
   const f = form.value;
-  if (!f.zone_id) return;
-  const zoneId = f.zone_id;
   const r = await action.run(
     (key) =>
       nodesApi.create(
@@ -78,7 +73,6 @@ async function submit() {
           connection: connectionBody(f.connection),
           defaults: { project_name: f.defaults.project_name.trim(), storage_pool: f.defaults.storage_pool.trim() },
           name: f.name.trim(),
-          zone_id: zoneId,
         },
         { key },
       ),
@@ -99,22 +93,9 @@ async function submit() {
       type="info"
     />
     <Form ref="formRef" layout="vertical" :model="form">
-      <Row :gutter="12">
-        <Col :span="12">
-          <FormItem label="名称" name="name" :rules="nameRules">
-            <Input v-model:value="form.name" :maxlength="128" />
-          </FormItem>
-        </Col>
-        <Col :span="12">
-          <FormItem label="可用区" name="zone_id" :rules="[{ message: '请选择可用区', required: true }]">
-            <Select
-              v-model:value="form.zone_id"
-              :options="props.zones.filter((z) => z.status === 'active').map((z) => ({ label: `${z.name}（${z.code}）`, value: z.id }))"
-              placeholder="仅启用的可用区"
-            />
-          </FormItem>
-        </Col>
-      </Row>
+      <FormItem label="名称" name="name" :rules="nameRules">
+        <Input v-model:value="form.name" :maxlength="128" />
+      </FormItem>
       <Divider class="my-2" orientation="left" plain>连接</Divider>
       <ConnectionFields v-model="form.connection" :prefix="['connection']" />
       <Divider class="my-2" orientation="left" plain>默认值</Divider>

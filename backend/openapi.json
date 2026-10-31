@@ -3,7 +3,7 @@
   "info": {
     "title": "101cloud Backend API",
     "version": "1.0.0",
-    "description": "Implemented Go/Gin/MySQL/GORM control plane. Numeric IDs and money are strings; time is RFC3339 +08:00. No NAT or arbitrary Incus proxy. Custom-instance applications happen outside the platform; only administrators provision or import custom instances, with approved_config retained as the public configuration field, not an approval record. No custom-instance application or review operations exist. List items use exactly the same representation as the resource detail: JSON columns are decoded objects/arrays (never JSON-encoded strings), booleans are true/false (never 1/0), every revision is a decimal string. Every policy version reference in requests and responses (pricing_version_id, gpu_price_version_id, policy_version_id, policy_versions values, catalog gpu-option id) is a policy_versions id as returned by /admin/policies/{kind}/versions; an id of the wrong kind is 422 validation_failed. See 后端接口文档.md for workflow and policy boundaries."
+    "description": "Implemented Go/Gin/MySQL/GORM control plane. Numeric IDs and money are strings; time is RFC3339 +08:00. No NAT or arbitrary Incus proxy. Custom-instance applications happen outside the platform; only administrators provision or import custom instances, with approved_config retained as the public configuration field, not an approval record. No custom-instance application or review operations exist. List items use exactly the same representation as the resource detail: JSON columns are decoded objects/arrays (never JSON-encoded strings), booleans are true/false (never 1/0), every revision is a decimal string. Every policy version reference in requests and responses (pricing_version_id, gpu_price_version_id, policy_version_id, policy_versions values, catalog gpu-option id) is a policy_versions id as returned by /admin/policies/{kind}/versions; an id of the wrong kind is 422 validation_failed. See \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for workflow and policy boundaries."
   },
   "servers": [
     {
@@ -38,14 +38,6 @@
             "name": "cursor",
             "schema": {
               "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "zone_id",
-            "schema": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]*$"
             }
           },
           {
@@ -150,7 +142,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -208,7 +200,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -271,7 +263,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -479,7 +471,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -551,7 +543,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -655,7 +647,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -891,7 +883,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -949,7 +941,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -1012,7 +1004,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -1078,14 +1070,6 @@
             "name": "cursor",
             "schema": {
               "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "zone_id",
-            "schema": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]*$"
             }
           }
         ],
@@ -1176,7 +1160,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -1234,7 +1218,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -1297,7 +1281,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -1505,7 +1489,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -2012,7 +1996,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -2303,7 +2287,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -2367,7 +2351,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -2500,7 +2484,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -2558,7 +2542,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -2621,7 +2605,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -2803,7 +2787,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -2861,7 +2845,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -2924,7 +2908,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -3120,7 +3104,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -3344,7 +3328,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -3720,7 +3704,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -3778,7 +3762,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -3841,7 +3825,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -3875,10 +3859,6 @@
                   },
                   "name": {
                     "type": "string"
-                  },
-                  "zone_id": {
-                    "type": "string",
-                    "pattern": "^[1-9][0-9]*$"
                   },
                   "instance_type": {
                     "type": "string",
@@ -3982,7 +3962,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -4036,7 +4016,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -4246,7 +4226,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -4320,7 +4300,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -4399,7 +4379,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -4572,7 +4552,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -4662,7 +4642,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -4725,7 +4705,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -4899,297 +4879,6 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/Limits"
-              }
-            }
-          }
-        }
-      }
-    },
-    "/admin/zones": {
-      "get": {
-        "operationId": "get_admin_zones",
-        "tags": [
-          "admin"
-        ],
-        "description": "Administrator required. ",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "limit",
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 100
-            }
-          },
-          {
-            "in": "query",
-            "name": "cursor",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "type": "object",
-                      "properties": {
-                        "items": {
-                          "type": "array",
-                          "items": {
-                            "type": "object"
-                          }
-                        },
-                        "next_cursor": {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "items",
-                        "next_cursor"
-                      ],
-                      "additionalProperties": false
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "request_id"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/ApiError"
-          }
-        }
-      },
-      "post": {
-        "operationId": "post_admin_zones",
-        "tags": [
-          "admin"
-        ],
-        "description": "Administrator required. ",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "X-CSRF-Token",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128
-            }
-          }
-        ],
-        "responses": {
-          "201": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "request_id"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/ApiError"
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "code": {
-                    "type": "string"
-                  },
-                  "name": {
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "code",
-                  "name"
-                ],
-                "additionalProperties": false
-              }
-            }
-          }
-        }
-      }
-    },
-    "/admin/zones/{id}": {
-      "get": {
-        "operationId": "get_admin_zones_id",
-        "tags": [
-          "admin"
-        ],
-        "description": "Administrator required. ",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]*$"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "request_id"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/ApiError"
-          }
-        }
-      },
-      "patch": {
-        "operationId": "patch_admin_zones_id",
-        "tags": [
-          "admin"
-        ],
-        "description": "Administrator required. ",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]*$"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-CSRF-Token",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "If-Match",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^\"rev-[0-9]+\"$"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "request_id"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/ApiError"
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "name": {
-                    "type": "string"
-                  },
-                  "status": {
-                    "type": "string",
-                    "enum": [
-                      "active",
-                      "disabled"
-                    ]
-                  }
-                },
-                "required": [],
-                "additionalProperties": false
               }
             }
           }
@@ -5472,7 +5161,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -5664,7 +5353,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -5708,14 +5397,6 @@
             "name": "cursor",
             "schema": {
               "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "zone_id",
-            "schema": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]*$"
             }
           },
           {
@@ -5806,85 +5487,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "request_id"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/ApiError"
-          }
-        }
-      }
-    },
-    "/catalog/zones": {
-      "get": {
-        "operationId": "get_catalog_zones",
-        "tags": [
-          "catalog"
-        ],
-        "description": "",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "limit",
-            "schema": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 100
-            }
-          },
-          {
-            "in": "query",
-            "name": "cursor",
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "type": "object",
-                      "properties": {
-                        "items": {
-                          "type": "array",
-                          "items": {
-                            "type": "object"
-                          }
-                        },
-                        "next_cursor": {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "items",
-                        "next_cursor"
-                      ],
-                      "additionalProperties": false
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -5927,14 +5530,6 @@
             "name": "cursor",
             "schema": {
               "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "zone_id",
-            "schema": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]*$"
             }
           },
           {
@@ -6011,7 +5606,7 @@
         "tags": [
           "catalog"
         ],
-        "description": "",
+        "description": "node_id narrows options to GPU models present on that node.",
         "parameters": [
           {
             "in": "query",
@@ -6031,7 +5626,7 @@
           },
           {
             "in": "query",
-            "name": "zone_id",
+            "name": "node_id",
             "schema": {
               "type": "string",
               "pattern": "^[1-9][0-9]*$"
@@ -6097,7 +5692,7 @@
         "tags": [
           "catalog"
         ],
-        "description": "",
+        "description": "Items: id (network option ID), node_id, mode, created_at. node_id narrows options to one node's verified bindings.",
         "parameters": [
           {
             "in": "query",
@@ -6117,7 +5712,7 @@
           },
           {
             "in": "query",
-            "name": "zone_id",
+            "name": "node_id",
             "schema": {
               "type": "string",
               "pattern": "^[1-9][0-9]*$"
@@ -6201,7 +5796,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -6535,7 +6130,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -6742,14 +6337,6 @@
             "name": "observed_state",
             "schema": {
               "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "zone_id",
-            "schema": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]*$"
             }
           }
         ],
@@ -7225,7 +6812,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -7510,7 +7097,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -7574,7 +7161,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -7612,7 +7199,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -7651,7 +7238,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -7690,7 +7277,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -7744,7 +7331,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -9197,7 +8784,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -9285,7 +8872,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -9765,7 +9352,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -9876,7 +9463,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -9964,7 +9551,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -10052,7 +9639,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -10140,7 +9727,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -10323,7 +9910,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -10445,7 +10032,16 @@
                     "type": "string"
                   },
                   "approved_config": {
-                    "$ref": "#/components/schemas/CustomConfig"
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/CustomConfig"
+                      },
+                      {
+                        "required": [
+                          "node_id"
+                        ]
+                      }
+                    ]
                   }
                 },
                 "required": [
@@ -10589,7 +10185,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -10737,7 +10333,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -11733,7 +11329,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -11863,7 +11459,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -11947,7 +11543,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in 后端接口文档.md for this operation."
+                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
                     },
                     "request_id": {
                       "type": "string"
@@ -12146,10 +11742,6 @@
           "name": {
             "type": "string"
           },
-          "zone_id": {
-            "type": "string",
-            "pattern": "^[1-9][0-9]*$"
-          },
           "plan_id": {
             "type": "string",
             "pattern": "^[1-9][0-9]*$"
@@ -12175,7 +11767,6 @@
         },
         "required": [
           "name",
-          "zone_id",
           "plan_id",
           "image_id",
           "network_option_id",
@@ -12190,10 +11781,6 @@
         "properties": {
           "name": {
             "type": "string"
-          },
-          "zone_id": {
-            "type": "string",
-            "pattern": "^[1-9][0-9]*$"
           },
           "plan_id": {
             "type": "string",
@@ -12223,7 +11810,6 @@
         },
         "required": [
           "name",
-          "zone_id",
           "plan_id",
           "image_id",
           "network_option_id",
@@ -12237,10 +11823,6 @@
       "CustomConfig": {
         "type": "object",
         "properties": {
-          "zone_id": {
-            "type": "string",
-            "pattern": "^[1-9][0-9]*$"
-          },
           "image_id": {
             "type": "string",
             "pattern": "^[1-9][0-9]*$"
@@ -12267,7 +11849,8 @@
           },
           "node_id": {
             "type": "string",
-            "pattern": "^[1-9][0-9]*$"
+            "pattern": "^[1-9][0-9]*$",
+            "description": "Required for POST /admin/custom-instances; imports use the route node, and a supplied value must match it."
           },
           "init_template_version_id": {
             "anyOf": [
@@ -12307,7 +11890,6 @@
         },
         "required": [
           "instance_type",
-          "zone_id",
           "image_id",
           "network_option_id",
           "resources",
@@ -12351,24 +11933,84 @@
         "description": "Explicitly public safe error only. Resource amounts in details are decimal strings, never floating-point numbers; no raw upstream output or parameters. For unknown deletion tasks, gpu_reclamation_unverified means native deletion is confirmed but independent post-deletion GPU evidence is not: details include stage=delete.verify_reclamation, safe reason, native_deletion_confirmed=true, resource_reservations_released=false and a Chinese action. Keep all reservations and reconcile the original task; do not issue another DELETE. No raw GPU process data is exposed.",
         "type": "object",
         "properties": {
-          "code": { "type": "string" },
-          "message": { "type": "string" },
-          "details": { "type": ["object", "null"], "additionalProperties": true }
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "details": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          }
         },
-        "required": ["code", "message", "details"],
+        "required": [
+          "code",
+          "message",
+          "details"
+        ],
         "additionalProperties": false
       },
       "TaskStep": {
         "type": "object",
         "properties": {
-          "name": { "type": "string" },
-          "status": { "type": "string", "enum": ["queued", "running", "waiting", "unknown", "succeeded", "failed", "cancelled"] },
-          "error_code": { "type": ["string", "null"] },
-          "error": { "anyOf": [{ "$ref": "#/components/schemas/PublicTaskError" }, { "type": "null" }] },
-          "started_at": { "type": ["string", "null"], "format": "date-time" },
-          "finished_at": { "type": ["string", "null"], "format": "date-time" }
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "waiting",
+              "unknown",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublicTaskError"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "started_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "finished_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
         },
-        "required": ["name", "status", "error_code", "error", "started_at", "finished_at"],
+        "required": [
+          "name",
+          "status",
+          "error_code",
+          "error",
+          "started_at",
+          "finished_at"
+        ],
         "additionalProperties": false
       },
       "Task": {
@@ -12478,7 +12120,14 @@
             ]
           },
           "error": {
-            "anyOf": [{ "$ref": "#/components/schemas/PublicTaskError" }, { "type": "null" }]
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublicTaskError"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "resource_reservations_released": {
             "type": "boolean",
@@ -12492,7 +12141,13 @@
           },
           "next_action": {
             "type": "string",
-            "enum": ["wait", "administrator_reconcile", "inspect_failure", "correct_and_resubmit", "none"]
+            "enum": [
+              "wait",
+              "administrator_reconcile",
+              "inspect_failure",
+              "correct_and_resubmit",
+              "none"
+            ]
           }
         },
         "required": [
@@ -12540,10 +12195,6 @@
               "container",
               "virtual-machine"
             ]
-          },
-          "zone_id": {
-            "type": "string",
-            "pattern": "^[1-9][0-9]*$"
           },
           "plan_id": {
             "anyOf": [
@@ -13151,10 +12802,6 @@
           "name": {
             "type": "string"
           },
-          "zone_id": {
-            "type": "string",
-            "pattern": "^[1-9][0-9]*$"
-          },
           "connection": {
             "$ref": "#/components/schemas/Connection"
           },
@@ -13215,7 +12862,6 @@
         },
         "required": [
           "name",
-          "zone_id",
           "connection",
           "defaults",
           "allocatable"
@@ -13562,10 +13208,6 @@
       "NetworkPool": {
         "type": "object",
         "properties": {
-          "zone_id": {
-            "type": "string",
-            "pattern": "^[1-9][0-9]*$"
-          },
           "name": {
             "type": "string"
           },
@@ -13589,7 +13231,6 @@
           }
         },
         "required": [
-          "zone_id",
           "name",
           "cidr",
           "range_start",
@@ -13647,10 +13288,6 @@
           },
           "name": {
             "type": "string"
-          },
-          "zone_id": {
-            "type": "string",
-            "pattern": "^[1-9][0-9]*$"
           },
           "instance_type": {
             "type": "string",
@@ -13725,7 +13362,6 @@
           "code",
           "version",
           "name",
-          "zone_id",
           "instance_type",
           "resources",
           "gpu",

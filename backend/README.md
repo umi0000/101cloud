@@ -231,14 +231,14 @@ curl -f https://cloud.example.com/api/v1/health/ready
 建议顺序：
 
 1. 创建并发布价格、GPU价格、额度、GPU空闲、GPU调度、监控六类政策，再完整绑定平台政策。不提供默认价格或默认业务额度。
-2. 创建可用区、镜像和初始化模板（如需）。镜像实际必须满足目标节点的容器/VM、架构和驱动要求。
+2. 创建镜像和初始化模板（如需）。镜像实际必须满足目标节点的容器/VM、架构和驱动要求。
 3. 从可信渠道导入 Agent endpoint、Token和证书指纹，执行只读探测，确认后启用节点。
 4. 给 GPU 配置价格、共享名额和可用状态。共享名额不等于显存隔离或算力保证。GPU 的 `gpu_price_version_id` 填 gpu-pricing 政策版本 ID（即 `/api/v1/admin/policies/gpu-pricing/versions` 返回的 id）；API 中所有政策版本引用都使用该 ID。
-5. 登记局域网 IP 池和地址，绑定现有 bridge 或适用的 macvlan，验证后启用。没有 NAT 或端口映射。
+5. 登记局域网 IP 池和地址（池名称全局唯一），绑定现有 bridge 或适用的 macvlan，验证后启用。没有 NAT 或端口映射。实例所在节点由所选网络绑定决定，直接下发自定义实例时须指定 node_id。
 6. 发布套餐，创建用户并明确配置配额。新用户配额全部为0，自定义实例还需 max_resident_instances。VM 套餐只提供 CPU；容器套餐可设可选 GPU（gpu.count=0、gpu.model 非空且 allowed_overrides.gpu_count.max≥1），提供 GPU 的套餐必须绑定 gpu-pricing。用户创建弹性实例时始终可以用 gpu.count=0 不选 GPU。
 7. 先受控验证一个实例的创建、登录、停止、磁盘保留、GPU观测和控制台，再开放给成员。
 
-每日额度由后台任务处理，首次发放完成前账户可能尚未就绪。自定义实例的申请和沟通在平台外完成，平台只保留管理员 `POST /admin/custom-instances` 直接下发（请求字段仍为 `approved_config`）及已有实例纳管，不提供申请/审批页面或接口。自定义实例按admin_exempt记录，不受每日额度停机影响，仍受资源及max_resident_instances配额约束。当前OpenAPI包含147个操作。
+每日额度由后台任务处理，首次发放完成前账户可能尚未就绪。自定义实例的申请和沟通在平台外完成，平台只保留管理员 `POST /admin/custom-instances` 直接下发（请求字段仍为 `approved_config`）及已有实例纳管，不提供申请/审批页面或接口。自定义实例按admin_exempt记录，不受每日额度停机影响，仍受资源及max_resident_instances配额约束。当前OpenAPI包含142个操作。
 
 额度耗尽默认600秒后强停且不删盘；真实强停可能丢失未保存内存和在途写入。停机不等于 GPU 使用权已经移除：尚未释放的 GPU 分配仍保留并按持有区间记录。需要释放时走显式 GPU 移除流程。
 

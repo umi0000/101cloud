@@ -3,8 +3,6 @@ import type { FormInstance } from 'ant-design-vue';
 
 import type { NetworkPoolView } from './network';
 
-import type { Zone } from '#/api/types';
-
 import { computed, ref, watch } from 'vue';
 
 import {
@@ -25,7 +23,7 @@ import { useAction } from '#/composables/api';
 
 import { CIDR_RE, IP_RE } from './network';
 
-const props = defineProps<{ pool: NetworkPoolView | null; zones: Zone[] }>();
+const props = defineProps<{ pool: NetworkPoolView | null }>();
 const emit = defineEmits<{ saved: [] }>();
 const open = defineModel<boolean>('open', { default: false });
 
@@ -37,7 +35,6 @@ interface PoolForm {
   range_end: string;
   range_start: string;
   status: 'active' | 'disabled';
-  zone_id: string | undefined;
 }
 
 const form = ref<PoolForm>(blank());
@@ -55,7 +52,6 @@ function blank(): PoolForm {
     range_end: p?.range_end ?? '',
     range_start: p?.range_start ?? '',
     status: p?.status === 'disabled' ? 'disabled' : 'active',
-    zone_id: p?.availability_zone_id,
   };
 }
 watch(open, (v) => {
@@ -100,7 +96,6 @@ const rules = {
   ],
   range_end: ipRule('结束地址', true),
   range_start: ipRule('起始地址', true),
-  zone_id: [{ message: '请选择可用区', required: true }],
 };
 
 async function submit() {
@@ -143,8 +138,6 @@ async function submit() {
       },
     ));
   } else {
-    if (!f.zone_id) return;
-    const zoneId = f.zone_id;
     ok = !!(await action.run(
       (key) =>
         networkApi.createPool(
@@ -155,7 +148,6 @@ async function submit() {
             name: f.name.trim(),
             range_end: f.range_end.trim(),
             range_start: f.range_start.trim(),
-            zone_id: zoneId,
           },
           { key },
         ),
@@ -186,18 +178,8 @@ async function submit() {
         <Input v-model:value="form.name" :maxlength="128" />
       </FormItem>
       <template v-if="!editing">
-        <FormItem label="可用区" name="zone_id" :rules="rules.zone_id">
-          <Select
-            v-model:value="form.zone_id"
-            :options="
-              zones
-                .filter((z) => z.status === 'active')
-                .map((z) => ({ label: `${z.name}（${z.code}）`, value: z.id }))
-            "
-          />
-        </FormItem>
         <FormItem
-          extra="规范网段，不能与本可用区已有地址池重叠"
+          extra="规范网段，不能与已有地址池重叠"
           label="网段 CIDR"
           name="cidr"
           :rules="rules.cidr"

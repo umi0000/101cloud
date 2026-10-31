@@ -120,7 +120,6 @@ func planDTO(db *gorm.DB, r platform.Row) (platform.Row, error) {
 		return nil, e
 	}
 	p["pricing_version_id"] = pricing
-	p["zone_id"] = strconv.FormatUint(platform.Uint(r["availability_zone_id"]), 10)
 	p["instance_type"] = platform.Text(r["image_type"])
 	p["resources"] = Resources{VCPUs: platform.Uint(r["vcpus"]), MemoryBytes: platform.Text(r["memory_bytes"]), DiskBytes: platform.Text(r["disk_bytes"])}
 	var model *string
@@ -158,16 +157,6 @@ func secretFree(v any) error {
 	return nil
 }
 func requiredBody(c *gin.Context) error { var v struct{}; return platform.Decode(c, &v) }
-func listFilterID(c *gin.Context, q *gorm.DB, key, col string) (*gorm.DB, error) {
-	if s := c.Query(key); s != "" {
-		id, e := platform.IDString(s)
-		if e != nil {
-			return nil, e
-		}
-		q = q.Where(col+" = ?", id)
-	}
-	return q, nil
-}
 func enum(s string, values ...string) bool {
 	for _, v := range values {
 		if s == v {

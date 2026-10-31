@@ -34,7 +34,7 @@ import {
   Switch,
 } from 'ant-design-vue';
 
-import { catalogApi, listAll, networkApi, nodesApi, usersApi } from '#/api/backend';
+import { catalogApi, listAll, nodesApi, usersApi } from '#/api/backend';
 import { CUSTOM_ACTIONS, GPU_USER_PERMISSIONS } from '#/api/types';
 import ConfirmAction from '#/components/confirm-action.vue';
 import { errorToast, trackAccepted, useAction } from '#/composables/api';
@@ -128,19 +128,17 @@ function prefill(item: UnmanagedView) {
 async function loadOptions(item: UnmanagedView) {
   loading.value = true;
   try {
-    const zone = props.node.zone_id;
-    const [u, imgs, nets, bindings, gpus] = await Promise.all([
+    const nodeId = props.node.id;
+    // network_option_id 即绑定 id；后端要求绑定所在节点等于纳管节点，按 node_id 过滤。
+    const [u, imgs, nets, gpus] = await Promise.all([
       listAll(usersApi.list, { status: 'active' }),
       listAll(catalogApi.images, { instance_type: item.instance_type }),
-      listAll(catalogApi.networkOptions, { instance_type: item.instance_type, zone_id: zone }),
-      listAll(networkApi.bindings, { node_id: props.node.id }),
-      item.instance_type === 'container' ? listAll(catalogApi.gpuOptions, { zone_id: zone }) : Promise.resolve([]),
+      listAll(catalogApi.networkOptions, { instance_type: item.instance_type, node_id: nodeId }),
+      item.instance_type === 'container' ? listAll(catalogApi.gpuOptions, { node_id: nodeId }) : Promise.resolve([]),
     ]);
-    // network_option_id 即绑定 id；后端要求绑定所在节点等于纳管节点。
-    const local = new Set(bindings.map((b) => b.id));
     users.value = u;
     images.value = imgs.filter((i) => i.status === 'active');
-    networks.value = nets.filter((n) => local.has(n.id));
+    networks.value = nets;
     gpuOptions.value = gpus;
   } catch (error) {
     errorToast(error);
@@ -249,7 +247,6 @@ function approvedConfig(item: UnmanagedView): CustomConfig | null {
     network_option_id: f.network_option_id,
     node_id: props.node.id,
     resources: { disk_bytes: gibToBytes(f.disk_gib), memory_bytes: memory, vcpus: f.vcpus },
-    zone_id: props.node.zone_id,
   };
 }
 
@@ -375,7 +372,7 @@ async function submit() {
                 name="gpu_model"
                 :rules="required('请选择 GPU 型号')"
               >
-                <Select v-model:value="form.gpu_model" :options="modelOptions" placeholder="本可用区的 GPU 型号" />
+                <Select v-model:value="form.gpu_model" :options="modelOptions" placeholder="本节点的 GPU 型号" />
               </FormItem>
             </Col>
             <Col :span="8">

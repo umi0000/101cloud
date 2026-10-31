@@ -18,7 +18,6 @@ import (
 
 type customConfigFields struct {
 	InstanceType          string         `json:"instance_type"`
-	ZoneID                string         `json:"zone_id"`
 	ImageID               string         `json:"image_id"`
 	Resources             Resources      `json:"resources"`
 	NetworkOptionID       string         `json:"network_option_id"`
@@ -95,14 +94,17 @@ func validateCustomPermissions(actions []string, permissions map[string]bool) er
 	}
 	return nil
 }
-func validateCustomFields(c *gin.Context, a *platform.App, f customConfigFields, g customGPUConfig) error {
+func validateCustomFields(c *gin.Context, a *platform.App, f customConfigFields, g customGPUConfig, nodeID string) error {
 	if f.InstanceType != "container" && f.InstanceType != "virtual-machine" {
 		return bad("instance_type must be container or virtual-machine")
 	}
 	if _, _, e := validResources(f.Resources); e != nil {
 		return e
 	}
-	zone, e := platform.IDString(f.ZoneID)
+	if nodeID == "" {
+		return bad("approved_config.node_id is required")
+	}
+	node, e := platform.IDString(nodeID)
 	if e != nil {
 		return e
 	}
@@ -130,12 +132,8 @@ func validateCustomFields(c *gin.Context, a *platform.App, f customConfigFields,
 		return bad("gpu.model must be null for zero GPUs and a model string otherwise")
 	}
 	db := platform.DB(c, a)
-	zr, e := platform.Get(db, "availability_zones", zone, false)
-	if e != nil {
+	if _, e = platform.Get(db, "nodes", node, false); e != nil {
 		return e
-	}
-	if platform.Text(zr["status"]) != "active" {
-		return conflict("zone_unavailable", "availability zone is not active")
 	}
 	ir, e := platform.Get(db, "images", image, false)
 	if e != nil {
@@ -144,7 +142,7 @@ func validateCustomFields(c *gin.Context, a *platform.App, f customConfigFields,
 	if platform.Text(ir["status"]) != "active" || platform.Text(ir["image_type"]) != f.InstanceType || (*g.Count > 0 && !platform.Bool(ir["gpu_ready"])) {
 		return bad("image is not compatible with the requested instance")
 	}
-	if _, e = catalog.ValidateNetworkOption(db, network, zone, f.InstanceType); e != nil {
+	if _, e = catalog.ValidateNetworkOption(db, network, f.InstanceType); e != nil {
 		return e
 	}
 	var templateID uint64
@@ -169,19 +167,14 @@ func customProvisioningSpec(name string, cfg customProvisioningConfig) Spec {
 	if permissions == nil {
 		permissions = map[string]bool{}
 	}
-	return Spec{Name: name, InstanceType: cfg.InstanceType, ZoneID: cfg.ZoneID, ImageID: cfg.ImageID, NetworkOptionID: cfg.NetworkOptionID, NodeID: cfg.NodeID, Resources: cfg.Resources, GPU: GPURequest{Count: *cfg.GPU.Count, Model: model, AccessMode: cfg.GPU.AccessMode, MaxHourlyPT: cfg.GPU.MaxHourlyPT, FixedUUIDs: cfg.GPU.FixedUUIDs}, InitParameters: cfg.InitParameters, InitTemplateVersionID: cfg.InitTemplateVersionID, AllowedUserActions: actions, GPUUserPermissions: permissions}
+	return Spec{Name: name, InstanceType: cfg.InstanceType, ImageID: cfg.ImageID, NetworkOptionID: cfg.NetworkOptionID, NodeID: cfg.NodeID, Resources: cfg.Resources, GPU: GPURequest{Count: *cfg.GPU.Count, Model: model, AccessMode: cfg.GPU.AccessMode, MaxHourlyPT: cfg.GPU.MaxHourlyPT, FixedUUIDs: cfg.GPU.FixedUUIDs}, InitParameters: cfg.InitParameters, InitTemplateVersionID: cfg.InitTemplateVersionID, AllowedUserActions: actions, GPUUserPermissions: permissions}
 }
 func validateCustomProvisioning(c *gin.Context, a *platform.App, cfg customProvisioningConfig) error {
-	if e := validateCustomFields(c, a, cfg.customConfigFields, cfg.GPU.customGPUConfig); e != nil {
+	if e := validateCustomFields(c, a, cfg.customConfigFields, cfg.GPU.customGPUConfig, cfg.NodeID); e != nil {
 		return e
 	}
 	if e := validateCustomPermissions(cfg.AllowedUserActions, cfg.GPUUserPermissions); e != nil {
 		return e
-	}
-	if cfg.NodeID != "" {
-		if _, e := platform.IDString(cfg.NodeID); e != nil {
-			return e
-		}
 	}
 	if cfg.GPU.FixedUUIDs != nil && len(cfg.GPU.FixedUUIDs) != *cfg.GPU.Count {
 		return bad("fixed_uuids length must equal gpu.count")
@@ -263,19 +256,12 @@ func registerProvisioning(a *platform.App, user, admin *gin.RouterGroup) {
 		if e != nil {
 			return nil, e
 		}
-		nr, e := platform.Get(platform.DB(c, a), "nodes", node, true)
-		if e != nil {
-			return nil, e
-		}
 		if in.ApprovedConfig.NodeID != "" && in.ApprovedConfig.NodeID != strconv.FormatUint(node, 10) {
 			return nil, bad("approved node_id must match the route node")
 		}
 		in.ApprovedConfig.NodeID = strconv.FormatUint(node, 10)
 		if e = validateCustomProvisioning(c, a, in.ApprovedConfig); e != nil {
 			return nil, e
-		}
-		if platform.Uint(nr["availability_zone_id"]) != mustUint(in.ApprovedConfig.ZoneID) {
-			return nil, bad("approved zone must match the node")
 		}
 		owner, e := activeOwner(c, a, in.OwnerUserID)
 		if e != nil {

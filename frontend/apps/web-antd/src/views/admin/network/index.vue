@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import type { NetworkPoolView } from './components/network';
 
-import type { Node, Zone } from '#/api/types';
+import type { Node } from '#/api/types';
 
 import { onMounted, ref, shallowRef } from 'vue';
 import { useRoute } from 'vue-router';
@@ -10,7 +10,7 @@ import { Page } from '@vben/common-ui';
 
 import { Card, TabPane, Tabs } from 'ant-design-vue';
 
-import { catalogApi, listAll, networkApi, nodesApi } from '#/api/backend';
+import { listAll, networkApi, nodesApi } from '#/api/backend';
 import { errorToast } from '#/composables/api';
 
 import BindingsTab from './components/bindings-tab.vue';
@@ -23,7 +23,6 @@ function query(k: string) {
 }
 const tab = ref(query('tab') === 'bindings' ? 'bindings' : 'pools');
 
-const zones = shallowRef<Zone[]>([]);
 const nodes = shallowRef<Node[]>([]);
 const pools = shallowRef<NetworkPoolView[]>([]);
 
@@ -39,7 +38,7 @@ async function loadPools() {
 onMounted(async () => {
   void loadPools();
   try {
-    [zones.value, nodes.value] = await Promise.all([listAll(catalogApi.zones), listAll(nodesApi.list)]);
+    nodes.value = await listAll(nodesApi.list);
   } catch (error) {
     errorToast(error);
   }
@@ -51,7 +50,7 @@ onMounted(async () => {
     <Card size="small">
       <Tabs v-model:active-key="tab" destroy-inactive-tab-pane @change="loadPools">
         <TabPane key="pools" tab="地址池">
-          <PoolsTab :zones="zones" />
+          <PoolsTab />
         </TabPane>
         <TabPane key="bindings" tab="节点网络绑定">
           <BindingsTab

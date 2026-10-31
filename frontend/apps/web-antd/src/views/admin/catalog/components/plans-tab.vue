@@ -23,7 +23,7 @@ const props = defineProps<{ refs: CatalogRefs }>();
 
 const typeOptions = Object.entries(ENUMS.instanceType ?? {}).map(([value, l]) => ({ label: l.text, value }));
 
-const filters = ref<{ instance_type?: InstanceType; zone_id?: string }>({});
+const filters = ref<{ instance_type?: InstanceType }>({});
 const list = useCursorList<Plan, typeof filters.value>(catalogApi.plans, filters);
 const action = useAction();
 
@@ -31,7 +31,6 @@ const columns = [
   { dataIndex: 'id', title: 'ID', width: 60 },
   { key: 'code', title: '代码 / 版本' },
   { dataIndex: 'name', title: '名称' },
-  { key: 'zone', title: '可用区' },
   { key: 'type', title: '类型', width: 80 },
   { key: 'resources', title: '基准资源' },
   { key: 'gpu', title: 'GPU' },
@@ -98,13 +97,6 @@ onMounted(() => list.load());
   <div>
     <Space class="mb-3" wrap>
       <Button type="primary" @click="openDrawer('create', null)">新建套餐</Button>
-      <Select
-        v-model:value="filters.zone_id"
-        allow-clear
-        class="w-44"
-        :options="props.refs.zones.value.map((z) => ({ label: props.refs.zoneName(z.id), value: z.id }))"
-        placeholder="可用区"
-      />
       <Select v-model:value="filters.instance_type" allow-clear class="w-28" :options="typeOptions" placeholder="类型" />
     </Space>
     <Table
@@ -120,7 +112,6 @@ onMounted(() => list.load());
         <template v-else-if="column.key === 'code'">
           <span class="font-mono">{{ record.code }} v{{ record.version }}</span>
         </template>
-        <template v-else-if="column.key === 'zone'">{{ props.refs.zoneName(record.zone_id) }}</template>
         <template v-else-if="column.key === 'type'"><StatusTag kind="instanceType" :value="record.instance_type" /></template>
         <template v-else-if="column.key === 'resources'">
           {{ record.resources.vcpus }} 核 / {{ formatBytes(record.resources.memory_bytes) }} /
@@ -158,7 +149,7 @@ onMounted(() => list.load());
 
     <ConfirmAction
       v-model:open="publishOpen"
-      description="发布前后端校验：引用的政策、镜像、模板都已发布，可用区启用，网络已验证且属于该可用区。发布后套餐不能修改，只能退役。"
+      description="发布前后端校验：引用的政策、镜像、模板都已发布，网络已验证。发布后套餐不能修改，只能退役。"
       :on-confirm="publish"
       :title="`发布套餐 ${publishTarget?.code ?? ''} v${publishTarget?.version ?? ''}`"
     />

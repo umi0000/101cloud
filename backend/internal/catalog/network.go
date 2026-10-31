@@ -28,7 +28,7 @@ func networkPublic(r platform.Row, pool bool) platform.Row {
 		out["validation_details"] = jsonValue(r["validation_details"])
 		return out
 	}
-	out := platform.Public(r, "id", "availability_zone_id", "name", "address_family", "status", "revision", "created_at", "updated_at")
+	out := platform.Public(r, "id", "name", "address_family", "status", "revision", "created_at", "updated_at")
 	out["cidr"] = networkPrefix(r).String()
 	for _, k := range []string{"range_start", "range_end", "gateway"} {
 		if r[k] != nil {
@@ -42,12 +42,12 @@ func networkPublic(r platform.Row, pool bool) platform.Row {
 	out["dns_servers"] = dns
 	return out
 }
-func ValidateNetworkOption(db *gorm.DB, id, zoneID uint64, instanceType string) (platform.Row, error) {
+func ValidateNetworkOption(db *gorm.DB, id uint64, instanceType string) (platform.Row, error) {
 	if instanceType != "container" && instanceType != "virtual-machine" {
 		return nil, networkError("不支持的实例类型，请使用 container 或 virtual-machine。")
 	}
 	var rows []platform.Row
-	q := db.Table("node_network_bindings b").Select("b.*, p.availability_zone_id").Joins("JOIN network_pools p ON p.id=b.network_pool_id").Joins("JOIN nodes n ON n.id=b.node_id").Where("b.id=? AND p.availability_zone_id=? AND n.availability_zone_id=? AND b.status='active' AND b.validation_status='verified' AND p.status='active'", id, zoneID, zoneID)
+	q := db.Table("node_network_bindings b").Select("b.*").Joins("JOIN network_pools p ON p.id=b.network_pool_id").Where("b.id=? AND b.status='active' AND b.validation_status='verified' AND p.status='active'", id)
 	if instanceType == "virtual-machine" {
 		q = q.Where("b.mode <> 'macvlan'")
 	}
@@ -55,7 +55,7 @@ func ValidateNetworkOption(db *gorm.DB, id, zoneID uint64, instanceType string) 
 		return nil, platform.WrapDB(err)
 	}
 	if len(rows) != 1 {
-		return nil, platform.E(409, "network_unavailable", "网络选项未启用、未通过验证，或不支持所选可用区与实例类型，请重新选择或联系管理员验证。")
+		return nil, platform.E(409, "network_unavailable", "网络选项未启用、未通过验证，或不支持所选实例类型，请重新选择或联系管理员验证。")
 	}
 	return rows[0], nil
 }
@@ -63,34 +63,28 @@ func registerNetworks(a *platform.App, user, admin *gin.RouterGroup) {
 	a.RegisterJob("network.validate", networkValidateJob)
 	a.RegisterReconciler("network.validate", networkReconcileJob)
 	user.GET("/catalog/network-options", platform.Handle(func(c *gin.Context) (any, error) {
-		zone, e := platform.IDString(c.Query("zone_id"))
-		if e != nil {
-			return nil, e
-		}
 		typ := c.Query("instance_type")
 		if typ != "container" && typ != "virtual-machine" {
 			return nil, networkError("请指定有效的 instance_type：container 或 virtual-machine。")
 		}
-		q := platform.DB(c, a).Table("node_network_bindings b").Select("b.id,b.mode,b.created_at").Joins("JOIN network_pools p ON p.id=b.network_pool_id").Joins("JOIN nodes n ON n.id=b.node_id").Where("p.availability_zone_id=? AND n.availability_zone_id=? AND p.status='active' AND b.status='active' AND b.validation_status='verified'", zone, zone)
-		if typ == "virtual-machine" {
-			q = q.Where("b.mode <> 'macvlan'")
-		}
-		return platform.List(c, a, q, []string{"zone_id", "instance_type"})
-	}))
-	admin.GET("/network-pools", platform.Handle(func(c *gin.Context) (any, error) {
-		q := platform.DB(c, a).Table("network_pools")
-		if s := c.Query("zone_id"); s != "" {
-			id, e := platform.IDString(s)
+		q := platform.DB(c, a).Table("node_network_bindings b").Select("b.id,b.node_id,b.mode,b.created_at").Joins("JOIN network_pools p ON p.id=b.network_pool_id").Where("p.status='active' AND b.status='active' AND b.validation_status='verified'")
+		if s := c.Query("node_id"); s != "" {
+			node, e := platform.IDString(s)
 			if e != nil {
 				return nil, e
 			}
-			q = q.Where("availability_zone_id=?", id)
+			q = q.Where("b.node_id=?", node)
 		}
-		return listDTO(c, a, q, []string{"zone_id"}, func(r platform.Row) platform.Row { return networkPublic(r, true) })
+		if typ == "virtual-machine" {
+			q = q.Where("b.mode <> 'macvlan'")
+		}
+		return platform.List(c, a, q, []string{"node_id", "instance_type"})
+	}))
+	admin.GET("/network-pools", platform.Handle(func(c *gin.Context) (any, error) {
+		return listDTO(c, a, platform.DB(c, a).Table("network_pools"), nil, func(r platform.Row) platform.Row { return networkPublic(r, true) })
 	}))
 	admin.POST("/network-pools", platform.Handle(func(c *gin.Context) (any, error) {
 		var in struct {
-			ZoneID  string   `json:"zone_id"`
 			Name    string   `json:"name"`
 			CIDR    string   `json:"cidr"`
 			Start   string   `json:"range_start"`
@@ -101,14 +95,7 @@ func registerNetworks(a *platform.App, user, admin *gin.RouterGroup) {
 		if e := platform.Decode(c, &in); e != nil {
 			return nil, e
 		}
-		zone, e := platform.IDString(in.ZoneID)
-		if e != nil {
-			return nil, e
-		}
 		db := platform.DB(c, a)
-		if _, e = platform.Get(db, "availability_zones", zone, true); e != nil {
-			return nil, e
-		}
 		p, e := netip.ParsePrefix(in.CIDR)
 		if e != nil || p.Addr().Is4In6() || p != p.Masked() {
 			return nil, networkError("cidr 必须为标准子网网络地址，例如 192.0.2.0/24。")
@@ -140,15 +127,15 @@ func registerNetworks(a *platform.App, user, admin *gin.RouterGroup) {
 			return nil, e
 		}
 		var existing []platform.Row
-		if e = db.Table("network_pools").Where("availability_zone_id=? AND address_family=?", zone, networkFamily(p.Addr())).Find(&existing).Error; e != nil {
+		if e = db.Table("network_pools").Where("address_family=?", networkFamily(p.Addr())).Find(&existing).Error; e != nil {
 			return nil, platform.WrapDB(e)
 		}
 		for _, r := range existing {
 			if networkPrefix(r).Overlaps(p) {
-				return nil, networkError("地址池与同一可用区内已有子网重叠，请使用不重叠的子网。")
+				return nil, networkError("地址池与已有子网重叠，请使用不重叠的子网。")
 			}
 		}
-		r := platform.Row{"availability_zone_id": zone, "name": in.Name, "address_family": networkFamily(p.Addr()), "network_address": p.Addr().AsSlice(), "prefix_length": p.Bits(), "range_start": start.AsSlice(), "range_end": end.AsSlice(), "gateway": gateway, "dns_servers": dns, "status": "active", "revision": 1}
+		r := platform.Row{"name": in.Name, "address_family": networkFamily(p.Addr()), "network_address": p.Addr().AsSlice(), "prefix_length": p.Bits(), "range_start": start.AsSlice(), "range_end": end.AsSlice(), "gateway": gateway, "dns_servers": dns, "status": "active", "revision": 1}
 		if e = db.Table("network_pools").Create(&r).Error; e != nil {
 			return nil, platform.WrapDB(e)
 		}

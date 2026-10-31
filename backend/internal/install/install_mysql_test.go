@@ -79,7 +79,7 @@ func TestMySQLFirstInstallAndOverwriteGuards(t *testing.T) {
 		t.Fatal(e)
 	}
 	defer pool.Close()
-	if _, e = pool.ExecContext(ctx, "INSERT INTO availability_zones(code,name,status) VALUES('guard','Guard zone','active')"); e != nil {
+	if _, e = pool.ExecContext(ctx, "INSERT INTO users(username,password_hash,role,status) VALUES('guard','unused-test-hash','user','active')"); e != nil {
 		t.Fatalf("business DML not granted: %v", e)
 	}
 	_, e = pool.ExecContext(ctx, "CREATE TABLE should_be_denied(id INT)")
@@ -90,7 +90,7 @@ func TestMySQLFirstInstallAndOverwriteGuards(t *testing.T) {
 		t.Fatal("repeated first install overwrote existing schema")
 	}
 	var name string
-	if e = pool.QueryRowContext(ctx, "SELECT name FROM availability_zones WHERE code='guard'").Scan(&name); e != nil || name != "Guard zone" {
+	if e = pool.QueryRowContext(ctx, "SELECT role FROM users WHERE username='guard'").Scan(&name); e != nil || name != "user" {
 		t.Fatalf("existing business data changed: %q %v", name, e)
 	}
 	app.DBName = database + "_blocked"

@@ -10,7 +10,7 @@ import { Page } from '@vben/common-ui';
 
 import { Button, Card, Form, Input, message, Space, TabPane, Tabs, Tag, Tooltip } from 'ant-design-vue';
 
-import { catalogApi, nodesApi } from '#/api/backend';
+import { nodesApi } from '#/api/backend';
 import ConfirmAction from '#/components/confirm-action.vue';
 import StatusTag from '#/components/status-tag.vue';
 import { errorToast, trackAccepted, useAction, useResource } from '#/composables/api';
@@ -27,7 +27,6 @@ import UnmanagedTab from './components/unmanaged-tab.vue';
 const route = useRoute();
 const id = String(route.params.id);
 const node = useResource(() => nodesApi.get(id));
-const zoneName = ref<null | string>(null);
 /** 探测完成、纳管完成后递增，通知各标签页重新加载。 */
 const epoch = ref(0);
 const tab = ref('overview');
@@ -40,16 +39,7 @@ async function reload() {
   }
 }
 
-onMounted(async () => {
-  await reload();
-  const n = node.data.value;
-  if (!n) return;
-  try {
-    zoneName.value = (await catalogApi.zone(n.zone_id)).data.name;
-  } catch {
-    zoneName.value = null;
-  }
-});
+onMounted(() => reload());
 
 function refreshAll() {
   void reload();
@@ -181,7 +171,6 @@ async function rename() {
     </template>
     <template v-if="node.data.value" #description>
       <div class="text-muted-foreground flex flex-wrap gap-x-5 gap-y-1 text-sm">
-        <span>可用区 {{ zoneName ?? `#${node.data.value.zone_id}` }}</span>
         <span class="font-mono">{{ node.data.value.connection.endpoint }}</span>
         <Tooltip :title="node.data.value.connection.server_cert_sha256">
           <span>证书 <span class="font-mono">{{ shortId(node.data.value.connection.server_cert_sha256, 12, 6) }}</span></span>

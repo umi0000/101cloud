@@ -47,16 +47,11 @@ func networkRegisterBindings(a *platform.App, admin *gin.RouterGroup) {
 			return nil, e
 		}
 		db := platform.DB(c, a)
-		n, e := platform.Get(db, "nodes", node, true)
-		if e != nil {
+		if _, e = platform.Get(db, "nodes", node, true); e != nil {
 			return nil, e
 		}
-		p, e := platform.Get(db, "network_pools", pool, true)
-		if e != nil {
+		if _, e = platform.Get(db, "network_pools", pool, true); e != nil {
 			return nil, e
-		}
-		if platform.Uint(n["availability_zone_id"]) != platform.Uint(p["availability_zone_id"]) {
-			return nil, networkError("节点与地址池不属于同一可用区，请重新选择。")
 		}
 		if !networkName(in.Project) || ((in.Mode == "bridge" || in.Mode == "macvlan") && (!networkName(in.Parent) || in.Network != "")) || (in.Mode == "managed_bridge" && (!networkName(in.Network) || in.Parent != "")) || (in.Mode != "bridge" && in.Mode != "macvlan" && in.Mode != "managed_bridge") {
 			return nil, networkError("网络绑定目标、项目或模式无效：bridge/macvlan 需要父接口，managed_bridge 需要 Incus 网络名。")

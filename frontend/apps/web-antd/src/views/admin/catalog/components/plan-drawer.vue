@@ -66,7 +66,6 @@ interface PlanForm {
   policy: Record<PlanPolicyKind, string | undefined>;
   vcpus: number | undefined;
   version: string;
-  zone_id: string | undefined;
 }
 
 const props = defineProps<{ mode: Mode; refs: CatalogRefs; source: null | Plan }>();
@@ -109,7 +108,6 @@ function emptyForm(): PlanForm {
     policy: { credit: undefined, 'gpu-idle': undefined, 'gpu-pricing': undefined, 'gpu-scheduling': undefined, pricing: undefined },
     vcpus: undefined,
     version: '',
-    zone_id: undefined,
   };
 }
 
@@ -147,7 +145,6 @@ function formFromPlan(p: Plan, copy: boolean): PlanForm {
     },
     vcpus: p.resources.vcpus,
     version: copy ? '' : p.version,
-    zone_id: p.zone_id,
   };
 }
 
@@ -197,27 +194,12 @@ watch(
     f.network_option_ids = f.network_option_ids.filter((id) => networkOptions.value.some((o) => o.value === id));
   },
 );
-watch(
-  () => form.value.zone_id,
-  () => {
-    form.value.network_option_ids = form.value.network_option_ids.filter((id) =>
-      networkOptions.value.some((o) => o.value === id),
-    );
-  },
-);
 watch(hasModel, (v) => {
   if (!v) {
     form.value.gpu_count = 0;
     form.value.overrides.gpu_count = emptyOverride();
   }
 });
-
-const zoneOptions = computed(() =>
-  props.refs.zones.value.map((z) => ({
-    label: `${z.name}（${z.code}）${z.status === 'active' ? '' : ' · 停用'}`,
-    value: z.id,
-  })),
-);
 
 const imageOptions = computed(() =>
   props.refs.images.value
@@ -230,16 +212,15 @@ const imageOptions = computed(() =>
     })),
 );
 
-const networkOptions = computed(() => {
-  if (!form.value.zone_id) return [];
-  return props.refs
-    .zoneBindings(form.value.zone_id)
+const networkOptions = computed(() =>
+  props.refs
+    .activeBindings()
     .filter((b) => !isVM.value || b.mode !== 'macvlan')
     .map((b) => ({
       label: `${props.refs.bindingName(b.id)}${b.validation_status === 'verified' ? '' : `（${enumLabel('validation', b.validation_status).text}）`}`,
       value: b.id,
-    }));
-});
+    })),
+);
 
 function policyLabel(kind: PlanPolicyKind, p: PolicyVersion): string {
   let label = `${p.code} v${p.version}`;
@@ -287,7 +268,6 @@ const problems = computed(() => {
     out.push('代码与版本须为字母或数字开头，1–64 位字母、数字、_ . -');
   }
   if (!f.name.trim() || [...f.name].length > 128) out.push('名称为 1–128 个字符');
-  if (!f.zone_id) out.push('请选择可用区');
   if (!f.vcpus || !Number.isInteger(f.vcpus) || f.vcpus < 1) out.push('vCPU 须为正整数');
   if (!f.memory_gib || f.memory_gib <= 0) out.push('内存须大于 0');
   if (!f.disk_gib || f.disk_gib <= 0) out.push('磁盘须大于 0');
@@ -338,8 +318,8 @@ const problems = computed(() => {
 
 function buildBody(): null | Omit<PlanInput, 'code' | 'version'> {
   const f = form.value;
-  const { disk_gib: diskGib, memory_gib: memoryGib, vcpus, zone_id: zoneId } = f;
-  if (diskGib === undefined || memoryGib === undefined || vcpus === undefined || !zoneId) return null;
+  const { disk_gib: diskGib, memory_gib: memoryGib, vcpus } = f;
+  if (diskGib === undefined || memoryGib === undefined || vcpus === undefined) return null;
   const allowed: AllowedOverrides = {};
   for (const key of OVERRIDE_KEYS) {
     const o = f.overrides[key];
@@ -365,7 +345,6 @@ function buildBody(): null | Omit<PlanInput, 'code' | 'version'> {
       memory_bytes: gibToBytes(memoryGib),
       vcpus,
     },
-    zone_id: zoneId,
   };
 }
 
@@ -407,7 +386,7 @@ async function save() {
     <Alert
       v-if="mode !== 'view'"
       class="mb-3"
-      message="草稿保存时检查格式和引用是否存在；发布时后端再校验引用都已发布、可用区启用、网络已验证、镜像兼容。发布后不能修改，只能退役并新建版本。"
+      message="草稿保存时检查格式和引用是否存在；发布时后端再校验引用都已发布、网络已验证、镜像兼容。发布后不能修改，只能退役并新建版本。"
       show-icon
       type="info"
     />
@@ -421,9 +400,6 @@ async function save() {
           <Input v-model:value="form.version" class="font-mono" :disabled="mode !== 'create'" />
         </FormItem>
         <FormItem label="名称" required><Input v-model:value="form.name" :maxlength="128" /></FormItem>
-        <FormItem label="可用区" required>
-          <Select v-model:value="form.zone_id" :options="zoneOptions" placeholder="选择可用区" />
-        </FormItem>
         <FormItem label="实例类型" required>
           <RadioGroup v-model:value="form.instance_type" button-style="solid">
             <RadioButton v-for="o in typeOptions" :key="o.value" :value="o.value">{{ o.label }}</RadioButton>
@@ -524,11 +500,11 @@ async function save() {
       >
         <Select v-model:value="form.image_ids" mode="multiple" :options="imageOptions" placeholder="选择镜像" />
       </FormItem>
-      <FormItem label="网络" required extra="可用区内节点的启用中网络绑定；发布时要求已验证。虚拟机不能使用 macvlan">
+      <FormItem label="网络" required extra="所有节点上启用中的网络绑定；发布时要求已验证。虚拟机不能使用 macvlan">
         <Select
           v-model:value="form.network_option_ids"
           mode="multiple"
-          :not-found-content="form.zone_id ? '该可用区没有启用中的网络绑定' : '请先选择可用区'"
+          not-found-content="没有启用中的网络绑定"
           :options="networkOptions"
           placeholder="选择网络"
         />

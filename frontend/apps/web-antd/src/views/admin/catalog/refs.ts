@@ -1,5 +1,5 @@
 /**
- * 管理端目录引用数据（可用区、镜像、模板、节点、网络绑定、政策版本），
+ * 管理端目录引用数据（镜像、模板、节点、网络绑定、政策版本），
  * 供套餐表单共用：下拉选项与 ID → 名称显示。
  */
 import type { Ref } from 'vue';
@@ -11,7 +11,6 @@ import type {
   Node,
   PolicyKind,
   PolicyVersion,
-  Zone,
 } from '#/api/types';
 
 import { reactive, ref } from 'vue';
@@ -24,6 +23,8 @@ import { enumLabel } from '#/locales/enums';
 type Label = (id: null | string | undefined) => string;
 
 export interface CatalogRefs {
+  /** 所有节点上状态为启用的网络绑定（套餐 network_option_ids 候选）。 */
+  activeBindings: () => NetworkBinding[];
   bindingName: Label;
   bindings: Ref<NetworkBinding[]>;
   imageName: Label;
@@ -36,14 +37,9 @@ export interface CatalogRefs {
   policyName: (kind: PolicyKind, id: null | string | undefined) => string;
   templateName: Label;
   templates: Ref<InitTemplate[]>;
-  /** 节点属于该可用区且状态为启用的网络绑定（套餐 network_option_ids 候选）。 */
-  zoneBindings: (zoneId: string) => NetworkBinding[];
-  zoneName: Label;
-  zones: Ref<Zone[]>;
 }
 
 export function useCatalogRefs(options: { policies?: boolean } = {}): CatalogRefs {
-  const zones = ref<Zone[]>([]);
   const images = ref<Image[]>([]);
   const templates = ref<InitTemplate[]>([]);
   const nodes = ref<Node[]>([]);
@@ -54,14 +50,12 @@ export function useCatalogRefs(options: { policies?: boolean } = {}): CatalogRef
   async function load() {
     loading.value = true;
     try {
-      const [z, i, t, n, b] = await Promise.all([
-        listAll(catalogApi.zones),
+      const [i, t, n, b] = await Promise.all([
         listAll(catalogApi.images),
         listAll(catalogApi.templates),
         listAll(nodesApi.list),
         listAll(networkApi.bindings),
       ]);
-      zones.value = z;
       images.value = i;
       templates.value = t;
       nodes.value = n;
@@ -87,6 +81,7 @@ export function useCatalogRefs(options: { policies?: boolean } = {}): CatalogRef
   };
 
   return {
+    activeBindings: () => bindings.value.filter((b) => b.status === 'active'),
     bindingName: (id) => {
       if (!id) return '—';
       const b = bindings.value.find((x) => x.id === id);
@@ -115,15 +110,5 @@ export function useCatalogRefs(options: { policies?: boolean } = {}): CatalogRef
       return t ? `${t.name}（${t.code} v${t.version}）` : `#${id}`;
     },
     templates,
-    zoneBindings: (zoneId) => {
-      const inZone = new Set(nodes.value.filter((n) => n.zone_id === zoneId).map((n) => n.id));
-      return bindings.value.filter((b) => b.status === 'active' && inZone.has(b.node_id));
-    },
-    zoneName: (id) => {
-      if (!id) return '—';
-      const z = zones.value.find((x) => x.id === id);
-      return z ? `${z.name}（${z.code}）` : `#${id}`;
-    },
-    zones,
   };
 }

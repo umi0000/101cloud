@@ -47,6 +47,8 @@ func TestCustomProvisioningReplacesApplicationRoutes(t *testing.T) {
 		{"invalid resources", `{"owner_user_id":"1","name":"Direct instance","approved_config":{"instance_type":"container","resources":{"vcpus":0,"memory_bytes":"1","disk_bytes":"1"}}}`, "invalid_request"},
 		{"removed application reason", `{"owner_user_id":"1","name":"Direct instance","approved_config":{},"reason":"application"}`, "validation_failed"},
 		{"removed review note", `{"owner_user_id":"1","name":"Direct instance","approved_config":{},"review_note":"approved"}`, "validation_failed"},
+		{"missing node", `{"owner_user_id":"1","name":"Direct instance","approved_config":{"instance_type":"container","image_id":"1","network_option_id":"1","resources":{"vcpus":1,"memory_bytes":"1","disk_bytes":"1"},"gpu":{"count":0,"model":null,"access_mode":"shared","max_hourly_pt":"0"},"init_parameters":{}}}`, "invalid_request"},
+		{"removed zone", `{"owner_user_id":"1","name":"Direct instance","approved_config":{"instance_type":"container","zone_id":"1","node_id":"1"}}`, "validation_failed"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			response := httptest.NewRecorder()

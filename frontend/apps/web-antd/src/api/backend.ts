@@ -47,7 +47,6 @@ import type {
   TaskAccepted,
   UnmanagedInstance,
   User,
-  Zone,
 } from './types';
 import type { ApiResult } from './request';
 
@@ -131,7 +130,6 @@ export interface NodeCreate {
   connection: NodeConnectionInput;
   defaults: Node['defaults'];
   name: string;
-  zone_id: ID;
 }
 
 export const nodesApi = {
@@ -221,7 +219,6 @@ export const networkApi = {
       name: string;
       range_end: string;
       range_start: string;
-      zone_id: ID;
     },
     w: Write,
   ) => post<NetworkPool>('/admin/network-pools', body, w),
@@ -351,8 +348,6 @@ export const catalogApi = {
     post<Plan>('/admin/plans', body, w),
   createTemplate: (body: InitTemplateInput, w: Write) =>
     post<InitTemplate>('/admin/init-templates', body, w),
-  createZone: (body: { code: string; name: string }, w: Write) =>
-    post<Zone>('/admin/zones', body, w),
   gpuOptions: (q?: Query) => list<GPUOption>('/catalog/gpu-options', q),
   image: (id: ID) => detail<Image>(`/admin/images/${id}`),
   images: (q?: Query) => list<Image>('/admin/images', q),
@@ -387,13 +382,6 @@ export const catalogApi = {
     body: Partial<Omit<InitTemplateInput, 'code' | 'version'>>,
     w: Write,
   ) => patch<InitTemplate>(`/admin/init-templates/${id}`, body, w),
-  updateZone: (
-    id: ID,
-    body: Partial<{ name: string; status: Zone['status'] }>,
-    w: Write,
-  ) => patch<Zone>(`/admin/zones/${id}`, body, w),
-  zone: (id: ID) => detail<Zone>(`/admin/zones/${id}`),
-  zones: (q?: Query) => list<Zone>('/admin/zones', q),
 };
 
 /* ---------------- 管理端：政策 ---------------- */

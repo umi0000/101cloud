@@ -1,35 +1,31 @@
 <script lang="ts" setup>
-import type { Node, Zone } from '#/api/types';
+import type { Node } from '#/api/types';
 
-import { computed, onMounted, ref, shallowRef } from 'vue';
+import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
 
 import { Button, Card, Select, Space, Table, Tag } from 'ant-design-vue';
 
-import { catalogApi, listAll, nodesApi } from '#/api/backend';
+import { nodesApi } from '#/api/backend';
 import CursorPager from '#/components/cursor-pager.vue';
 import StatusTag from '#/components/status-tag.vue';
 import TimeText from '#/components/time-text.vue';
-import { errorToast, useCursorList } from '#/composables/api';
+import { useCursorList } from '#/composables/api';
 import { ENUMS } from '#/locales/enums';
 import { secondsSince } from '#/utils/format';
 
 import RegisterDrawer from './components/register-drawer.vue';
 
-type NodeFilters = Record<'administrative_state' | 'health' | 'zone_id', string | undefined>;
-const filters = ref<NodeFilters>({ administrative_state: undefined, health: undefined, zone_id: undefined });
+type NodeFilters = Record<'administrative_state' | 'health', string | undefined>;
+const filters = ref<NodeFilters>({ administrative_state: undefined, health: undefined });
 const list = useCursorList<Node>(nodesApi.list, filters);
 
-const zones = shallowRef<Zone[]>([]);
-const zoneName = computed(() => new Map(zones.value.map((z) => [z.id, z.name])));
-const zoneOptions = computed(() => zones.value.map((z) => ({ label: z.name, value: z.id })));
 const options = (kind: string) => Object.entries(ENUMS[kind] ?? {}).map(([value, l]) => ({ label: l.text, value }));
 
 const columns = [
   { key: 'name', title: '名称' },
-  { key: 'zone', title: '可用区' },
   { key: 'state', title: '管理状态', width: 100 },
   { key: 'health', title: '健康', width: 80 },
   { key: 'endpoint', title: 'Agent 地址' },
@@ -45,14 +41,7 @@ function inventoryStale(n: Node) {
   return age !== null && age > 60;
 }
 
-onMounted(async () => {
-  void list.load();
-  try {
-    zones.value = await listAll(catalogApi.zones);
-  } catch (error) {
-    errorToast(error);
-  }
-});
+onMounted(() => list.load());
 </script>
 
 <template>
@@ -60,7 +49,6 @@ onMounted(async () => {
     <Card size="small">
       <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
         <Space wrap>
-          <Select v-model:value="filters.zone_id" allow-clear class="w-36" :options="zoneOptions" placeholder="可用区" />
           <Select
             v-model:value="filters.administrative_state"
             allow-clear
@@ -85,7 +73,6 @@ onMounted(async () => {
             <RouterLink :to="`/admin/nodes/${record.id}`">{{ record.name }}</RouterLink>
             <span class="text-muted-foreground ml-1 font-mono text-xs">#{{ record.id }}</span>
           </template>
-          <template v-else-if="column.key === 'zone'">{{ zoneName.get(record.zone_id) ?? `#${record.zone_id}` }}</template>
           <template v-else-if="column.key === 'state'">
             <StatusTag kind="adminState" :value="record.administrative_state" />
           </template>
@@ -110,6 +97,6 @@ onMounted(async () => {
         @refresh="list.load"
       />
     </Card>
-    <RegisterDrawer v-model:open="registerOpen" :zones="zones" @created="(n: Node) => router.push(`/admin/nodes/${n.id}`)" />
+    <RegisterDrawer v-model:open="registerOpen" @created="(n: Node) => router.push(`/admin/nodes/${n.id}`)" />
   </Page>
 </template>

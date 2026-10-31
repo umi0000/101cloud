@@ -44,10 +44,6 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 	a.RegisterReconciler("node.drain", nodeInventoryJob)
 	admin.GET("/nodes", platform.Handle(func(c *gin.Context) (any, error) {
 		q := platform.DB(c, a).Table("nodes")
-		var err error
-		if q, err = listFilterID(c, q, "zone_id", "availability_zone_id"); err != nil {
-			return nil, err
-		}
 		for _, f := range []string{"administrative_state", "health"} {
 			if s := c.Query(f); s != "" {
 				if (f == "administrative_state" && !enum(s, "active", "disabled", "draining", "maintenance")) || (f == "health" && !enum(s, "unknown", "online", "offline")) {
@@ -56,12 +52,11 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 				q = q.Where(f+" = ?", s)
 			}
 		}
-		return listDTO(c, a, q, []string{"zone_id", "administrative_state", "health"}, nodeDTO)
+		return listDTO(c, a, q, []string{"administrative_state", "health"}, nodeDTO)
 	}))
 	admin.POST("/nodes", platform.Handle(func(c *gin.Context) (any, error) {
 		var in struct {
 			Name        string           `json:"name"`
-			ZoneID      string           `json:"zone_id"`
 			Connection  *nodeConnection  `json:"connection"`
 			Defaults    *nodeDefaults    `json:"defaults"`
 			Allocatable *nodeAllocatable `json:"allocatable"`
@@ -71,17 +66,6 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 		}
 		if !textValid(in.Name, 128) || in.Connection == nil || in.Defaults == nil || in.Allocatable == nil {
 			return nil, invalid("请填写节点名称、连接配置、默认配置及可分配容量。")
-		}
-		zid, err := platform.IDString(in.ZoneID)
-		if err != nil {
-			return nil, err
-		}
-		zone, err := platform.Get(platform.DB(c, a), "availability_zones", zid, true)
-		if err != nil {
-			return nil, err
-		}
-		if platform.Text(zone["status"]) != "active" {
-			return nil, invalid("节点必须属于已启用的可用区。")
 		}
 		if !textValid(in.Defaults.StoragePool, 255) || !codeValid(in.Defaults.ProjectName) || len(in.Defaults.ProjectName) > 63 {
 			return nil, invalid("默认存储池或项目名无效，请检查 defaults。")
@@ -98,7 +82,6 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 			row[k] = v
 		}
 		row["name"] = in.Name
-		row["availability_zone_id"] = zid
 		row["default_storage_pool"] = in.Defaults.StoragePool
 		row["default_project_name"] = in.Defaults.ProjectName
 		row["status"] = "maintenance"
@@ -489,7 +472,6 @@ func nodeCheckCommitments(db *gorm.DB, id uint64, capacity platform.Row) error {
 }
 func nodeDTO(r platform.Row) platform.Row {
 	p := platform.Public(r, "id", "name", "administrative_state", "health", "connection_verified_at", "resources_sampled_at", "last_heartbeat_at", "revision", "created_at", "updated_at")
-	p["zone_id"] = strconv.FormatUint(platform.Uint(r["availability_zone_id"]), 10)
 	p["connection"] = platform.Row{"endpoint": platform.Text(r["agent_endpoint"]), "server_cert_sha256": hex.EncodeToString([]byte(platform.Text(r["server_cert_sha256"]))), "has_credentials": true, "key_version": platform.Uint(r["key_version"])}
 	p["defaults"] = platform.Row{"storage_pool": platform.Text(r["default_storage_pool"]), "project_name": platform.Text(r["default_project_name"])}
 	p["allocatable"] = platform.Row{"vcpus": platform.Uint(r["allocatable_vcpus"]), "memory_bytes": strconv.FormatUint(platform.Uint(r["allocatable_memory_bytes"]), 10), "disk_bytes": strconv.FormatUint(platform.Uint(r["allocatable_disk_bytes"]), 10), "resident_vcpus": platform.Uint(r["resident_vcpu_budget"]), "resident_memory_bytes": strconv.FormatUint(platform.Uint(r["resident_memory_budget_bytes"]), 10), "resident_disk_bytes": strconv.FormatUint(platform.Uint(r["resident_disk_budget_bytes"]), 10)}

@@ -88,7 +88,6 @@ const MESSAGES: Record<string, string> = {
   unauthenticated: '登录已过期，请重新登录',
   unsupported_configuration: '当前配置不支持此操作，请先停止实例',
   unsupported_resolution: '不支持的数据粒度',
-  zone_unavailable: '可用区不可用',
 };
 
 const DecimalSchema = z.string().regex(/^-?\d+(?:\.\d+)?$/);

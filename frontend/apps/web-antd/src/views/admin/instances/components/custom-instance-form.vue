@@ -14,7 +14,6 @@ import type {
   NetworkOption,
   Node,
   NodeGPU,
-  Zone,
 } from '#/api/types';
 
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue';
@@ -63,7 +62,6 @@ interface FormState {
   network_option_id: string | undefined;
   node_id: string | undefined;
   vcpus: number;
-  zone_id: string | undefined;
 }
 
 const init = props.initial;
@@ -86,10 +84,8 @@ const form = reactive<FormState>({
   network_option_id: init?.network_option_id,
   node_id: init?.node_id,
   vcpus: init?.resources.vcpus ?? 2,
-  zone_id: init?.zone_id,
 });
 
-const zones = shallowRef<Zone[]>([]);
 const images = shallowRef<Image[]>([]);
 const templates = shallowRef<InitTemplate[]>([]);
 const networks = shallowRef<NetworkOption[]>([]);
@@ -101,12 +97,12 @@ const loading = ref(false);
 onMounted(async () => {
   loading.value = true;
   try {
-    const [z, i, t] = await Promise.all([
-      listAll(catalogApi.zones),
+    const [n, i, t] = await Promise.all([
+      listAll(nodesApi.list),
       listAll(catalogApi.images),
       listAll(catalogApi.templates),
     ]);
-    zones.value = z.filter((x) => x.status === 'active');
+    nodes.value = n;
     images.value = i.filter((x) => x.status === 'active');
     templates.value = t.filter((x) => x.status === 'active');
   } catch (error) {
@@ -116,27 +112,25 @@ onMounted(async () => {
   }
 });
 
-/* ---------- 可用区 → 节点、GPU 选项、网络 ---------- */
+/* ---------- 节点 → GPU 选项、节点 GPU 列表（fixed_uuids）、网络 ---------- */
 
-let zoneSeq = 0;
+let nodeSeq = 0;
 watch(
-  () => form.zone_id,
-  async (zone, old) => {
-    const mine = ++zoneSeq;
-    if (old !== undefined && zone !== old) form.node_id = undefined;
-    if (!zone) {
-      nodes.value = [];
-      gpuOptions.value = [];
-      return;
-    }
+  () => form.node_id,
+  async (node, old) => {
+    const mine = ++nodeSeq;
+    if (old !== undefined && node !== old) form.network_option_id = undefined;
+    gpuOptions.value = [];
+    nodeGPUs.value = [];
+    if (!node) return;
     try {
-      const [n, g] = await Promise.all([
-        listAll(nodesApi.list, { zone_id: zone }),
-        listAll(catalogApi.gpuOptions, { zone_id: zone }),
+      const [o, g] = await Promise.all([
+        listAll(catalogApi.gpuOptions, { node_id: node }),
+        listAll((q) => nodesApi.gpus(node, q)),
       ]);
-      if (mine !== zoneSeq) return;
-      nodes.value = n;
-      gpuOptions.value = g;
+      if (mine !== nodeSeq) return;
+      gpuOptions.value = o;
+      nodeGPUs.value = g;
     } catch (error) {
       errorToast(error);
     }
@@ -146,16 +140,16 @@ watch(
 
 let netSeq = 0;
 watch(
-  () => [form.zone_id, form.instance_type] as const,
-  async ([zone, type]) => {
+  () => [form.node_id, form.instance_type] as const,
+  async ([node, type]) => {
     const mine = ++netSeq;
-    if (!zone) {
+    if (!node) {
       networks.value = [];
       form.network_option_id = undefined;
       return;
     }
     try {
-      const n = await listAll(catalogApi.networkOptions, { instance_type: type, zone_id: zone });
+      const n = await listAll(catalogApi.networkOptions, { instance_type: type, node_id: node });
       if (mine !== netSeq) return;
       networks.value = n;
       if (form.network_option_id && !n.some((x) => x.id === form.network_option_id)) {
@@ -177,24 +171,6 @@ watch(
   },
 );
 
-/* ---------- 指定节点 → 该节点 GPU 列表（fixed_uuids） ---------- */
-
-let gpuSeq = 0;
-watch(
-  () => form.node_id,
-  async (node) => {
-    const mine = ++gpuSeq;
-    nodeGPUs.value = [];
-    if (!node) return;
-    try {
-      const g = await listAll((q) => nodesApi.gpus(node, q));
-      if (mine === gpuSeq) nodeGPUs.value = g;
-    } catch (error) {
-      errorToast(error);
-    }
-  },
-  { immediate: true },
-);
 watch(
   () => [form.node_id, form.gpu_model, form.gpu_count] as const,
   () => {
@@ -203,8 +179,6 @@ watch(
 );
 
 /* ---------- 选项 ---------- */
-
-const zoneOptions = computed(() => zones.value.map((z) => ({ label: `${z.name}（${z.code}）`, value: z.id })));
 
 const imageOptions = computed(() =>
   images.value
@@ -220,11 +194,18 @@ const networkOptions = computed(() =>
   networks.value.map((n) => ({ label: `直连网络 #${n.id}（${enumLabel('networkMode', n.mode).text}）`, value: n.id })),
 );
 
+/** 只有「启用」且未离线的节点可选；其余标注状态并禁用。 */
 const nodeOptions = computed(() =>
-  nodes.value.map((n) => ({
-    label: `${n.name}（${enumLabel('health', n.health).text}，${enumLabel('adminState', n.administrative_state).text}）`,
-    value: n.id,
-  })),
+  nodes.value.map((n) => {
+    const usable = n.administrative_state === 'active' && n.health !== 'offline';
+    return {
+      disabled: !usable,
+      label: usable
+        ? n.name
+        : `${n.name}（${enumLabel('adminState', n.administrative_state).text}，${enumLabel('health', n.health).text}）`,
+      value: n.id,
+    };
+  }),
 );
 
 const templateOptions = computed(() =>
@@ -305,7 +286,7 @@ function bytesOrNull(gib: number): null | string {
 
 const problems = computed(() => {
   const out: string[] = [];
-  if (!form.zone_id) out.push('请选择可用区');
+  if (!form.node_id) out.push('请选择节点');
   if (!form.image_id) out.push('请选择镜像');
   else if (form.gpu_count > 0 && images.value.some((i) => i.id === form.image_id && !i.gpu_ready)) {
     out.push('所选镜像不支持 GPU');
@@ -330,10 +311,10 @@ const problems = computed(() => {
 
 const value = computed<CustomConfig | null>(() => {
   if (problems.value.length > 0) return null;
-  const { image_id: imageId, network_option_id: networkOptionId, zone_id: zoneId } = form;
+  const { image_id: imageId, network_option_id: networkOptionId, node_id: nodeId } = form;
   const diskBytes = bytesOrNull(form.disk_gib);
   const memoryBytes = bytesOrNull(form.memory_gib);
-  if (!imageId || !networkOptionId || !zoneId || !diskBytes || !memoryBytes) return null;
+  if (!imageId || !networkOptionId || !nodeId || !diskBytes || !memoryBytes) return null;
   const count = form.gpu_count;
   const config: CustomConfig = {
     allowed_user_actions: [...form.allowed_user_actions],
@@ -348,15 +329,14 @@ const value = computed<CustomConfig | null>(() => {
     init_parameters: parsedParams.value ?? {},
     instance_type: form.instance_type,
     network_option_id: networkOptionId,
+    node_id: nodeId,
     resources: {
       disk_bytes: diskBytes,
       memory_bytes: memoryBytes,
       vcpus: form.vcpus,
     },
-    zone_id: zoneId,
   };
   if (count > 0 && form.fixed_uuids.length > 0) config.gpu.fixed_uuids = [...form.fixed_uuids];
-  if (form.node_id) config.node_id = form.node_id;
   if (form.init_template_version_id) config.init_template_version_id = form.init_template_version_id;
   return config;
 });
@@ -376,8 +356,15 @@ watch(value, (v) => emit('update:value', v), { immediate: true });
         </FormItem>
       </Col>
       <Col :span="12">
-        <FormItem label="可用区" required>
-          <Select v-model:value="form.zone_id" :loading="loading" :options="zoneOptions" placeholder="选择可用区" />
+        <FormItem label="节点" required>
+          <Select
+            v-model:value="form.node_id"
+            :loading="loading"
+            option-filter-prop="label"
+            :options="nodeOptions"
+            placeholder="选择节点"
+            show-search
+          />
         </FormItem>
       </Col>
       <Col :span="12">
@@ -396,8 +383,8 @@ watch(value, (v) => emit('update:value', v), { immediate: true });
         <FormItem label="网络" required>
           <Select
             v-model:value="form.network_option_id"
-            :disabled="!form.zone_id"
-            :not-found-content="form.zone_id ? '该可用区没有已验证的网络' : '先选择可用区'"
+            :disabled="!form.node_id"
+            :not-found-content="form.node_id ? '该节点没有已验证的网络' : '先选择节点'"
             :options="networkOptions"
             placeholder="选择网络"
           />
@@ -434,7 +421,7 @@ watch(value, (v) => emit('update:value', v), { immediate: true });
           <FormItem label="GPU 型号与共享方式" required>
             <Select
               v-model:value="gpuChoice"
-              :disabled="!form.zone_id"
+              :disabled="!form.node_id"
               :options="gpuChoiceOptions"
               placeholder="选择 GPU"
             />
@@ -446,7 +433,7 @@ watch(value, (v) => emit('update:value', v), { immediate: true });
           </FormItem>
         </Col>
         <Col :span="16">
-          <FormItem label="指定 GPU（可选）" :help="form.node_id ? `不填由后端选最低负载卡；填写时数量必须为 ${form.gpu_count}` : '先指定节点才能选择具体 GPU'">
+          <FormItem label="指定 GPU（可选）" :help="`不填由后端选最低负载卡；填写时数量必须为 ${form.gpu_count}`">
             <Select
               v-model:value="form.fixed_uuids"
               class="font-mono"
@@ -459,17 +446,6 @@ watch(value, (v) => emit('update:value', v), { immediate: true });
           </FormItem>
         </Col>
       </template>
-      <Col :span="12">
-        <FormItem label="指定节点（可选）">
-          <Select
-            v-model:value="form.node_id"
-            allow-clear
-            :disabled="!form.zone_id"
-            :options="nodeOptions"
-            placeholder="自动调度"
-          />
-        </FormItem>
-      </Col>
       <Col :span="12">
         <FormItem label="初始化模板（可选）">
           <Select

@@ -1,11 +1,9 @@
 <script lang="ts" setup>
 import type { NetworkPoolView } from './network';
 
-import type { Zone } from '#/api/types';
+import { onMounted, ref, shallowRef } from 'vue';
 
-import { computed, onMounted, ref, shallowRef } from 'vue';
-
-import { Button, Select, Space, Table } from 'ant-design-vue';
+import { Button, Space, Table } from 'ant-design-vue';
 
 import { networkApi } from '#/api/backend';
 import CursorPager from '#/components/cursor-pager.vue';
@@ -15,17 +13,11 @@ import { useCursorList } from '#/composables/api';
 import PoolAddresses from './pool-addresses.vue';
 import PoolDrawer from './pool-drawer.vue';
 
-const props = defineProps<{ zones: Zone[] }>();
-
-const filters = ref<{ zone_id: string | undefined }>({ zone_id: undefined });
-const list = useCursorList<NetworkPoolView>(networkApi.pools, filters);
+const list = useCursorList<NetworkPoolView>(networkApi.pools, ref({}));
 onMounted(() => list.load());
-
-const zoneName = computed(() => new Map(props.zones.map((z) => [z.id, z.name])));
 
 const columns = [
   { key: 'name', title: '名称' },
-  { key: 'zone', title: '可用区' },
   { key: 'cidr', title: '网段' },
   { key: 'range', title: '分配范围' },
   { key: 'gateway', title: '网关' },
@@ -51,14 +43,7 @@ function openAddresses(pool: NetworkPoolView) {
 
 <template>
   <div>
-    <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-      <Select
-        v-model:value="filters.zone_id"
-        allow-clear
-        class="w-40"
-        :options="zones.map((z) => ({ label: z.name, value: z.id }))"
-        placeholder="可用区"
-      />
+    <div class="mb-3 flex justify-end">
       <Button type="primary" @click="openDrawer(null)">登记地址池</Button>
     </div>
     <Table
@@ -73,9 +58,6 @@ function openAddresses(pool: NetworkPoolView) {
         <template v-if="column.key === 'name'">
           {{ record.name }}
           <span class="text-muted-foreground ml-1 font-mono text-xs">#{{ record.id }}</span>
-        </template>
-        <template v-else-if="column.key === 'zone'">
-          {{ zoneName.get(record.availability_zone_id) ?? `#${record.availability_zone_id}` }}
         </template>
         <template v-else-if="column.key === 'cidr'"><span class="font-mono">{{ record.cidr }}</span></template>
         <template v-else-if="column.key === 'range'">
@@ -103,7 +85,7 @@ function openAddresses(pool: NetworkPoolView) {
       @prev="list.prevPage"
       @refresh="list.load"
     />
-    <PoolDrawer v-model:open="drawerOpen" :pool="editing" :zones="zones" @saved="list.load" />
+    <PoolDrawer v-model:open="drawerOpen" :pool="editing" @saved="list.load" />
     <PoolAddresses v-model:open="addressesOpen" :pool="addressesPool" @changed="list.load" />
   </div>
 </template>

@@ -87,7 +87,7 @@ const nodeGPUs = shallowRef<NodeGPU[]>([]);
 async function loadChoices() {
   try {
     const [g, n] = await Promise.all([
-      listAll(catalogApi.gpuOptions, { zone_id: props.instance.zone_id }),
+      listAll(catalogApi.gpuOptions, { node_id: props.instance.node_id }),
       listAll((q) => nodesApi.gpus(props.instance.node_id, q)),
     ]);
     gpuOptions.value = g;
