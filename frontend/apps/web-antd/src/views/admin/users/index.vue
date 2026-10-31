@@ -107,18 +107,20 @@ onMounted(() => list.load());
 <template>
   <Page title="用户与配额">
     <Card size="small">
-      <Space class="mb-3" wrap>
-        <Select v-model:value="filters.status" allow-clear class="w-32" :options="statusOptions" placeholder="状态" />
-        <Select v-model:value="filters.role" allow-clear class="w-32" :options="roleOptions" placeholder="角色" />
-        <Input.Search
-          v-model:value="usernameInput"
-          allow-clear
-          class="w-56"
-          placeholder="精确用户名"
-          @search="applyUsername"
-        />
+      <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <Space wrap>
+          <Select v-model:value="filters.status" allow-clear class="w-32" :options="statusOptions" placeholder="状态" />
+          <Select v-model:value="filters.role" allow-clear class="w-32" :options="roleOptions" placeholder="角色" />
+          <Input.Search
+            v-model:value="usernameInput"
+            allow-clear
+            class="w-56"
+            placeholder="精确用户名"
+            @search="applyUsername"
+          />
+        </Space>
         <Button type="primary" @click="openCreate">创建用户</Button>
-      </Space>
+      </div>
       <Table
         :columns="columns"
         :data-source="list.items.value"

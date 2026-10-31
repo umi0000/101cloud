@@ -159,3 +159,5 @@ CLOUD_TRUSTED_PROXIES='127.0.0.1/32,::1/128'
 已通过管理员 API 对账删除任务 49（实例 16，`1121`）及 54（实例 1，`backend-acceptance-116`），产生任务 55、56，全部成功。原生操作引用沿用既有日志，没有重发 DELETE；两实例已写入删除终态，IP `192.168.0.116` / `.118` 已恢复 available 并解除实例/节点绑定，共两条共享 GPU 分配已释放且 `release_verified=1`，活动 GPU 计量会话均结束。归还预算占用合计 3 vCPU、5 GiB 内存、8 GiB 磁盘；这不是此次新增物理磁盘空间。创建未知任务 43 保持原状。
 
 验证：后端和代理 race 全套及 vet、真实 MySQL/TLS 删除与幂等对账回归通过；Linux 实际运行 monitor 边界回归通过（原有权限测试中 root 不适用的一个子用例跳过）。线上历史采样确认瞬时进程扫描竞争仍保持 fail-closed，后续完整样本可安全收尾；重复对账已成功任务返回 409 `task_not_unknown`。浏览器任务页显示上述四条任务成功，无运行时错误。数据库备份 `/var/backups/101cloud/before-delete-reclaim-20261031.sql.gz`，后端和代理旧二进制备份均在同目录，后缀 `before-delete-reclaim-20261031`。
+
+2026-10-31 用户与配额页筛选栏重叠已修复，仅前端部署 `.111`：发布目录 `/srv/101cloud/releases/20261031-users-layout`，前一版本链接记录在 `/var/backups/101cloud/frontend-before-users-layout-20261031.link`。原因是 antd `Space wrap` 的负下边距（-8px）抵消了 `mb-3`，表头上移 4px 压住控件；改为与节点/网络页一致的 flex 工具栏，筛选项左侧、"创建用户"右侧。验证：类型检查/lint/构建通过；线上浏览器测得 1440px 宽度时控件与表头间距 8px，卡片收窄到 520px 换行时 12px，无运行时错误。
