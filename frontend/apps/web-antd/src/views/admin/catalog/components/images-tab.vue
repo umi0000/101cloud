@@ -91,11 +91,17 @@ function textOk(s: string, max: number) {
 
 async function submitCreate() {
   const f = createForm.value;
-  if (!CODE_PATTERN.test(f.code) || !CODE_PATTERN.test(f.version)) {
-    return message.warning('代码与版本须为字母或数字开头，1–64 位字母、数字、_ . -');
+  if ((f.code && !CODE_PATTERN.test(f.code)) || (f.version && !CODE_PATTERN.test(f.version))) {
+    return message.warning('代码与版本可留空；填写时须为字母或数字开头，1–64 位字母、数字、_ . -');
   }
   if (!textOk(f.architecture, 32)) return message.warning('架构为 1–32 个字符');
-  if (!SHA256_PATTERN.test(f.fingerprint)) return message.warning('指纹须为 64 位十六进制 SHA-256');
+  const fingerprint = f.fingerprint.trim().toLowerCase();
+  if (/^[0-9a-f]{12}$/.test(fingerprint)) {
+    return message.warning(
+      '这是 incus image list 默认显示的 12 位短指纹；请用 incus image list -c lFd 或 incus image info <短指纹> 查看 64 位完整指纹',
+    );
+  }
+  if (!SHA256_PATTERN.test(fingerprint)) return message.warning('指纹须为 64 位十六进制 SHA-256 完整指纹');
   if (!textOk(f.os_name, 64) || !textOk(f.os_release, 64)) return message.warning('系统名称与版本为 1–64 个字符');
   const properties = { gpu_ready: f.gpu_ready, os_name: f.os_name, os_release: f.os_release };
   const bad = jsonForbidden(properties);
@@ -103,7 +109,7 @@ async function submitCreate() {
   const body = {
     architecture: f.architecture,
     code: f.code,
-    fingerprint: f.fingerprint.toLowerCase(),
+    fingerprint,
     instance_type: f.instance_type,
     properties,
     version: f.version,
@@ -219,21 +225,25 @@ onMounted(() => list.load());
     >
       <Alert
         class="mb-3"
-        message="只登记节点上已有的本地镜像，不会下载或上传。名称由后端生成为“代码 版本”。登记后只能修改 properties 和状态。"
+        message="只登记节点上已有的本地镜像，不会下载或上传。代码和版本可留空：留空时代码取指纹前 12 位、版本为 1，名称为“系统名称 系统版本（代码）”；填写时名称为“代码 版本”。登记后只能修改 properties 和状态。"
         show-icon
         type="info"
       />
       <Form layout="vertical" @change="action.resetKey()">
         <div class="grid grid-cols-2 gap-x-3">
-          <FormItem label="代码" required><Input v-model:value="createForm.code" class="font-mono" /></FormItem>
-          <FormItem label="版本" required><Input v-model:value="createForm.version" class="font-mono" /></FormItem>
+          <FormItem label="代码"><Input v-model:value="createForm.code" class="font-mono" placeholder="留空则取指纹前 12 位" /></FormItem>
+          <FormItem label="版本"><Input v-model:value="createForm.version" class="font-mono" placeholder="留空则为 1" /></FormItem>
           <FormItem label="类型" required>
             <Select v-model:value="createForm.instance_type" :options="typeOptions" />
           </FormItem>
           <FormItem label="架构" required><Input v-model:value="createForm.architecture" class="font-mono" /></FormItem>
         </div>
-        <FormItem label="指纹（SHA-256）" required extra="64 位十六进制，即 incus image list 中的完整 fingerprint">
-          <Input v-model:value="createForm.fingerprint" class="font-mono" :maxlength="64" />
+        <FormItem
+          label="指纹（SHA-256）"
+          required
+          extra="64 位完整指纹。incus image list 默认只显示 12 位短指纹，请用 incus image list -c lFd 或 incus image info <短指纹> 查看完整值"
+        >
+          <Input v-model:value="createForm.fingerprint" class="font-mono" :maxlength="80" />
         </FormItem>
         <div class="grid grid-cols-2 gap-x-3">
           <FormItem label="系统名称" required><Input v-model:value="createForm.os_name" placeholder="ubuntu" /></FormItem>

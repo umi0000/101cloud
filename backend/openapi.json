@@ -13376,10 +13376,12 @@
         "type": "object",
         "properties": {
           "code": {
-            "type": "string"
+            "type": "string",
+            "description": "Optional. Empty or omitted defaults to the first 12 hex characters of fingerprint; the generated name then becomes \"os_name os_release (code)\"."
           },
           "version": {
-            "type": "string"
+            "type": "string",
+            "description": "Optional. Empty or omitted defaults to \"1\"."
           },
           "instance_type": {
             "type": "string",
@@ -13417,8 +13419,6 @@
           }
         },
         "required": [
-          "code",
-          "version",
           "instance_type",
           "architecture",
           "fingerprint",

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"strings"
+	"unicode/utf8"
 
 	"101cloud/backend/internal/platform"
 	"github.com/gin-gonic/gin"
@@ -381,12 +382,20 @@ func validateImageProperties(p map[string]any) error {
 	return secretFree(p)
 }
 func imageValues(b imageInput, actor uint64) (platform.Row, error) {
-	if !codeValid(b.Code) || !codeValid(b.Version) || !enum(b.InstanceType, "container", "virtual-machine") || !textValid(b.Architecture, 32) {
-		return nil, invalid("invalid image identity/type/architecture")
-	}
 	fp, e := hex.DecodeString(b.Fingerprint)
 	if e != nil || len(fp) != 32 {
 		return nil, invalid("image fingerprint must be SHA-256 hex")
+	}
+	// Code and version are optional labels; defaults keep (code, version) unique per fingerprint.
+	defaultIdentity := b.Code == ""
+	if b.Code == "" {
+		b.Code = strings.ToLower(b.Fingerprint[:12])
+	}
+	if b.Version == "" {
+		b.Version = "1"
+	}
+	if !codeValid(b.Code) || !codeValid(b.Version) || !enum(b.InstanceType, "container", "virtual-machine") || !textValid(b.Architecture, 32) {
+		return nil, invalid("invalid image identity/type/architecture")
 	}
 	if e = validateImageProperties(b.Properties); e != nil {
 		return nil, e
@@ -400,7 +409,11 @@ func imageValues(b imageInput, actor uint64) (platform.Row, error) {
 	if !textValid(osName, 64) || !textValid(osRelease, 64) {
 		return nil, invalid("properties.os_name and os_release required")
 	}
-	return platform.Row{"code": b.Code, "version": b.Version, "name": b.Code + " " + b.Version, "source_type": "local", "fingerprint": fp, "architecture": b.Architecture, "image_type": b.InstanceType, "gpu_ready": gpu, "os_name": osName, "os_release": osRelease, "properties": jsonString(b.Properties), "status": "active", "created_by_user_id": actor}, nil
+	name := b.Code + " " + b.Version
+	if label := osName + " " + osRelease + " (" + b.Code + ")"; defaultIdentity && utf8.RuneCountInString(label) <= 128 {
+		name = label
+	}
+	return platform.Row{"code": b.Code, "version": b.Version, "name": name, "source_type": "local", "fingerprint": fp, "architecture": b.Architecture, "image_type": b.InstanceType, "gpu_ready": gpu, "os_name": osName, "os_release": osRelease, "properties": jsonString(b.Properties), "status": "active", "created_by_user_id": actor}, nil
 }
 func planValues(c *gin.Context, a *platform.App, b planInput, publish bool) (platform.Row, error) {
 	if !codeValid(b.Code) || !codeValid(b.Version) || !textValid(b.Name, 128) || !enum(b.InstanceType, "container", "virtual-machine") {
