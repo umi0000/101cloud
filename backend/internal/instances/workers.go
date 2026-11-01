@@ -226,6 +226,15 @@ func workerOperation(ctx context.Context, a *platform.App, j platform.Job, key s
 	}
 	v, err = a.WaitOperation(ctx, j.NodeID, op)
 	if err != nil {
+		if confirmed != nil {
+			ok, observeErr := confirmed()
+			if observeErr == nil && ok {
+				if stepErr := a.Step(ctx, j, key, op, "succeeded"); stepErr != nil {
+					return nil, platform.Unknown(stepErr)
+				}
+				return platform.Row{}, nil
+			}
+		}
 		return nil, platform.Unknown(err)
 	}
 	m, err := workerMetadata(v)
@@ -345,6 +354,12 @@ func workerRetainedCreationError(cause error) error {
 	return platform.EDetails(409, platform.Text(public["code"]), platform.Text(public["message"]), platform.Row(details))
 }
 func workerConfirm(ctx context.Context, a *platform.App, j platform.Job, r platform.Row, state, event string, extra platform.Row) error {
+	return workerConfirmStep(ctx, a, j, r, state, event, extra, "")
+}
+
+// The resize checkpoint and its accounting cutover commit together. Recovery
+// must not end/reopen the new held sessions after START has been submitted.
+func workerConfirmStep(ctx context.Context, a *platform.App, j platform.Job, r platform.Row, state, event string, extra platform.Row, stepKey string) error {
 	return a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
 		if err := lockWorkerAccount(db, a, j, platform.Uint(r["user_id"])); err != nil {
 			return err
@@ -364,7 +379,17 @@ func workerConfirm(ctx context.Context, a *platform.App, j platform.Job, r platf
 			return err
 		}
 		if event != "" {
-			return billing.InstanceUsage(ctx, db, locked, event, nil)
+			if err = billing.InstanceUsage(ctx, db, locked, event, nil); err != nil {
+				return err
+			}
+		}
+		if stepKey != "" {
+			now := a.Time()
+			step := platform.Row{"task_id": j.ID, "step_key": stepKey, "attempt": j.LeaseGeneration, "status": "succeeded", "parameters_redacted": "{}", "started_at": now, "finished_at": now}
+			if err = db.Table("task_steps").Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "task_id"}, {Name: "step_key"}, {Name: "attempt"}}, DoUpdates: clause.AssignmentColumns([]string{"status", "finished_at"})}).Create(&step).Error; err != nil {
+				return err
+			}
+			return db.Table("tasks").Where("id=? AND lease_generation=?", j.ID, j.LeaseGeneration).Update("phase", stepKey).Error
 		}
 		return nil
 	})
@@ -718,11 +743,11 @@ func runLifecycle(ctx context.Context, a *platform.App, j platform.Job) error {
 	if err != nil {
 		return workerUnknown(ctx, a, j, r, err)
 	}
-	if state != want || action == "restart" {
-		prior, e := workerStep(ctx, a, j, "state."+action)
-		if e != nil {
-			return e
-		}
+	prior, e := workerStep(ctx, a, j, "state."+action)
+	if e != nil {
+		return e
+	}
+	if state != want || action == "restart" || prior != nil {
 		if prior == nil {
 			if e = check(); e != nil {
 				if errors.Is(e, workerSkipped) {
@@ -836,7 +861,16 @@ func runLifecycle(ctx context.Context, a *platform.App, j platform.Job) error {
 	if state != want {
 		return workerUnknown(ctx, a, j, r, errors.New("lifecycle operation has not reached its required state"))
 	}
-	if err = workerConfirm(ctx, a, j, r, state, event, nil); err != nil {
+	var confirmedResources platform.Row
+	if action == "stop" && p["resize_resources"] != nil {
+		target := object(p["resize_resources"])
+		if platform.Uint(target["vcpus"]) == 0 || platform.Uint(target["memory_bytes"]) == 0 || platform.Uint(target["disk_bytes"]) == 0 {
+			return workerUnknown(ctx, a, j, r, errors.New("resize stop reservation is incomplete"))
+		}
+		confirmedResources = platform.Row{"vcpus": target["vcpus"], "memory_bytes": target["memory_bytes"], "disk_bytes": target["disk_bytes"]}
+		event = "resize_stopped"
+	}
+	if err = workerConfirm(ctx, a, j, r, state, event, confirmedResources); err != nil {
 		return workerUnknown(ctx, a, j, r, err)
 	}
 	if action == "start" {
@@ -1038,6 +1072,7 @@ func runResize(ctx context.Context, a *platform.App, j platform.Job) error {
 	var p struct {
 		Resources Resources `json:"resources"`
 		Previous  Resources `json:"previous_resources"`
+		Restart   bool      `json:"restart_after_resize"`
 	}
 	if err = json.Unmarshal(j.Parameters, &p); err != nil {
 		return err
@@ -1045,31 +1080,6 @@ func runResize(ctx context.Context, a *platform.App, j platform.Job) error {
 	if p.Resources.VCPUs == 0 || p.Resources.MemoryBytes == "" || p.Resources.DiskBytes == "" {
 		return errors.New("resize resources missing")
 	}
-	m, etag, err := workerObserve(ctx, a, r)
-	if err != nil {
-		return workerUnknown(ctx, a, j, r, err)
-	}
-	if etag == "" {
-		return errors.New("native instance omitted ETag; resize cannot protect concurrent configuration")
-	}
-	state, err := workerState(ctx, a, r)
-	if err != nil {
-		return workerUnknown(ctx, a, j, r, err)
-	}
-	if state != "stopped" {
-		return errors.New("resize requires a confirmed stopped instance")
-	}
-	body := workerWritable(m)
-	cfg := object(body["config"])
-	devices := object(body["devices"])
-	root := object(devices["root"])
-	if platform.Text(root["type"]) != "disk" || platform.Text(root["path"]) != "/" || platform.Text(root["pool"]) != platform.Text(r["storage_pool"]) {
-		return errors.New("resize root device changed")
-	}
-	cfg["limits.cpu"] = strconv.FormatUint(p.Resources.VCPUs, 10)
-	cfg["limits.memory"] = p.Resources.MemoryBytes
-	root["size"] = p.Resources.DiskBytes
-	devices["root"] = root
 	confirmed := func() (bool, error) {
 		v, _, e := workerObserve(ctx, a, r)
 		if e != nil {
@@ -1081,40 +1091,116 @@ func runResize(ctx context.Context, a *platform.App, j platform.Job) error {
 	if err != nil {
 		return err
 	}
-	if prior == nil {
-		old, e := workerByteSize(p.Previous.DiskBytes)
+	checkpoint, err := workerStep(ctx, a, j, "resize.confirmed")
+	if err != nil {
+		return err
+	}
+	startIntent, err := workerStep(ctx, a, j, "state.start")
+	if err != nil {
+		return err
+	}
+	settled := checkpoint != nil && platform.Text(checkpoint["status"]) == "succeeded"
+	if startIntent != nil && (!p.Restart || !settled) {
+		return workerUnknown(ctx, a, j, r, errors.New("resize start intent lacks its accounting checkpoint"))
+	}
+	// Once START has an intent, neither STOP nor resize may be dispatched again.
+	// Even a changed native configuration is an unknown outcome, not replay authority.
+	if !settled && startIntent == nil {
+		if prior == nil {
+			old, e := workerByteSize(p.Previous.DiskBytes)
+			if e != nil {
+				return e
+			}
+			next, e := workerByteSize(p.Resources.DiskBytes)
+			if e != nil {
+				return e
+			}
+			if next < old {
+				return errors.New("disk shrinking is forbidden")
+			}
+			if e = workerDiskCapacity(ctx, a, r, next-old); e != nil {
+				return workerUnknown(ctx, a, j, r, e)
+			}
+			if p.Restart {
+				stop := j
+				stop.Type = "instance.stop"
+				stop.Parameters = json.RawMessage(jsonText(platform.Row{"force": false, "reason": "instance resize", "resize_resources": p.Resources}))
+				if e = runLifecycle(ctx, a, stop); e != nil {
+					return e
+				}
+			}
+		}
+		m, etag, e := workerObserve(ctx, a, r)
 		if e != nil {
-			return e
-		}
-		next, e := workerByteSize(p.Resources.DiskBytes)
-		if e != nil {
-			return e
-		}
-		if next < old {
-			return errors.New("disk shrinking is forbidden")
-		}
-		if e = workerDiskCapacity(ctx, a, r, next-old); e != nil {
 			return workerUnknown(ctx, a, j, r, e)
 		}
-	}
-	_, err = workerOperation(ctx, a, j, "resize.native", func() (map[string]any, error) {
-		v, _, e := a.AgentConditional(ctx, j.NodeID, http.MethodPut, workerPath(r, ""), body, etag)
-		return v, e
-	}, confirmed)
-	if err != nil {
-		return workerUnknown(ctx, a, j, r, err)
+		state, e := workerState(ctx, a, r)
+		if e != nil || state != "stopped" {
+			if e == nil {
+				e = errors.New("resize requires a confirmed stopped instance; earlier intent cannot authorize another stop")
+			}
+			return workerUnknown(ctx, a, j, r, e)
+		}
+		if etag == "" {
+			return workerUnknown(ctx, a, j, r, errors.New("native instance omitted ETag; resize cannot protect concurrent configuration"))
+		}
+		body := workerWritable(m)
+		cfg := object(body["config"])
+		devices := object(body["devices"])
+		root := object(devices["root"])
+		if platform.Text(root["type"]) != "disk" || platform.Text(root["path"]) != "/" || platform.Text(root["pool"]) != platform.Text(r["storage_pool"]) {
+			return workerUnknown(ctx, a, j, r, errors.New("resize root device changed"))
+		}
+		cfg["limits.cpu"] = strconv.FormatUint(p.Resources.VCPUs, 10)
+		cfg["limits.memory"] = p.Resources.MemoryBytes
+		root["size"] = p.Resources.DiskBytes
+		devices["root"] = root
+		_, err = workerOperation(ctx, a, j, "resize.native", func() (map[string]any, error) {
+			v, _, e := a.AgentConditional(ctx, j.NodeID, http.MethodPut, workerPath(r, ""), body, etag)
+			return v, e
+		}, confirmed)
+		if err != nil {
+			return workerUnknown(ctx, a, j, r, err)
+		}
+		ok, e := confirmed()
+		if e != nil || !ok {
+			if e == nil {
+				e = errors.New("resized resources do not match approval")
+			}
+			return workerUnknown(ctx, a, j, r, e)
+		}
+		if err = workerConfirmStep(ctx, a, j, r, "stopped", "resize", platform.Row{"vcpus": p.Resources.VCPUs, "memory_bytes": p.Resources.MemoryBytes, "disk_bytes": p.Resources.DiskBytes, "provisioning_state": "ready"}, "resize.confirmed"); err != nil {
+			return workerUnknown(ctx, a, j, r, err)
+		}
 	}
 	ok, err := confirmed()
 	if err != nil || !ok {
 		if err == nil {
-			err = errors.New("resized resources do not match approval")
+			err = errors.New("resized resources changed after confirmation; refusing lifecycle replay")
 		}
 		return workerUnknown(ctx, a, j, r, err)
 	}
-	if err = workerConfirm(ctx, a, j, r, "stopped", "resize", platform.Row{"vcpus": p.Resources.VCPUs, "memory_bytes": p.Resources.MemoryBytes, "disk_bytes": p.Resources.DiskBytes, "provisioning_state": "ready"}); err != nil {
+	want := "stopped"
+	if p.Restart {
+		want = "running"
+		start := j
+		start.Type = "instance.start"
+		start.Parameters = json.RawMessage(`{"force":false}`)
+		if err = runLifecycle(ctx, a, start); err != nil {
+			return err
+		}
+	}
+	state, err := workerState(ctx, a, r)
+	if err != nil || state != want {
+		if err == nil {
+			err = errors.New("resize final state does not match its approved restart policy")
+		}
 		return workerUnknown(ctx, a, j, r, err)
 	}
-	return a.TaskResult(ctx, j, platform.Row{"instance_id": strconv.FormatUint(j.InstanceID, 10), "resources": p.Resources})
+	if err = workerConfirm(ctx, a, j, r, state, "", platform.Row{"provisioning_state": "ready"}); err != nil {
+		return workerUnknown(ctx, a, j, r, err)
+	}
+	return a.TaskResult(ctx, j, platform.Row{"instance_id": strconv.FormatUint(j.InstanceID, 10), "resources": p.Resources, "restart_after_resize": p.Restart, "observed_state": state})
 }
 
 func workerAbsent(ctx context.Context, a *platform.App, r platform.Row) (bool, error) {
@@ -1151,6 +1237,10 @@ func runDelete(ctx context.Context, a *platform.App, j platform.Job) error {
 	if platform.Text(r["observed_state"]) == "deleted" {
 		return nil
 	}
+	p, err := workerParams(j)
+	if err != nil {
+		return err
+	}
 	old, err := workerStep(ctx, a, j, "delete.native")
 	if err != nil {
 		return err
@@ -1171,9 +1261,12 @@ func runDelete(ctx context.Context, a *platform.App, j platform.Job) error {
 			return workerUnknown(ctx, a, j, r, e)
 		}
 		if state != "stopped" {
+			if old != nil {
+				return workerUnknown(ctx, a, j, r, errors.New("delete intent already exists; refusing to replay stop"))
+			}
 			stop := j
 			stop.Type = "instance.stop"
-			stop.Parameters = json.RawMessage(`{"force":false,"reason":"instance deletion"}`)
+			stop.Parameters = json.RawMessage(jsonText(platform.Row{"force": platform.Bool(p["force"]), "reason": "instance deletion"}))
 			if e = runLifecycle(ctx, a, stop); e != nil {
 				return e
 			}
@@ -1182,6 +1275,13 @@ func runDelete(ctx context.Context, a *platform.App, j platform.Job) error {
 	_, err = workerOperation(ctx, a, j, "delete.native", func() (map[string]any, error) {
 		if _, _, e := workerObserve(ctx, a, r); e != nil {
 			return nil, e
+		}
+		state, e := workerState(ctx, a, r)
+		if e != nil {
+			return nil, e
+		}
+		if state != "stopped" {
+			return nil, errors.New("native deletion requires a freshly confirmed stopped instance")
 		}
 		return a.Agent(ctx, j.NodeID, http.MethodDelete, workerPath(r, ""), nil)
 	}, func() (bool, error) { return workerAbsent(ctx, a, r) })

@@ -267,7 +267,7 @@ export const instancesApi = {
   ) => post<TaskAccepted>('/admin/custom-instances', body, w),
   delete: (
     id: ID,
-    body: { confirm_name: string; delete_data: true },
+    body: { confirm_data_loss_risk?: boolean; confirm_name: string; delete_data: true; mode?: 'force' },
     w: Write,
   ) => del<TaskAccepted>(ai(id), body, w),
   detachGPU: (
@@ -312,7 +312,7 @@ export const instancesApi = {
     patch<Instance>(ai(id), { name }, w),
   resize: (
     id: ID,
-    body: { policy_versions?: PolicyVersions; resources: Resources },
+    body: { confirm_restart?: boolean; policy_versions?: PolicyVersions; resources: Resources },
     w: Write,
   ) => post<TaskAccepted>(ai(id, '/resize'), body, w),
   resizeLimits: (id: ID) => detail<ResizeLimits>(ai(id, '/resize-limits')),

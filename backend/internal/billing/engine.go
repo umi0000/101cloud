@@ -120,7 +120,7 @@ func pristineCreationSession(s, instance, ac row) bool {
 	return platform.Uint(s["account_id"]) == platform.Uint(ac["id"]) && platform.Uint(s["user_id"]) == platform.Uint(instance["user_id"]) && platform.Uint(s["node_id"]) == platform.Uint(instance["node_id"]) && platform.Uint(s["instance_id"]) == platform.Uint(instance["id"]) && platform.Text(s["status"]) == "active" && s["ended_at"] == nil && platform.Uint(s["metered_microseconds"]) == 0 && dec(s["cumulative_expected_pt"]).IsZero() && stamp(s["started_at"]).Equal(stamp(s["last_settled_at"])) && ((state == "held" && (kind == "base_compute" || kind == "gpu")) || (state == "running" && kind == "storage"))
 }
 func InstanceUsage(ctx context.Context, db *gorm.DB, instance row, event string, allocationIDs []uint64) error {
-	if !in(event, "disk_reserved", "running", "stopped", "deleted", "resize", "resize_reserved", "gpu_reserved", "gpu_attached", "gpu_released") {
+	if !in(event, "disk_reserved", "running", "stopped", "resize_stopped", "deleted", "resize", "resize_reserved", "resize_running_reserved", "gpu_reserved", "gpu_attached", "gpu_released") {
 		return invalid("unsupported usage lifecycle event")
 	}
 	db = db.WithContext(ctx)
@@ -134,33 +134,40 @@ func InstanceUsage(ctx context.Context, db *gorm.DB, instance row, event string,
 	}
 	t := now()
 	iid := platform.Uint(instance["id"])
-	if event == "resize_reserved" {
+	if event == "resize_reserved" || event == "resize_running_reserved" {
 		ss, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}), "usage_sessions", "instance_id = ? AND status = 'active' AND charge_kind IN ('base_compute','storage')", iid)
 		if e != nil {
 			return e
 		}
 		for _, s := range ss {
-			s["config_snapshot"] = jsonValue(row{"vcpus": instance["vcpus"], "memory_bytes": sid(instance["memory_bytes"]), "disk_bytes": sid(instance["disk_bytes"])})
-			if platform.Text(s["charge_kind"]) == "base_compute" {
-				s["cpu_hourly_pt"] = instance["cpu_hourly_pt"]
-				s["memory_gib_hourly_pt"] = instance["memory_gib_hourly_pt"]
-			} else {
-				s["disk_gib_hourly_pt"] = instance["disk_gib_hourly_pt"]
+			// Price only the reservation request at the proposed size. In particular,
+			// a running resize must settle the old session at its original snapshot
+			// and rates when STOP is confirmed, never retroactively at the new size.
+			reservationRate := row{}
+			for key, value := range s {
+				reservationRate[key] = value
 			}
-			if e = reserveWindow(db, ac, p, s, t, true); e != nil {
+			reservationRate["config_snapshot"] = jsonValue(row{"vcpus": instance["vcpus"], "memory_bytes": sid(instance["memory_bytes"]), "disk_bytes": sid(instance["disk_bytes"])})
+			if platform.Text(s["charge_kind"]) == "base_compute" {
+				reservationRate["cpu_hourly_pt"] = instance["cpu_hourly_pt"]
+				reservationRate["memory_gib_hourly_pt"] = instance["memory_gib_hourly_pt"]
+			} else {
+				reservationRate["disk_gib_hourly_pt"] = instance["disk_gib_hourly_pt"]
+			}
+			if e = reserveWindow(db, ac, p, reservationRate, t, true); e != nil {
 				return e
 			}
 		}
 		return nil
 	}
-	if in(event, "stopped", "deleted", "resize") {
+	if in(event, "stopped", "resize_stopped", "deleted", "resize") {
 		ss, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}), "usage_sessions", "instance_id = ? AND status = 'active'", iid)
 		if e != nil {
 			return e
 		}
 		for _, s := range ss {
 			kind := platform.Text(s["charge_kind"])
-			if event == "stopped" && (kind == "gpu" || (kind == "storage" && platform.Text(p["storage_charge_mode"]) == "retained")) {
+			if in(event, "stopped", "resize_stopped") && (kind == "gpu" || (kind == "storage" && platform.Text(p["storage_charge_mode"]) == "retained")) {
 				continue
 			}
 			if event == "resize" && kind == "gpu" {
@@ -169,6 +176,11 @@ func InstanceUsage(ctx context.Context, db *gorm.DB, instance row, event string,
 			if e = endSession(db, ac, p, s, t); e != nil {
 				return e
 			}
+		}
+		if event == "resize_stopped" {
+			// STOP settlement closes the old compute snapshot and reserves the
+			// replacement held session in one account-locked transaction.
+			return beginSession(db, ac, p, instance, "base_compute", nil, "held", t)
 		}
 		if event != "resize" {
 			return nil

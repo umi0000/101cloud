@@ -6,6 +6,10 @@
 
 实例调整容量预览：`GET /api/v1/instances/:id/resize-limits`（管理员使用 `/api/v1/admin/instances/:id/resize-limits`）按所属用户配额、节点可分配容量和 custom 常驻预算返回此实例可调整到的总资源上限。响应 `data.max_resources` 的 `vcpus` 为整数，`memory_bytes`、`disk_bytes` 为十进制字符串。聚合排除此实例；与正式准入共用预留统计，保留未知状态占用，仅释放有明确安全标记的创建失败预留；停止的 elastic 实例只在节点层释放 CPU/内存，不释放磁盘。接口只读、不查询 Agent、不报价、不预留或修改配置；所属用户未启用、配额缺失、实例数量超额或节点未验证/离线/资源观测过期时返回错误，不能视作无限容量。套餐范围和磁盘不可缩小约束仍适用，最终 POST 在原有锁下重新准入。MySQL 回归使用 `CLOUD_TEST_MYSQL_ADMIN_DSN`（需要创建/删除隔离测试数据库权限）；未设置时跳过。
 
+实例 resize/delete 由后端单个持久化任务编排，客户端不得串联 stop/resize/start 或 stop/delete。resize 的 `confirm_restart` 可选，但运行中必须为 `true`；非管理员 custom 实例还须同时拥有 resize、stop、start 权限。运行中正常关机确认后改配置、确认配置后启动，原已停止实例保持停止。任务保存 `restart_after_resize:true`、`previous_resources` 和期望 running，步骤为 `state.stop → resize.native → resize.confirmed → state.start`；进入启动意图后恢复不得重放早先停机或配置步骤。套餐、配额、节点/常驻预算、resize-limits 和磁盘禁止缩容约束不变。
+
+删除必须精确确认实例名并提交 `delete_data:true`。运行中删除仅管理员可用，另须 `mode:"force"`、`confirm_data_loss_risk:true`；强停可能丢失未保存数据。同一持久化任务保存 force=true，确认强停后才向 Agent 发 DELETE，确认删除后获取新鲜 GPU 实际占用证据才释放分配。超时/未知保留预留并核对记录操作，不盲目重放破坏性步骤；普通用户仅可删除已停止实例。
+
 ## 1. 部署前准备
 
 推荐使用 Linux 服务器，准备：

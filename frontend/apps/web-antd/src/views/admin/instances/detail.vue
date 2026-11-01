@@ -154,6 +154,9 @@ const age = computed(() => {
 /* ---------- 操作 ---------- */
 
 const busy = computed(() => !!i.value?.active_task_id);
+const lifecycleReady = computed(() => i.value?.provisioning_state === 'ready' && !i.value.state_stale
+  && ['running', 'stopped'].includes(i.value.observed_state));
+const running = computed(() => i.value?.observed_state === 'running');
 const ifMatch = () => inst.etag.value;
 const conflict = () => reload().catch(errorToast);
 
@@ -216,10 +219,10 @@ async function submitPower() {
   return afterAccepted(r, `${POWER_NAMES[kind]}实例`);
 }
 
-// 调整规格
+// 修改实例规格
 const resizeOpen = ref(false);
 
-// 删除
+// 销毁实例
 const deleteOpen = ref(false);
 const deleteAction = useAction();
 function openDelete() {
@@ -228,11 +231,17 @@ function openDelete() {
 }
 async function submitDelete() {
   const name = i.value?.name ?? '';
+  if (!lifecycleReady.value || busy.value || !i.value?.capabilities.delete) return false;
+  const body: Parameters<typeof instancesApi.delete>[1] = { confirm_name: name, delete_data: true };
+  if (running.value) {
+    body.mode = 'force';
+    body.confirm_data_loss_risk = true;
+  }
   const r = await deleteAction.run(
-    (key) => instancesApi.delete(id, { confirm_name: name, delete_data: true }, { ifMatch: ifMatch(), key }),
-    { onConflict: conflict, success: '已提交删除' },
+    (key) => instancesApi.delete(id, body, { ifMatch: ifMatch(), key }),
+    { onConflict: conflict, success: '已提交销毁实例' },
   );
-  return afterAccepted(r, '删除实例');
+  return afterAccepted(r, '销毁实例');
 }
 
 // 控制台
@@ -303,8 +312,8 @@ function resourcesText(x: Instance) {
               <Button v-if="i.capabilities.start" :disabled="busy" type="primary" @click="openPower('start')">启动</Button>
               <Button v-if="i.observed_state === 'running'" :disabled="busy" @click="openPower('restart')">重启</Button>
               <Button v-if="i.capabilities.stop" :disabled="busy" @click="openPower('stop')">停止</Button>
-              <Button v-if="i.observed_state === 'stopped'" :disabled="busy" @click="resizeOpen = true">调整规格</Button>
-              <Button v-if="i.observed_state === 'stopped'" danger :disabled="busy" @click="openDelete">删除</Button>
+              <Button v-if="lifecycleReady" :disabled="busy || !i.capabilities.resize" @click="resizeOpen = true">修改实例规格</Button>
+              <Button v-if="lifecycleReady" danger :disabled="busy || !i.capabilities.delete" @click="openDelete">销毁实例</Button>
             </template>
           </Space>
         </div>
@@ -427,10 +436,12 @@ function resourcesText(x: Instance) {
         v-model:open="deleteOpen"
         :confirm-name="i.name"
         danger
-        description="实例和磁盘数据将被永久删除。实例必须处于近期确认的已停止状态。"
-        ok-text="删除"
+        :description="running ? '执行此操作将强制关闭实例，然后永久删除实例及磁盘数据，未保存的数据会丢失' : '实例和磁盘数据将被永久删除。'"
+        :disabled="!lifecycleReady || busy || !i.capabilities.delete"
+        ok-text="销毁实例"
         :on-confirm="submitDelete"
-        title="删除实例"
+        :risk-text="running ? '我确认强制关闭可能丢失未保存的数据，且实例及磁盘数据将被永久删除' : ''"
+        title="销毁实例"
       />
 
       <ConsoleDrawer ref="consoleRef" :etag="inst.etag.value" :instance="i" />

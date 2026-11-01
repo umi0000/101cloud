@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 /**
- * 调整规格（实例须已停止）。custom：自由资源；elastic：受套餐 allowed_overrides 限制并发送套餐 policy_versions。
+ * 修改实例规格（运行中须确认重启）。custom：自由资源；elastic：受套餐 allowed_overrides 限制并发送套餐 policy_versions。
  * 磁盘不可缩容。后端没有调整规格的报价接口，不显示新费用。
  */
 import type { Instance, OverrideKey, Plan, ResizeLimits, Resources } from '#/api/types';
@@ -24,6 +24,10 @@ const GIB = 1024n ** 3n;
 const form = ref({ disk_gib: 0, memory_gib: 0, vcpus: 0 });
 const action = useAction();
 const elastic = computed(() => props.instance.product_type === 'elastic');
+const running = computed(() => props.instance.observed_state === 'running');
+const lifecycleDisabled = computed(() => props.instance.provisioning_state !== 'ready'
+  || props.instance.state_stale || !!props.instance.active_task_id || !props.instance.capabilities.resize
+  || !['running', 'stopped'].includes(props.instance.observed_state));
 
 const limits = ref<null | ResizeLimits>(null);
 const limitsLoading = ref(false);
@@ -59,6 +63,7 @@ watch([open, () => props.instance.id], ([visible]) => {
 }, { flush: 'sync', immediate: true });
 onBeforeUnmount(() => { ++limitsRequest; });
 watch(form, () => action.resetKey(), { deep: true });
+watch(running, () => action.resetKey());
 
 type ResKey = Exclude<OverrideKey, 'gpu_count'>;
 interface Bound {
@@ -166,15 +171,16 @@ const stepGib = (key: 'disk_bytes' | 'memory_bytes') => {
 
 async function submit() {
   const r = resources.value;
-  if (!r || problems.value.length > 0) return false;
+  if (!r || lifecycleDisabled.value || problems.value.length > 0) return false;
   const body: Parameters<typeof instancesApi.resize>[1] = { resources: r };
+  if (running.value) body.confirm_restart = true;
   if (elastic.value && props.plan) body.policy_versions = { ...props.plan.policy_versions };
   const res = await action.run((key) => instancesApi.resize(props.instance.id, body, { ifMatch: props.etag, key }), {
     onConflict: () => emit('done'),
-    success: '已提交调整规格',
+    success: '已提交修改实例规格',
   });
   if (!res) return false;
-  trackAccepted(res.data, '调整规格', () => emit('done'));
+  trackAccepted(res.data, '修改实例规格', () => emit('done'));
   emit('done');
   return true;
 }
@@ -183,10 +189,11 @@ async function submit() {
 <template>
   <ConfirmAction
     v-model:open="open"
-    :description="`${elastic ? '标准实例还受套餐范围限制。' : '自定义实例不受套餐范围限制。'}允许总量按用户配额、节点容量及常驻预算计算，已排除当前实例占用；提交时重新校验。`"
-    :disabled="inputsDisabled || problems.length > 0"
+    :description="`${running ? '执行此操作将重启实例：正常停止后修改规格，再重新启动。' : ''}${elastic ? '标准实例还受套餐范围限制。' : '自定义实例不受套餐范围限制。'}允许总量按用户配额、节点容量及常驻预算计算，已排除当前实例占用；提交时重新校验。`"
+    :disabled="lifecycleDisabled || inputsDisabled || problems.length > 0"
     :on-confirm="submit"
-    title="调整规格"
+    :risk-text="running ? '我确认执行此操作将重启实例，期间服务会中断' : ''"
+    title="修改实例规格"
   >
     <Alert v-if="limitsLoading" class="mb-3" message="正在读取所有者配额和节点可用容量，暂不可提交。" show-icon type="info" />
     <Alert v-else-if="limitsError" class="mb-3" :message="describeError(limitsError).text" show-icon type="error">

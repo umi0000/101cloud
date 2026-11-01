@@ -426,8 +426,10 @@ export type ProvisioningState =
 
 export interface Capabilities {
   console: boolean;
+  delete: boolean;
   gpu_attach: boolean;
   gpu_rebind: boolean;
+  resize: boolean;
   start: boolean;
   stop: boolean;
 }

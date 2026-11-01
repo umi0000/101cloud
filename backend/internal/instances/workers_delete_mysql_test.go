@@ -94,6 +94,7 @@ func deletionDB(t *testing.T, handler http.Handler, intent, operation string) (*
 	t.Helper()
 	db, a, job, _, _ := creationCleanupDB(t, handler)
 	job.Type = "instance.delete"
+	job.Parameters = json.RawMessage(`{}`)
 	updates := []struct {
 		table string
 		where string

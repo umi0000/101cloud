@@ -335,6 +335,7 @@ func lifecycle(c *gin.Context, a *platform.App, action string) (any, error) {
 		Confirm        bool              `json:"confirm_data_loss_risk"`
 		ConfirmName    string            `json:"confirm_name"`
 		DeleteData     bool              `json:"delete_data"`
+		ConfirmRestart bool              `json:"confirm_restart"`
 		Resources      Resources         `json:"resources"`
 		PolicyVersions map[string]string `json:"policy_versions"`
 	}
@@ -388,15 +389,31 @@ func lifecycle(c *gin.Context, a *platform.App, action string) (any, error) {
 			return nil, e
 		}
 	case "delete":
-		if platform.Text(r["observed_state"]) != "stopped" || a.Time().Sub(platform.Stamp(r["observed_at"])) > time.Minute {
-			return nil, conflict("invalid_state", "Deletion requires fresh confirmed stopped state")
+		state := platform.Text(r["observed_state"])
+		if (state != "stopped" && state != "running") || a.Time().Sub(platform.Stamp(r["observed_at"])) > time.Minute {
+			return nil, conflict("invalid_state", "Deletion requires fresh confirmed stopped or running state")
+		}
+		if state == "running" && (!force || !in.Confirm) {
+			return nil, conflict("force_confirmation_required", "Running deletion requires administrator force mode and data loss risk confirmation")
 		}
 		if in.ConfirmName != platform.Text(r["logical_name"]) || !in.DeleteData {
 			return nil, bad("Exact name and delete_data confirmation required")
 		}
 	case "resize":
-		if platform.Text(r["observed_state"]) != "stopped" {
-			return nil, conflict("unsupported_configuration", "Stop the instance before resizing")
+		state := platform.Text(r["observed_state"])
+		restart := state == "running"
+		if state != "stopped" && !restart {
+			return nil, conflict("unsupported_configuration", "Resize requires a confirmed stopped or running instance")
+		}
+		if restart {
+			if !in.ConfirmRestart {
+				return nil, bad("Running resize requires confirm_restart")
+			}
+			for _, required := range []string{"stop", "start"} {
+				if e = permitted(c, r, required); e != nil {
+					return nil, e
+				}
+			}
 		}
 		if _, _, e = validResources(in.Resources); e != nil {
 			return nil, e
@@ -427,6 +444,13 @@ func lifecycle(c *gin.Context, a *platform.App, action string) (any, error) {
 				return nil, e
 			}
 		}
+		reserved := in.Resources
+		if restart {
+			// Keep the larger reservation until native resize is confirmed: the
+			// old guest still consumes its original resources before STOP.
+			reserved.VCPUs = max(reserved.VCPUs, platform.Uint(r["vcpus"]))
+			reserved.MemoryBytes = strconv.FormatUint(max(mustUint(reserved.MemoryBytes), platform.Uint(r["memory_bytes"])), 10)
+		}
 		if e = reserveExisting(c.Request.Context(), a, db, r, &in.Resources); e != nil {
 			return nil, e
 		}
@@ -440,12 +464,17 @@ func lifecycle(c *gin.Context, a *platform.App, action string) (any, error) {
 		if e = billing.AdmitInstance(c.Request.Context(), db, proposed, "resize"); e != nil {
 			return nil, e
 		}
-		if e = billing.InstanceUsage(c.Request.Context(), db, proposed, "resize_reserved", nil); e != nil {
+		usageEvent := "resize_reserved"
+		if restart {
+			usageEvent = "resize_running_reserved"
+		}
+		if e = billing.InstanceUsage(c.Request.Context(), db, proposed, usageEvent, nil); e != nil {
 			return nil, e
 		}
 		params["resources"] = in.Resources
+		params["restart_after_resize"] = restart
 		params["previous_resources"] = Resources{platform.Uint(r["vcpus"]), strconv.FormatUint(platform.Uint(r["memory_bytes"]), 10), strconv.FormatUint(platform.Uint(r["disk_bytes"]), 10)}
-		if e = db.Table("instances").Where("id=?", id).Updates(platform.Row{"vcpus": in.Resources.VCPUs, "memory_bytes": mustUint(in.Resources.MemoryBytes), "disk_bytes": mustUint(in.Resources.DiskBytes)}).Error; e != nil {
+		if e = db.Table("instances").Where("id=?", id).Updates(platform.Row{"vcpus": reserved.VCPUs, "memory_bytes": mustUint(reserved.MemoryBytes), "disk_bytes": mustUint(reserved.DiskBytes)}).Error; e != nil {
 			return nil, e
 		}
 	}
@@ -453,7 +482,7 @@ func lifecycle(c *gin.Context, a *platform.App, action string) (any, error) {
 	if action == "delete" {
 		desired = "deleted"
 	}
-	if action == "resize" {
+	if action == "resize" && !platform.Bool(params["restart_after_resize"]) {
 		desired = "stopped"
 	}
 	if e = db.Table("instances").Where("id=?", id).Updates(platform.Row{"desired_state": desired, "revision": gorm.Expr("revision+1")}).Error; e != nil {
@@ -560,6 +589,11 @@ func lockOwnerAccount(db *gorm.DB, owner uint64) error {
 }
 func instanceView(c *gin.Context, a *platform.App, r platform.Row) (platform.Row, error) {
 	out := instanceDTO(a, r)
+	caps := out["capabilities"].(platform.Row)
+	state := platform.Text(r["observed_state"])
+	ready := platform.Text(r["provisioning_state"]) == "ready" && !platform.Bool(out["state_stale"])
+	caps["resize"] = ready && (state == "running" || state == "stopped") && permitted(c, r, "resize") == nil && (state != "running" || (permitted(c, r, "stop") == nil && permitted(c, r, "start") == nil))
+	caps["delete"] = ready && (state == "stopped" || (state == "running" && c.GetBool("admin"))) && permitted(c, r, "delete") == nil
 	db := platform.DB(c, a)
 	var active []platform.Row
 	if e := db.Table("tasks").Select("id").Where("instance_id=? AND is_instance_mutation=1 AND status IN ?", r["id"], []string{"queued", "running", "waiting", "unknown"}).Order("id DESC").Limit(1).Find(&active).Error; e != nil {
@@ -579,6 +613,7 @@ func instanceView(c *gin.Context, a *platform.App, r platform.Row) (platform.Row
 		out["credit_enforcement"] = platform.Row{"status": platform.Text(event["status"]), "event_id": strconv.FormatUint(platform.Uint(event["id"]), 10), "shutdown_deadline": platform.Stamp(event["shutdown_deadline"]).Format(time.RFC3339Nano)}
 		caps := out["capabilities"].(platform.Row)
 		caps["start"] = false
+		caps["resize"] = false
 		caps["gpu_attach"] = false
 		caps["gpu_rebind"] = false
 	}
