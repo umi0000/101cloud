@@ -11,6 +11,7 @@ const props = withDefaults(
   defineProps<{
     confirmName?: string;
     danger?: boolean;
+    disabled?: boolean;
     description?: string;
     okText?: string;
     onConfirm: () => Promise<boolean | undefined> | boolean | undefined;
@@ -20,6 +21,7 @@ const props = withDefaults(
   {
     confirmName: '',
     danger: false,
+    disabled: false,
     description: '',
     okText: '确认',
     riskText: '',
@@ -40,6 +42,7 @@ watch(open, (v) => {
 
 const valid = computed(
   () =>
+    !props.disabled &&
     (!props.confirmName || typedName.value === props.confirmName) &&
     (!props.riskText || risk.value),
 );

@@ -108,6 +108,10 @@ export interface Resources {
   vcpus: number;
 }
 
+export interface ResizeLimits {
+  max_resources: Resources;
+}
+
 export interface GPURequest {
   access_mode: AccessMode;
   count: number;

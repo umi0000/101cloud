@@ -313,9 +313,8 @@ func reserveExisting(ctx context.Context, a *platform.App, db *gorm.DB, r platfo
 		}
 		return e
 	}
-	id := platform.Uint(r["id"])
-	var user, node platform.Row
-	if e = db.Table("instances").Select("COUNT(*) AS instances,COALESCE(SUM(vcpus),0) AS vcpus,COALESCE(SUM(memory_bytes),0) AS memory_bytes,COALESCE(SUM(disk_bytes),0) AS disk_bytes,COALESCE(SUM(product_type='custom'),0) AS resident").Where("user_id=? AND deleted_at IS NULL AND NOT (provisioning_state='failed' AND incus_uuid IS NULL AND COALESCE(JSON_EXTRACT(incus_config_snapshot,'$.creation_reservations_released') = true, 0)) AND id<>?", owner, id).Take(&user).Error; e != nil {
+	user, e := reservationUsage(db, r, false)
+	if e != nil {
 		return e
 	}
 	v, m, d := platform.Uint(r["vcpus"]), platform.Uint(r["memory_bytes"]), platform.Uint(r["disk_bytes"])
@@ -344,10 +343,11 @@ func reserveExisting(ctx context.Context, a *platform.App, db *gorm.DB, r platfo
 	if e != nil {
 		return e
 	}
-	if platform.Text(n["administrative_state"]) != "active" || platform.Text(n["health"]) != "online" || platform.Stamp(n["connection_verified_at"]).IsZero() || a.Time().Sub(platform.Stamp(n["resources_sampled_at"])) > time.Minute {
-		return conflict("node_unavailable", "资源准入需要已验证、在线且资源观测未过期的节点，请管理员检查节点状态。")
+	if e = admissionNodeAvailable(a, n); e != nil {
+		return e
 	}
-	if e = db.Table("instances").Select("COALESCE(SUM(CASE WHEN product_type='custom' OR desired_state<>'stopped' OR observed_state<>'stopped' OR provisioning_state<>'ready' THEN vcpus ELSE 0 END),0) AS vcpus,COALESCE(SUM(CASE WHEN product_type='custom' OR desired_state<>'stopped' OR observed_state<>'stopped' OR provisioning_state<>'ready' THEN memory_bytes ELSE 0 END),0) AS memory_bytes,COALESCE(SUM(disk_bytes),0) AS disk_bytes,COALESCE(SUM(CASE WHEN product_type='custom' THEN vcpus ELSE 0 END),0) AS resident_vcpus,COALESCE(SUM(CASE WHEN product_type='custom' THEN memory_bytes ELSE 0 END),0) AS resident_memory,COALESCE(SUM(CASE WHEN product_type='custom' THEN disk_bytes ELSE 0 END),0) AS resident_disk").Where("node_id=? AND deleted_at IS NULL AND NOT (provisioning_state='failed' AND incus_uuid IS NULL AND COALESCE(JSON_EXTRACT(incus_config_snapshot,'$.creation_reservations_released') = true, 0)) AND id<>?", r["node_id"], id).Take(&node).Error; e != nil {
+	node, e := reservationUsage(db, r, true)
+	if e != nil {
 		return e
 	}
 	for _, check := range []struct {

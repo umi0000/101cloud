@@ -11,6 +11,7 @@ import (
 
 	"101cloud/backend/internal/platform"
 	driver "github.com/go-sql-driver/mysql"
+	"gorm.io/gorm"
 )
 
 func TestAdmissionCapacityDetailsPreserveIntegers(t *testing.T) {
@@ -28,7 +29,8 @@ func TestAdmissionCapacityDetailsPreserveIntegers(t *testing.T) {
 
 // Exercise the actual admission aggregation against MySQL, including JSON NULL
 // semantics. This isolated schema contains only columns read by reserveExisting.
-func TestMySQLAdmissionDimensionsAndReleasedReservations(t *testing.T) {
+func admissionMySQLFixture(t *testing.T) (*gorm.DB, *platform.App) {
+	t.Helper()
 	dsn := os.Getenv("CLOUD_TEST_MYSQL_ADMIN_DSN")
 	if dsn == "" {
 		t.Skip("set CLOUD_TEST_MYSQL_ADMIN_DSN for isolated admission regression")
@@ -42,7 +44,7 @@ func TestMySQLAdmissionDimensionsAndReleasedReservations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer owner.Close()
+	t.Cleanup(func() { owner.Close() })
 	var nonce [8]byte
 	if _, err = rand.Read(nonce[:]); err != nil {
 		t.Fatal(err)
@@ -51,7 +53,7 @@ func TestMySQLAdmissionDimensionsAndReleasedReservations(t *testing.T) {
 	if _, err = owner.Exec("CREATE DATABASE `" + name + "`"); err != nil {
 		t.Fatal(err)
 	}
-	defer owner.Exec("DROP DATABASE `" + name + "`")
+	t.Cleanup(func() { owner.Exec("DROP DATABASE `" + name + "`") })
 	cfg.DBName = name
 	db, err := platform.OpenDB(platform.Config{DSN: cfg.FormatDSN()})
 	if err != nil {
@@ -61,7 +63,7 @@ func TestMySQLAdmissionDimensionsAndReleasedReservations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer connection.Close()
+	t.Cleanup(func() { connection.Close() })
 	for _, statement := range []string{
 		"CREATE TABLE users (id BIGINT PRIMARY KEY,status VARCHAR(20))",
 		"CREATE TABLE user_limits (user_id BIGINT PRIMARY KEY,max_instances BIGINT,max_vcpus BIGINT,max_memory_bytes BIGINT,max_disk_bytes BIGINT,max_resident_instances BIGINT)",
@@ -76,7 +78,12 @@ func TestMySQLAdmissionDimensionsAndReleasedReservations(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	a := platform.New(db, platform.Config{})
+	return db, platform.New(db, platform.Config{})
+}
+
+func TestMySQLAdmissionDimensionsAndReleasedReservations(t *testing.T) {
+	db, a := admissionMySQLFixture(t)
+	var err error
 	request := platform.Row{"user_id": uint64(1), "node_id": uint64(1), "product_type": "custom", "vcpus": uint64(2), "memory_bytes": uint64(2), "disk_bytes": uint64(2)}
 	for _, tc := range []struct{ table, column, scope, resource, used, want, limit string }{
 		{"user_limits", "max_instances", "user_quota", "instances", "1", "1", "1"},

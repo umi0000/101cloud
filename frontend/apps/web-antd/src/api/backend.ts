@@ -42,6 +42,7 @@ import type {
   PolicyVersion,
   PolicyVersions,
   RedemptionCode,
+  ResizeLimits,
   Resources,
   Task,
   TaskAccepted,
@@ -314,6 +315,7 @@ export const instancesApi = {
     body: { policy_versions?: PolicyVersions; resources: Resources },
     w: Write,
   ) => post<TaskAccepted>(ai(id, '/resize'), body, w),
+  resizeLimits: (id: ID) => detail<ResizeLimits>(ai(id, '/resize-limits')),
 };
 
 /* ---------------- 管理端：控制台 ---------------- */

@@ -180,6 +180,9 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 			platform.SetETag(c, r)
 			return instanceView(c, a, r)
 		}))
+		g.GET("/instances/:id/resize-limits", platform.Handle(func(c *gin.Context) (any, error) {
+			return resizeLimits(c, a)
+		}))
 		g.PATCH("/instances/:id", platform.Handle(func(c *gin.Context) (any, error) {
 			r, e := owned(c, a)
 			if e != nil {

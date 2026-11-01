@@ -4,6 +4,8 @@
 
 后端自身提供 **HTTP**，默认 `127.0.0.1:8080`。浏览器入口的 HTTPS 交给 Nginx/Caddy；Host Agent 仍使用独立的 HTTPS 和证书指纹认证。当前不提供 NAT 或端口映射。
 
+实例调整容量预览：`GET /api/v1/instances/:id/resize-limits`（管理员使用 `/api/v1/admin/instances/:id/resize-limits`）按所属用户配额、节点可分配容量和 custom 常驻预算返回此实例可调整到的总资源上限。响应 `data.max_resources` 的 `vcpus` 为整数，`memory_bytes`、`disk_bytes` 为十进制字符串。聚合排除此实例；与正式准入共用预留统计，保留未知状态占用，仅释放有明确安全标记的创建失败预留；停止的 elastic 实例只在节点层释放 CPU/内存，不释放磁盘。接口只读、不查询 Agent、不报价、不预留或修改配置；所属用户未启用、配额缺失、实例数量超额或节点未验证/离线/资源观测过期时返回错误，不能视作无限容量。套餐范围和磁盘不可缩小约束仍适用，最终 POST 在原有锁下重新准入。MySQL 回归使用 `CLOUD_TEST_MYSQL_ADMIN_DSN`（需要创建/删除隔离测试数据库权限）；未设置时跳过。
+
 ## 1. 部署前准备
 
 推荐使用 Linux 服务器，准备：

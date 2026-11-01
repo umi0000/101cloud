@@ -8617,6 +8617,20 @@
         }
       }
     },
+    "/admin/instances/{id}/resize-limits": {
+      "get": {
+        "operationId": "get_admin_instances_id_resize_limits",
+        "tags": ["instances"],
+        "description": "Administrator read-only preview using the instance owner's quota, node capacity and custom resident budget. No capacity bypass, agent query, pricing or reservation; missing quota or unavailable node fails closed.",
+        "parameters": [{ "in": "path", "name": "id", "required": true, "schema": { "type": "string", "pattern": "^[1-9][0-9]*$" } }],
+        "responses": {
+          "200": { "description": "Total resource maxima", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResizeLimitsResponse" } } } },
+          "403": { "description": "Owner inactive" },
+          "404": { "description": "Instance or node not found" },
+          "409": { "description": "Quota missing/exceeded or node unavailable" }
+        }
+      }
+    },
     "/admin/instances/{id}/resize": {
       "post": {
         "operationId": "post_admin_instances_id_resize",
@@ -10903,6 +10917,20 @@
         }
       }
     },
+    "/instances/{id}/resize-limits": {
+      "get": {
+        "operationId": "get_instances_id_resize_limits",
+        "tags": ["instances"],
+        "description": "Read-only capacity preview for an owned instance; requires resize permission. Never queries the agent, prices or reserves resources. Missing owner quota, inactive owner, exceeded instance counts and unavailable/stale/unverified nodes fail closed.",
+        "parameters": [{ "in": "path", "name": "id", "required": true, "schema": { "type": "string", "pattern": "^[1-9][0-9]*$" } }],
+        "responses": {
+          "200": { "description": "Total resource maxima", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ResizeLimitsResponse" } } } },
+          "403": { "description": "Resize not permitted or owner inactive" },
+          "404": { "description": "Instance not found (including other owners) or node missing" },
+          "409": { "description": "Quota missing/exceeded or node unavailable" }
+        }
+      }
+    },
     "/instances/{id}/resize": {
       "post": {
         "operationId": "post_instances_id_resize",
@@ -11449,6 +11477,31 @@
       }
     },
     "schemas": {
+      "ResizeLimitsResponse": {
+        "type": "object",
+        "required": ["data", "request_id"],
+        "properties": {
+          "data": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["max_resources"],
+            "properties": {
+              "max_resources": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Total allowed instance size, excluding its own reservation; min of owner quota, node capacity and custom resident budget. Not an increment or a reservation; POST revalidates. Plan bounds and disk no-shrink still apply.",
+                "required": ["vcpus", "memory_bytes", "disk_bytes"],
+                "properties": {
+                  "vcpus": { "type": "integer", "minimum": 0, "maximum": 65535 },
+                  "memory_bytes": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" },
+                  "disk_bytes": { "type": "string", "pattern": "^(0|[1-9][0-9]*)$" }
+                }
+              }
+            }
+          },
+          "request_id": { "type": "string" }
+        }
+      },
       "Error": {
         "type": "object",
         "properties": {
