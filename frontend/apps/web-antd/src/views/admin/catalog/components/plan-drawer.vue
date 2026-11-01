@@ -430,7 +430,7 @@ async function save() {
       <div class="grid grid-cols-2 gap-x-3">
         <FormItem
           label="GPU 型号"
-          extra="留空 = 不提供 GPU。可从已发布的 GPU 定价政策中选择，或直接输入"
+          extra="留空 = 不提供 GPU。可从 GPU 定价配置档中选择，或直接输入"
         >
           <AutoComplete v-model:value="form.gpu_model" allow-clear :disabled="readonly || isVM" :options="gpuModelOptions" />
         </FormItem>
@@ -513,7 +513,7 @@ async function save() {
       <Divider orientation="left" plain>政策版本</Divider>
       <div class="grid grid-cols-2 gap-x-3">
         <FormItem v-for="kind in REQUIRED_POLICIES" :key="kind" :label="POLICY_KIND_NAMES[kind]" required>
-          <Select v-model:value="form.policy[kind]" :options="policyOptions(kind)" placeholder="选择已发布版本" />
+          <Select v-model:value="form.policy[kind]" :options="policyOptions(kind)" placeholder="选择配置档" />
         </FormItem>
         <FormItem v-if="hasModel" label="GPU 定价" required>
           <Select v-model:value="form.policy['gpu-pricing']" :options="policyOptions('gpu-pricing')" placeholder="选择已发布版本" />

@@ -398,12 +398,10 @@ export const policiesApi = {
   ) => post<PolicyVersion>(pv(kind), body, w),
   get: (kind: PolicyKind, id: ID) => detail<PolicyVersion>(pv(kind, `/${id}`)),
   list: (kind: PolicyKind, q?: Query) => list<PolicyVersion>(pv(kind), q),
-  publish: (kind: PolicyKind, id: ID, effective_at: string, w: Write) =>
-    post<PolicyVersion>(pv(kind, `/${id}/publish`), { effective_at }, w),
   putBindings: (body: Record<PolicyKind, ID>, w: Write) =>
     put<PlatformBindings>('/admin/platform-policy-bindings', body, w),
-  retire: (kind: PolicyKind, id: ID, w: Write) =>
-    post<PolicyVersion>(pv(kind, `/${id}/retire`), {}, w),
+  remove: (kind: PolicyKind, id: ID, w: Write) =>
+    del<null>(pv(kind, `/${id}`), {}, w),
   update: (
     kind: PolicyKind,
     id: ID,

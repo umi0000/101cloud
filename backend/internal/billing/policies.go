@@ -3,6 +3,7 @@ package billing
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"time"
 
@@ -259,9 +260,62 @@ func validateBindingShape(bindings map[string]string) error {
 func validateBindingVersion(kind string, p row, at time.Time) error {
 	effective := stamp(p["effective_at"])
 	if platform.Text(p["kind"]) != kind || platform.Text(p["status"]) != "active" || effective.IsZero() || effective.After(at) {
-		return invalid("each binding must reference an already effective published policy of the same kind")
+		return invalid("each binding must reference an already effective active policy of the same kind")
 	}
 	return nil
+}
+
+// policyUsage describes, in Chinese, everything that still references a policy
+// profile: the platform default binding, plans and instances (policy_versions
+// JSON or legacy source FKs), and the source-row history tables. Empty means the
+// profile may be deleted without breaking a reference.
+func policyUsage(db *gorm.DB, kind string, p row) (string, error) {
+	var bound int64
+	if e := db.Table("platform_policy_bindings").Where("policy_id = ?", p["id"]).Count(&bound).Error; e != nil {
+		return "", e
+	}
+	if bound > 0 {
+		return "该配置档是平台当前默认配置，请先切换默认配置后再删除。", nil
+	}
+	type usageCheck struct {
+		label, unit, table, where string
+		args                      []any
+	}
+	id, source := sid(p["id"]), platform.Uint(p["source_id"])
+	// Plans and instances store {kind: policy_versions.id} and, for economic
+	// kinds, the legacy source row id in a typed column.
+	sourceColumn := map[string]string{"pricing": "pricing_version_id", "credit": "credit_policy_version_id", "gpu-idle": "idle_policy_version_id"}[kind]
+	checks := []usageCheck{}
+	for _, t := range []struct{ label, table string }{{"套餐", "instance_plans"}, {"实例", "instances"}} {
+		where, args := "JSON_UNQUOTE(JSON_EXTRACT(policy_versions, ?)) = ?", []any{`$."` + kind + `"`, id}
+		if sourceColumn != "" && source != 0 {
+			where, args = "("+where+" OR "+sourceColumn+" = ?)", append(args, source)
+		}
+		checks = append(checks, usageCheck{t.label, "个", t.table, where, args})
+	}
+	if source != 0 {
+		for _, t := range map[string][]struct{ label, unit, table, column string }{
+			"pricing":     {{"计费区间", "条", "usage_sessions", "pricing_version_id"}},
+			"gpu-pricing": {{"GPU", "张", "node_gpus", "gpu_price_version_id"}, {"GPU 分配记录", "条", "gpu_allocations", "gpu_price_version_id"}, {"计费区间", "条", "usage_sessions", "gpu_price_version_id"}},
+			"credit":      {{"额度账户", "个", "credit_accounts", "credit_policy_version_id"}, {"每日发放记录", "条", "credit_daily_grants", "policy_version_id"}, {"额度耗尽事件", "条", "credit_enforcements", "policy_version_id"}},
+		}[kind] {
+			checks = append(checks, usageCheck{t.label, t.unit, t.table, t.column + " = ?", []any{source}})
+		}
+	}
+	used := []string{}
+	for _, check := range checks {
+		var n int64
+		if e := db.Table(check.table).Where(check.where, check.args...).Count(&n).Error; e != nil {
+			return "", e
+		}
+		if n > 0 {
+			used = append(used, strconv.FormatInt(n, 10)+" "+check.unit+check.label)
+		}
+	}
+	if len(used) == 0 {
+		return "", nil
+	}
+	return "该配置档仍被 " + strings.Join(used, "、") + " 引用，不能删除。", nil
 }
 func registerPolicies(a *platform.App, g *gin.RouterGroup) {
 	g.GET("/policies/:kind/versions", platform.Handle(func(c *gin.Context) (any, error) {
@@ -287,13 +341,13 @@ func registerPolicies(a *platform.App, g *gin.RouterGroup) {
 			return nil, e
 		}
 		db := platform.DB(c, a)
-		r := row{"kind": c.Param("kind"), "code": b.Code, "version": b.Version, "config": jsonValue(typed), "status": "draft", "created_by_user_id": platform.Current(c).ID}
+		r := row{"kind": c.Param("kind"), "code": b.Code, "version": b.Version, "config": jsonValue(typed), "status": "active", "effective_at": now(), "created_by_user_id": platform.Current(c).ID}
 		if table := economicTable(c.Param("kind")); table != "" {
 			s := sourceFields(c.Param("kind"), typed)
 			s["code"] = b.Code
 			s["version"] = b.Version
-			s["status"] = "draft"
-			s["effective_at"] = now()
+			s["status"] = r["status"]
+			s["effective_at"] = r["effective_at"]
 			s["created_by_user_id"] = platform.Current(c).ID
 			source, e := insert(db, table, s)
 			if e != nil {
@@ -322,9 +376,8 @@ func registerPolicies(a *platform.App, g *gin.RouterGroup) {
 		if e != nil {
 			return nil, e
 		}
-		if platform.Text(r["status"]) != "draft" {
-			return nil, conflict("invalid_state", "only draft config can be changed")
-		}
+		// Profiles are edited in place. Billing snapshots rates at admission, so
+		// pricing edits apply to new instances; credit config is read live.
 		var b struct {
 			Config json.RawMessage `json:"config"`
 		}
@@ -334,6 +387,22 @@ func registerPolicies(a *platform.App, g *gin.RouterGroup) {
 		typed, e := validatePolicy(c.Param("kind"), b.Config)
 		if e != nil {
 			return nil, e
+		}
+		if next, ok := typed.(GPUPriceConfig); ok {
+			var previous GPUPriceConfig
+			if e = json.Unmarshal([]byte(platform.Text(r["config"])), &previous); e != nil {
+				return nil, e
+			}
+			if previous.Model != next.Model || previous.Access != next.Access {
+				// node_gpus admission requires the price model/access mode to match the card.
+				var n int64
+				if e = platform.DB(c, a).Table("node_gpus").Where("gpu_price_version_id = ?", r["source_id"]).Count(&n).Error; e != nil {
+					return nil, e
+				}
+				if n > 0 {
+					return nil, conflict("configuration_conflict", "该配置档已用于 "+strconv.FormatInt(n, 10)+" 张 GPU，不能修改 GPU 型号或独占/共享模式；请新建配置档。")
+				}
+			}
 		}
 		r, e = platform.Save(c, a, "policy_versions", r, row{"config": jsonValue(typed)})
 		if e != nil {
@@ -347,62 +416,40 @@ func registerPolicies(a *platform.App, g *gin.RouterGroup) {
 		platform.SetETag(c, r)
 		return policyDTO(r), nil
 	}))
-	for _, action := range []string{"publish", "retire"} {
-		action := action
-		g.POST("/policies/:kind/versions/:id/"+action, platform.Handle(func(c *gin.Context) (any, error) {
-			r, e := policyRow(c, a, true)
-			if e != nil {
+	g.DELETE("/policies/:kind/versions/:id", platform.Handle(func(c *gin.Context) (any, error) {
+		r, e := policyRow(c, a, true)
+		if e != nil {
+			return nil, e
+		}
+		if e = platform.Revision(c, r); e != nil {
+			return nil, e
+		}
+		if e = platform.Decode(c, &struct{}{}); e != nil {
+			return nil, e
+		}
+		db := platform.DB(c, a)
+		usage, e := policyUsage(db, c.Param("kind"), r)
+		if e != nil {
+			return nil, e
+		}
+		if usage != "" {
+			return nil, conflict("configuration_conflict", usage)
+		}
+		res := db.Exec("DELETE FROM policy_versions WHERE id = ? AND revision = ?", r["id"], r["revision"])
+		if res.Error != nil {
+			return nil, res.Error
+		}
+		if res.RowsAffected != 1 {
+			return nil, platform.E(412, "revision_conflict", "resource changed")
+		}
+		if table := economicTable(c.Param("kind")); table != "" && platform.Uint(r["source_id"]) != 0 {
+			if e = db.Exec("DELETE FROM "+table+" WHERE id = ?", r["source_id"]).Error; e != nil {
 				return nil, e
 			}
-			changes := row{}
-			if action == "publish" {
-				var b struct {
-					Effective string `json:"effective_at"`
-				}
-				if e = platform.Decode(c, &b); e != nil {
-					return nil, e
-				}
-				if platform.Text(r["status"]) != "draft" {
-					return nil, conflict("invalid_state", "only a draft can be published")
-				}
-				t, e := parseTime(b.Effective)
-				if e != nil {
-					return nil, e
-				}
-				if _, e = validatePolicy(c.Param("kind"), json.RawMessage(platform.Text(r["config"]))); e != nil {
-					return nil, e
-				}
-				changes["status"] = "active"
-				changes["effective_at"] = t
-			} else {
-				if e = platform.Decode(c, &struct{}{}); e != nil {
-					return nil, e
-				}
-				if platform.Text(r["status"]) != "active" {
-					return nil, conflict("invalid_state", "only an active version can be retired")
-				}
-				var n int64
-				if e = platform.DB(c, a).Table("platform_policy_bindings").Where("policy_id = ?", r["id"]).Count(&n).Error; e != nil {
-					return nil, e
-				}
-				if n > 0 {
-					return nil, conflict("configuration_conflict", "replace the platform binding before retiring this policy")
-				}
-				changes["status"] = "retired"
-			}
-			r, e = platform.Save(c, a, "policy_versions", r, changes)
-			if e != nil {
-				return nil, e
-			}
-			if table := economicTable(c.Param("kind")); table != "" {
-				if e = platform.DB(c, a).Table(table).Where("id = ?", r["source_id"]).Updates(changes).Error; e != nil {
-					return nil, e
-				}
-			}
-			platform.SetETag(c, r)
-			return policyDTO(r), nil
-		}))
-	}
+		}
+		platform.Reply(c, 204, nil)
+		return nil, nil
+	}))
 	g.GET("/platform-policy-bindings", platform.Handle(func(c *gin.Context) (any, error) {
 		r, e := platform.Get(platform.DB(c, a), "policy_binding_sets", 1, false)
 		if e != nil {

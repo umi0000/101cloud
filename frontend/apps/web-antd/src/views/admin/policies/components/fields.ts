@@ -196,7 +196,7 @@ export function displayValue(field: PolicyField, value: unknown): string {
   }
 }
 
-/** 原样显示（发布对比）。 */
+/** 原样显示（未知选项、GPU 型号等）。 */
 export function rawValue(value: unknown): string {
   if (value === undefined || value === null) return '—';
   if (typeof value === 'string') return value;
@@ -370,15 +370,4 @@ export function configFromState(kind: PolicyKind, s: FormState): Record<string, 
     }
   }
   return out;
-}
-
-/** 发布对比用：两个版本 config 字段并集（先按定义顺序，再追加未定义的键）。 */
-export function diffKeys(kind: PolicyKind, a: Record<string, unknown>, b: Record<string, unknown>): string[] {
-  const keys = POLICY_FIELDS[kind].map((f) => f.key);
-  for (const k of [...Object.keys(a), ...Object.keys(b)]) if (!keys.includes(k)) keys.push(k);
-  return keys;
-}
-
-export function fieldOf(kind: PolicyKind, key: string): PolicyField | undefined {
-  return POLICY_FIELDS[kind].find((f) => f.key === key);
 }

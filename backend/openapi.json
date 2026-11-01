@@ -584,7 +584,7 @@
                     "minimum": 1
                   },
                   "gpu_price_version_id": {
-                    "description": "gpu-pricing policy version id (policy_versions.id). Unknown id or another kind: 422 validation_failed; unpublished, not yet effective, model or exclusive-slot mismatch: 422. null leaves the price unchanged.",
+                    "description": "gpu-pricing policy version id (policy_versions.id). Unknown id or another kind: 422 validation_failed; not active, model or exclusive-slot mismatch: 422. null leaves the price unchanged.",
                     "anyOf": [
                       {
                         "type": "string",
@@ -3129,7 +3129,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Explicit policy assignment for an existing idle account. Requires published effective credit policy, no active usage/shutdown event, and unchanged grant calendar after grants begin. Existing bucket grants are not duplicated.",
+        "description": "Explicit policy assignment for an existing idle account. Requires an active credit policy profile, no active usage/shutdown event, and unchanged grant calendar after grants begin. Existing bucket grants are not duplicated.",
         "parameters": [
           {
             "in": "path",
@@ -3165,7 +3165,7 @@
                 "type": "object",
                 "properties": {
                   "policy_version_id": {
-                    "description": "Published, effective credit policy version id (policy_versions.id); the same value returned as policy_version_id by credit-account list and detail.",
+                    "description": "Active credit policy profile id (policy_versions.id); the same value returned as policy_version_id by credit-account list and detail.",
                     "type": "string",
                     "pattern": "^[1-9][0-9]*$"
                   }
@@ -4180,7 +4180,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Administrator required. ",
+        "description": "Administrator required. Creates an active policy profile effective immediately; it can be bound as the platform default right away.",
         "parameters": [
           {
             "in": "path",
@@ -4325,7 +4325,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Administrator required. ",
+        "description": "Administrator required. Edits the profile config in place (any status). Credit config applies immediately to accounts on this profile; pricing rates are snapshotted at admission, so only new instances use edited rates. A gpu-pricing profile already assigned to GPUs cannot change gpu_model or access_mode: 409 configuration_conflict.",
         "parameters": [
           {
             "in": "path",
@@ -4415,6 +4415,75 @@
                 "additionalProperties": false
               }
             }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "delete_admin_policies_kind_versions_id",
+        "tags": [
+          "admin"
+        ],
+        "description": "Administrator required. Deletes the profile and its internal source row. 409 configuration_conflict (Chinese message naming the users) while it is the platform default binding or referenced by plans, instances, credit accounts/grants/shutdown events, GPUs, GPU allocations or usage sessions.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pricing",
+                "gpu-pricing",
+                "credit",
+                "gpu-scheduling",
+                "gpu-idle",
+                "metrics"
+              ]
+            }
+          },
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^\"rev-[0-9]+\"$"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Success"
+          },
+          "default": {
+            "$ref": "#/components/responses/ApiError"
           }
         }
       }
@@ -9282,221 +9351,6 @@
         }
       }
     },
-    "/admin/policies/{kind}/versions/{id}/publish": {
-      "post": {
-        "operationId": "post_admin_policies_kind_versions_id_publish",
-        "tags": [
-          "admin"
-        ],
-        "description": "Administrator required. ",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "kind",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "enum": [
-                "pricing",
-                "gpu-pricing",
-                "credit",
-                "gpu-scheduling",
-                "gpu-idle",
-                "metrics"
-              ]
-            }
-          },
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]*$"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-CSRF-Token",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128
-            }
-          },
-          {
-            "in": "header",
-            "name": "If-Match",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^\"rev-[0-9]+\"$"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "request_id"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/ApiError"
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "effective_at": {
-                    "type": "string",
-                    "format": "date-time"
-                  }
-                },
-                "required": [
-                  "effective_at"
-                ],
-                "additionalProperties": false
-              }
-            }
-          }
-        }
-      }
-    },
-    "/admin/policies/{kind}/versions/{id}/retire": {
-      "post": {
-        "operationId": "post_admin_policies_kind_versions_id_retire",
-        "tags": [
-          "admin"
-        ],
-        "description": "Administrator required. ",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "kind",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "enum": [
-                "pricing",
-                "gpu-pricing",
-                "credit",
-                "gpu-scheduling",
-                "gpu-idle",
-                "metrics"
-              ]
-            }
-          },
-          {
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^[1-9][0-9]*$"
-            }
-          },
-          {
-            "in": "header",
-            "name": "X-CSRF-Token",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "Idempotency-Key",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 128
-            }
-          },
-          {
-            "in": "header",
-            "name": "If-Match",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^\"rev-[0-9]+\"$"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "request_id"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/ApiError"
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {},
-                "required": [],
-                "additionalProperties": false
-              }
-            }
-          }
-        }
-      }
-    },
     "/admin/plans/{id}/publish": {
       "post": {
         "operationId": "post_admin_plans_id_publish",
@@ -12965,7 +12819,7 @@
             "minimum": 1,
             "maximum": 86400,
             "default": 600,
-            "description": "Explicit published grace; existing deadline events retain their captured value."
+            "description": "Explicit configured grace; existing deadline events retain their captured value."
           },
           "grace_charge_mode": {
             "type": "string",

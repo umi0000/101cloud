@@ -1,12 +1,17 @@
 <script lang="ts" setup>
-/** 政策与定价（前端设计 7.8）：左侧 6 类政策，右侧版本列表；详情抽屉中编辑/发布草稿、退役已发布版本。 */
-import type { PolicyKind, PolicyVersion } from '#/api/types';
+/**
+ * 政策与定价（前端设计 7.8）：左侧 6 类政策，右侧配置档列表。
+ * 点击配置档打开抽屉直接编辑：保存（PATCH）、设为平台默认（PUT 绑定）、删除（DELETE）；右上角新建配置档。
+ */
+import type { FormState } from './components/fields';
+
+import type { PlatformBindings, PolicyKind, PolicyVersion } from '#/api/types';
 
 import { computed, onMounted, ref, watch } from 'vue';
 
 import { Page } from '@vben/common-ui';
 
-import { Button, Card, Descriptions, DescriptionsItem, Drawer, Menu, MenuItem, Space, Table, Tag, Tooltip } from 'ant-design-vue';
+import { Alert, Button, Card, Descriptions, DescriptionsItem, Drawer, Form, Menu, MenuItem, Space, Table, Tag, Tooltip } from 'ant-design-vue';
 
 import { listAll, nodesApi, policiesApi } from '#/api/backend';
 import { POLICY_KINDS } from '#/api/types';
@@ -18,9 +23,8 @@ import UserName from '#/components/user-name.vue';
 import { errorToast, useAction, useCursorList, useResource } from '#/composables/api';
 import { POLICY_KIND_NAMES } from '#/locales/enums';
 
-import BindingsCard from './components/bindings-card.vue';
-import { configSummary, displayValue, POLICY_FIELDS, rawValue, versionLabel } from './components/fields';
-import PublishModal from './components/publish-modal.vue';
+import ConfigForm from './components/config-form.vue';
+import { configFromState, configSummary, emptyState, stateFromConfig, validateState, versionLabel } from './components/fields';
 import VersionEditor from './components/version-editor.vue';
 
 const kind = ref<PolicyKind>('pricing');
@@ -32,19 +36,10 @@ const menuKeys = computed({
   },
 });
 
-/* 版本列表（游标分页）。后端列表只接受 limit/cursor。 */
+/* 配置档列表（游标分页）。后端列表只接受 limit/cursor。 */
 const list = useCursorList<PolicyVersion>((q) => policiesApi.list(kind.value, q), ref({}));
 watch(kind, () => list.reset());
 
-/* 每类的全部版本：用于显示 `code v{version}`、绑定下拉和发布对比。 */
-const allVersions = ref<Partial<Record<PolicyKind, PolicyVersion[]>>>({});
-async function loadVersions(k: PolicyKind) {
-  try {
-    allVersions.value = { ...allVersions.value, [k]: await listAll((q) => policiesApi.list(k, q)) };
-  } catch (error) {
-    errorToast(error);
-  }
-}
 
 const bindings = useResource(() => policiesApi.bindings());
 async function reloadBindings() {
@@ -58,16 +53,12 @@ async function reloadBindings() {
 const columns = [
   { dataIndex: 'id', title: 'ID', width: 80 },
   { key: 'code', title: '编号 / 版本' },
-  { key: 'status', title: '状态', width: 150 },
+  { key: 'status', title: '状态', width: 120 },
   { key: 'summary', title: '关键配置' },
-  { key: 'effective', title: '生效时间', width: 130 },
   { key: 'created', title: '创建', width: 130 },
 ];
 
-const notYetEffective = (v: PolicyVersion) =>
-  v.status === 'active' && (!v.effective_at || Date.parse(v.effective_at) > Date.now());
-
-/* 详情 */
+/* 详情抽屉：直接编辑 config */
 const selected = ref<null | { id: string; kind: PolicyKind }>(null);
 const detail = useResource(() => (selected.value ? policiesApi.get(selected.value.kind, selected.value.id) : null));
 const drawerOpen = computed({
@@ -76,15 +67,24 @@ const drawerOpen = computed({
     if (!v) selected.value = null;
   },
 });
-const current = computed(() => (selected.value ? detail.data.value : null));
-const detailKind = computed(() => selected.value?.kind ?? kind.value);
-const isBound = computed(() => !!current.value && bindings.data.value?.bindings[current.value.kind] === current.value.id);
-const extraConfig = computed(() => {
-  const c = current.value;
-  if (!c) return [];
-  const known = new Set(POLICY_FIELDS[c.kind].map((f) => f.key));
-  return Object.entries(c.config).filter(([k]) => !known.has(k));
+const current = computed(() => {
+  const s = selected.value;
+  const d = detail.data.value;
+  return s && d && d.id === s.id && d.kind === s.kind ? d : null;
 });
+const isBound = computed(() => !!current.value && bindings.data.value?.bindings[current.value.kind] === current.value.id);
+
+const editState = ref<FormState>(emptyState('pricing'));
+const editSubmitted = ref(false);
+watch(current, (c) => {
+  if (!c) return;
+  editState.value = stateFromConfig(c.kind, c.config);
+  editSubmitted.value = false;
+});
+const editValidation = computed<ReturnType<typeof validateState>>(() =>
+  current.value ? validateState(current.value.kind, editState.value) : { cross: [], fields: {} },
+);
+const editErrors = computed<Record<string, string>>(() => (editSubmitted.value ? editValidation.value.fields : {}));
 
 async function reloadDetail() {
   try {
@@ -95,15 +95,66 @@ async function reloadDetail() {
 }
 
 async function openVersion(v: PolicyVersion) {
+  if (v.kind === 'gpu-pricing') void loadGpuModels();
   selected.value = { id: v.id, kind: v.kind };
   await reloadDetail();
 }
 
 async function afterWrite() {
-  await Promise.all([reloadDetail(), list.load(), loadVersions(detailKind.value)]);
+  await list.load();
 }
 
-/* GPU 型号候选：节点上已发现的 GPU 型号，首次打开 GPU 定价编辑时加载。失败时仍可手动输入。 */
+const saveAction = useAction();
+async function save() {
+  const c = current.value;
+  if (!c) return;
+  editSubmitted.value = true;
+  const v = editValidation.value;
+  if (Object.keys(v.fields).length > 0 || v.cross.length > 0) return;
+  const config = configFromState(c.kind, editState.value);
+  const r = await saveAction.run(() => policiesApi.update(c.kind, c.id, config, { ifMatch: detail.etag.value }), {
+    onConflict: reloadDetail,
+    success: '已保存',
+  });
+  if (!r) return;
+  await Promise.all([reloadDetail(), afterWrite()]);
+}
+
+/* 设为平台默认：提交完整 6 项映射，只替换当前 kind。 */
+const defaultOpen = ref(false);
+const defaultAction = useAction();
+async function setDefault() {
+  const c = current.value;
+  const b = bindings.data.value;
+  if (!c || !b) return false;
+  const body: PlatformBindings['bindings'] = { ...b.bindings };
+  body[c.kind] = c.id;
+  const r = await defaultAction.run((key) => policiesApi.putBindings(body, { ifMatch: bindings.etag.value, key }), {
+    onConflict: reloadBindings,
+    success: '已设为平台默认',
+  });
+  if (!r) return false;
+  await reloadBindings();
+  return true;
+}
+
+/* 删除：平台默认或仍被引用时后端返回 409，提示后端 message。 */
+const removeOpen = ref(false);
+const removeAction = useAction();
+async function remove() {
+  const c = current.value;
+  if (!c) return false;
+  const r = await removeAction.run((key) => policiesApi.remove(c.kind, c.id, { ifMatch: detail.etag.value, key }), {
+    onConflict: reloadDetail,
+    success: '已删除',
+  });
+  if (!r) return false;
+  selected.value = null;
+  await afterWrite();
+  return true;
+}
+
+/* GPU 型号候选：节点上已发现的 GPU 型号，首次新建或打开 GPU 定价时加载。失败时仍可手动输入。 */
 const gpuModels = ref<string[]>([]);
 let gpuModelsLoaded = false;
 async function loadGpuModels() {
@@ -119,63 +170,27 @@ async function loadGpuModels() {
   }
 }
 
-/* 新建 / 编辑草稿 */
+/* 新建配置档 */
 const editorOpen = ref(false);
-const editorDraft = ref<null | PolicyVersion>(null);
 const editorKind = ref<PolicyKind>('pricing');
-function openEditor(draft: null | PolicyVersion) {
-  editorDraft.value = draft;
-  editorKind.value = draft?.kind ?? kind.value;
+function openEditor() {
+  editorKind.value = kind.value;
   if (editorKind.value === 'gpu-pricing') void loadGpuModels();
   editorOpen.value = true;
 }
-async function onSaved(v: PolicyVersion) {
-  if (editorDraft.value) {
-    await afterWrite();
-    return;
-  }
-  void list.load();
-  void loadVersions(v.kind);
+async function onCreated(v: PolicyVersion) {
+  void afterWrite();
   await openVersion(v);
-}
-
-/* 发布 */
-const publishOpen = ref(false);
-
-/* 退役 */
-const retireOpen = ref(false);
-const retireAction = useAction();
-async function retire() {
-  const c = current.value;
-  if (!c) return false;
-  const r = await retireAction.run(
-    (key) => policiesApi.retire(c.kind, c.id, { ifMatch: detail.etag.value, key }),
-    { onConflict: reloadDetail, success: '已退役' },
-  );
-  if (!r) return false;
-  await afterWrite();
-  return true;
 }
 
 onMounted(() => {
   void list.load();
   void reloadBindings();
-  for (const k of POLICY_KINDS) void loadVersions(k);
 });
 </script>
 
 <template>
   <Page title="政策与定价">
-    <BindingsCard
-      class="mb-3"
-      :bindings="bindings.data.value"
-      :etag="bindings.etag.value"
-      :loading="bindings.loading.value"
-      :versions="allVersions"
-      @conflict="reloadBindings"
-      @saved="reloadBindings"
-    />
-
     <Card size="small">
       <div class="flex gap-3">
         <div class="w-36 shrink-0">
@@ -186,7 +201,7 @@ onMounted(() => {
         <div class="min-w-0 flex-1">
           <div class="mb-3 flex items-center justify-between">
             <span class="font-medium">{{ POLICY_KIND_NAMES[kind] }} <span class="text-muted-foreground font-mono text-xs">{{ kind }}</span></span>
-            <Button type="primary" @click="openEditor(null)">新建草稿</Button>
+            <Button type="primary" @click="openEditor">新建配置档</Button>
           </div>
           <Table
             :columns="columns"
@@ -195,19 +210,17 @@ onMounted(() => {
             :loading="list.loading.value"
             :pagination="false"
             row-key="id"
-            :scroll="{ x: 900 }"
+            :scroll="{ x: 800 }"
             size="small"
           >
             <template #bodyCell="{ column, record }">
               <span v-if="column.dataIndex === 'id'" class="font-mono">{{ record.id }}</span>
               <span v-else-if="column.key === 'code'" class="font-mono">{{ versionLabel(record as PolicyVersion) }}</span>
               <Space v-else-if="column.key === 'status'" :size="4" wrap>
-                <StatusTag kind="catalogStatus" :value="record.status" />
-                <Tag v-if="notYetEffective(record as PolicyVersion)" :bordered="false" color="processing">待生效</Tag>
                 <Tag v-if="bindings.data.value?.bindings[kind] === record.id" :bordered="false" color="blue">平台默认</Tag>
+                <StatusTag v-if="record.status === 'retired'" kind="catalogStatus" value="retired" />
               </Space>
               <span v-else-if="column.key === 'summary'" class="text-xs">{{ configSummary(record.kind, record.config) }}</span>
-              <TimeText v-else-if="column.key === 'effective'" :value="record.status === 'draft' ? null : record.effective_at" />
               <TimeText v-else-if="column.key === 'created'" :value="record.created_at" />
             </template>
           </Table>
@@ -224,81 +237,64 @@ onMounted(() => {
       </div>
     </Card>
 
-    <Drawer v-model:open="drawerOpen" :title="current ? versionLabel(current) : '政策版本'" :width="600">
+    <Drawer v-model:open="drawerOpen" :title="current ? versionLabel(current) : '配置档'" :width="640">
       <template v-if="current" #extra>
         <Space>
-          <template v-if="current.status === 'draft'">
-            <Button @click="openEditor(current)">编辑</Button>
-            <Button type="primary" @click="publishOpen = true">发布</Button>
-          </template>
-          <Tooltip v-else-if="current.status === 'active'" :title="isBound ? '该版本是平台默认绑定，请先在平台默认绑定中替换' : ''">
-            <Button danger :disabled="isBound" @click="retireOpen = true">退役</Button>
+          <Tag v-if="isBound" :bordered="false" color="blue">平台默认</Tag>
+          <Tooltip v-else :title="current.status === 'active' ? '' : '已退役的配置档不能设为平台默认'">
+            <Button
+              :disabled="current.status !== 'active' || !bindings.data.value || !bindings.etag.value"
+              @click="defaultOpen = true"
+            >
+              设为平台默认
+            </Button>
           </Tooltip>
+          <Tooltip :title="isBound ? '该配置档是平台默认，请先把其他配置档设为平台默认' : ''">
+            <Button danger :disabled="isBound" @click="removeOpen = true">删除</Button>
+          </Tooltip>
+          <Button :loading="saveAction.pending.value" type="primary" @click="save">保存</Button>
         </Space>
       </template>
       <template v-if="current">
-        <Descriptions bordered :column="1" size="small">
+        <Descriptions bordered :column="2" size="small">
           <DescriptionsItem label="ID"><span class="font-mono">{{ current.id }}</span></DescriptionsItem>
-          <DescriptionsItem label="类别">{{ POLICY_KIND_NAMES[current.kind] }}</DescriptionsItem>
           <DescriptionsItem label="编号 / 版本"><span class="font-mono">{{ current.code }} v{{ current.version }}</span></DescriptionsItem>
-          <DescriptionsItem label="状态">
-            <Space :size="4">
-              <StatusTag kind="catalogStatus" :value="current.status" />
-              <Tag v-if="notYetEffective(current)" :bordered="false" color="processing">待生效</Tag>
-              <Tag v-if="isBound" :bordered="false" color="blue">平台默认</Tag>
-            </Space>
-          </DescriptionsItem>
-          <DescriptionsItem label="生效时间">
-            <TimeText :value="current.status === 'draft' ? null : current.effective_at" />
-          </DescriptionsItem>
           <DescriptionsItem label="创建"><TimeText :value="current.created_at" /></DescriptionsItem>
           <DescriptionsItem label="更新"><TimeText :value="current.updated_at" /></DescriptionsItem>
           <DescriptionsItem label="创建者"><UserName :id="current.created_by_user_id ?? null" /></DescriptionsItem>
-        </Descriptions>
-        <h4 class="mb-2 mt-4 font-medium">配置</h4>
-        <Descriptions bordered :column="1" size="small">
-          <DescriptionsItem v-for="f in POLICY_FIELDS[current.kind]" :key="f.key">
-            <template #label>
-              {{ f.label }}
-              <div class="text-muted-foreground font-mono text-xs">{{ f.key }}</div>
-            </template>
-            <span class="font-mono">{{ displayValue(f, current.config[f.key]) }}</span>
-          </DescriptionsItem>
-          <DescriptionsItem v-for="[k, v] in extraConfig" :key="k" :label="k">
-            <span class="font-mono">{{ rawValue(v) }}</span>
+          <DescriptionsItem v-if="current.status === 'retired'" label="状态">
+            <StatusTag kind="catalogStatus" value="retired" />
           </DescriptionsItem>
         </Descriptions>
+        <Form class="mt-4" layout="vertical">
+          <ConfigForm v-model:state="editState" :errors="editErrors" :gpu-models="gpuModels" :kind="current.kind" />
+          <Alert
+            v-if="editSubmitted && editValidation.cross.length > 0"
+            class="mb-2"
+            :message="editValidation.cross.join('；')"
+            show-icon
+            type="error"
+          />
+        </Form>
       </template>
     </Drawer>
 
-    <VersionEditor
-      v-model:open="editorOpen"
-      :draft="editorDraft"
-      :gpu-models="gpuModels"
-      :if-match="detail.etag.value"
-      :kind="editorKind"
-      @conflict="reloadDetail"
-      @saved="onSaved"
-    />
+    <VersionEditor v-model:open="editorOpen" :gpu-models="gpuModels" :kind="editorKind" @created="onCreated" />
 
-    <PublishModal
-      v-if="current && current.status === 'draft'"
-      v-model:open="publishOpen"
-      :bound-id="bindings.data.value?.bindings[current.kind]"
-      :draft="current"
-      :if-match="detail.etag.value"
-      :kind="current.kind"
-      :versions="allVersions[current.kind] ?? []"
-      @conflict="reloadDetail"
-      @published="afterWrite"
+    <ConfirmAction
+      v-model:open="defaultOpen"
+      :description="current ? `把 ${versionLabel(current)} 设为平台默认${POLICY_KIND_NAMES[current.kind]}。${current.kind === 'credit' ? '新账户使用这里的额度政策；已有账户不会自动切换。' : ''}` : ''"
+      :on-confirm="setDefault"
+      title="设为平台默认"
     />
 
     <ConfirmAction
-      v-model:open="retireOpen"
+      v-model:open="removeOpen"
       danger
-      :description="current ? `退役 ${versionLabel(current)}。退役后不能再被平台默认绑定选用；已开始的计费区间和停机期限不受影响。` : ''"
-      :on-confirm="retire"
-      title="退役政策版本"
+      :description="current ? `删除 ${versionLabel(current)}。仍被套餐、实例、额度账户、GPU 或使用记录引用的配置档不能删除。` : ''"
+      ok-text="删除"
+      :on-confirm="remove"
+      title="删除配置档"
     />
   </Page>
 </template>
