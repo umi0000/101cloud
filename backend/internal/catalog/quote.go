@@ -11,6 +11,7 @@ import (
 	"101cloud/backend/internal/platform"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type Resources struct {
@@ -27,8 +28,10 @@ type GPURequest struct {
 type CreateElasticSpec struct {
 	Name            string         `json:"name"`
 	PlanID          string         `json:"plan_id"`
+	PlanRevision    string         `json:"plan_revision,omitempty"`
 	ImageID         string         `json:"image_id"`
 	NetworkOptionID string         `json:"network_option_id"`
+	NodeID          string         `json:"node_id,omitempty"`
 	Resources       Resources      `json:"resources"`
 	GPU             GPURequest     `json:"gpu"`
 	InitParameters  map[string]any `json:"init_parameters"`
@@ -57,9 +60,8 @@ func validGPUTerms(g GPURequest) error {
 	if !enum(g.AccessMode, "shared", "exclusive") {
 		return invalid("请指定 gpu.access_mode 为 shared 或 exclusive。")
 	}
-	n, e := decimal.NewFromString(g.MaxHourlyPT)
-	if e != nil || n.IsNegative() || n.Exponent() < -6 {
-		return invalid("gpu.max_hourly_pt 必须为非负十进制数，最多六位小数。")
+	if _, e := planMoney(g.MaxHourlyPT); e != nil {
+		return e
 	}
 	if g.Count > 4294967295 {
 		return invalid("gpu.count 必须为 uint32 整数。")
@@ -158,12 +160,16 @@ func ValidateElastic(ctx context.Context, db *gorm.DB, a *platform.App, s Create
 	if e != nil {
 		return nil, e
 	}
-	plan, e := platform.Get(db, "instance_plans", pid, false)
+	// Hold the plan while reading its relations and admitting the frozen spec.
+	plan, e := platform.Get(db.Clauses(clause.Locking{Strength: "SHARE"}), "instance_plans", pid, false)
 	if e != nil {
 		return nil, e
 	}
+	if (versions != nil || s.PlanRevision != "") && s.PlanRevision != platform.Text(plan["revision"]) {
+		return nil, platform.E(409, "plan_changed", "套餐已变更，请重新获取报价并提交最新 plan_revision。")
+	}
 	if platform.Text(plan["status"]) != "active" {
-		return nil, conflict("套餐尚未发布，请选择已发布套餐。")
+		return nil, conflict("套餐未启用，请选择已启用套餐。")
 	}
 	typ := platform.Text(plan["image_type"])
 	if e = validGPU(s.GPU, typ); e != nil {
@@ -200,6 +206,22 @@ func ValidateElastic(ctx context.Context, db *gorm.DB, a *platform.App, s Create
 	nr, e := ValidateNetworkOption(db, network, typ)
 	if e != nil {
 		return nil, e
+	}
+	nodeID := platform.Uint(nr["node_id"])
+	if s.NodeID != "" {
+		requested, err := platform.IDString(s.NodeID)
+		if err != nil {
+			return nil, err
+		}
+		if requested != nodeID {
+			return nil, invalid("node_id 必须与所选网络所属节点一致。")
+		}
+	}
+	if e = db.Table("plan_nodes").Where("plan_id=? AND node_id=?", pid, nodeID).Count(&n).Error; e != nil {
+		return nil, platform.WrapDB(e)
+	}
+	if n != 1 {
+		return nil, invalid("所选网络节点不在套餐允许的 node_ids 范围内。")
 	}
 	ir, e = ResolveNodeImage(ctx, db, ir, platform.Uint(nr["node_id"]), platform.Text(nr["project_name"]))
 	if e != nil {
@@ -259,19 +281,19 @@ func validateOverrides(plan platform.Row, r Resources, g GPURequest) error {
 			return invalid("套餐不允许修改此资源：" + k)
 		}
 	}
-	if g.Count == 0 {
-		return nil
-	}
-	if g.Model == nil || *g.Model != platform.Text(plan["gpu_model"]) || g.AccessMode != platform.Text(plan["gpu_access_mode"]) {
-		return invalid("GPU 型号和访问模式必须与套餐一致。")
-	}
-	limit, e := decimal.NewFromString(platform.Text(plan["gpu_max_hourly_pt"]))
+	limit, e := planMoney(platform.Text(plan["gpu_max_hourly_pt"]))
 	if e != nil {
 		return invalid("套餐 GPU 价格上限缺失或无效，请联系管理员检查套餐。")
 	}
-	price, _ := decimal.NewFromString(g.MaxHourlyPT)
+	price, e := planMoney(g.MaxHourlyPT)
+	if e != nil {
+		return e
+	}
 	if price.GreaterThan(limit) {
 		return invalid("申请的 GPU 价格上限超过套餐限制，请降低 gpu.max_hourly_pt。")
+	}
+	if g.Count > 0 && (g.Model == nil || *g.Model != platform.Text(plan["gpu_model"]) || g.AccessMode != platform.Text(plan["gpu_access_mode"])) {
+		return invalid("GPU 型号和访问模式必须与套餐一致。")
 	}
 	return nil
 }
@@ -324,7 +346,7 @@ func Quote(ctx context.Context, db *gorm.DB, a *platform.App, s CreateElasticSpe
 		}
 		gpu = rate.Mul(decimal.NewFromBigInt(new(big.Int).SetUint64(s.GPU.Count), 0))
 	}
-	return platform.Row{"price_details": platform.Row{"cpu_hourly_pt": cpu.StringFixed(6), "memory_hourly_pt": mem.StringFixed(6), "disk_hourly_pt": disk.StringFixed(6), "gpu_hourly_pt": gpu.StringFixed(6), "total_hourly_pt": cpu.Add(mem).Add(disk).Add(gpu).StringFixed(6)}, "policy_versions": v.PolicyVersions, "expires_at": a.Time().Add(5 * time.Minute).Format(time.RFC3339), "admissible": len(reasons) == 0, "blocking_reasons": reasons, "reservation": false}, nil
+	return platform.Row{"price_details": platform.Row{"cpu_hourly_pt": cpu.StringFixed(6), "memory_hourly_pt": mem.StringFixed(6), "disk_hourly_pt": disk.StringFixed(6), "gpu_hourly_pt": gpu.StringFixed(6), "total_hourly_pt": cpu.Add(mem).Add(disk).Add(gpu).StringFixed(6)}, "plan_revision": platform.Text(v.Plan["revision"]), "policy_versions": v.PolicyVersions, "expires_at": a.Time().Add(5 * time.Minute).Format(time.RFC3339), "admissible": len(reasons) == 0, "blocking_reasons": reasons, "reservation": false}, nil
 }
 func quoteAvailability(ctx context.Context, db *gorm.DB, a *platform.App, s CreateElasticSpec, v *ValidatedSpec) ([]string, error) {
 	reasons := []string{}

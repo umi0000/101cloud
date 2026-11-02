@@ -67,6 +67,7 @@ const MESSAGES: Record<string, string> = {
   observation_incomplete: '缺少完整的观测数据，请稍后重试',
   observation_superseded: '观测已被更新的结果取代，请重试',
   owner_inactive: '实例所有者账号已停用',
+  plan_changed: '套餐配置已变化，请重新加载套餐并重新报价后确认',
   policy_changed: '价格或政策已变化，请重新确认',
   policy_not_configured: '平台尚未配置所需政策',
   pool_in_use: '地址池仍在使用，不能修改',

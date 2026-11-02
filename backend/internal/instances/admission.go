@@ -49,6 +49,11 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 	if spec.GPU.MaxHourlyPT == "" {
 		spec.GPU.MaxHourlyPT = "0.000000"
 	}
+	capPrice, err := policyMoney(spec.GPU.MaxHourlyPT)
+	if err != nil {
+		return nil, err
+	}
+	spec.GPU.MaxHourlyPT = capPrice.StringFixed(6)
 	if spec.InitParameters == nil {
 		spec.InitParameters = map[string]any{}
 	}
@@ -67,7 +72,7 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 		if spec.GPU.Model != "" {
 			model = &spec.GPU.Model
 		}
-		validated, err := catalog.ValidateElastic(ctx, db, a, catalog.CreateElasticSpec{Name: spec.Name, PlanID: spec.PlanID, ImageID: spec.ImageID, NetworkOptionID: spec.NetworkOptionID, Resources: catalog.Resources{VCPUs: spec.Resources.VCPUs, MemoryBytes: spec.Resources.MemoryBytes, DiskBytes: spec.Resources.DiskBytes}, GPU: catalog.GPURequest{Count: uint64(spec.GPU.Count), Model: model, AccessMode: spec.GPU.AccessMode, MaxHourlyPT: spec.GPU.MaxHourlyPT}, InitParameters: spec.InitParameters}, versions)
+		validated, err := catalog.ValidateElastic(ctx, db, a, catalog.CreateElasticSpec{Name: spec.Name, PlanID: spec.PlanID, PlanRevision: spec.PlanRevision, ImageID: spec.ImageID, NetworkOptionID: spec.NetworkOptionID, NodeID: spec.NodeID, Resources: catalog.Resources{VCPUs: spec.Resources.VCPUs, MemoryBytes: spec.Resources.MemoryBytes, DiskBytes: spec.Resources.DiskBytes}, GPU: catalog.GPURequest{Count: uint64(spec.GPU.Count), Model: model, AccessMode: spec.GPU.AccessMode, MaxHourlyPT: spec.GPU.MaxHourlyPT}, InitParameters: spec.InitParameters}, versions)
 		if err != nil {
 			return nil, err
 		}
@@ -170,15 +175,27 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 		return nil, e
 	}
 	allowed := spec.AllowedUserActions
+	permissions := spec.GPUUserPermissions
+	gpuPolicy := platform.Row{"idle": platform.Row{"enabled": false, "timeout_seconds": uint64(1800), "action": "detach_gpu"}, "rebalance": platform.Row{"enabled": false, "allow_live": false, "max_hourly_pt": spec.GPU.MaxHourlyPT}}
 	if !custom {
-		allowed = []string{"start", "stop", "restart", "resize", "delete", "gpu_attach", "gpu_detach", "gpu_rebind", "gpu_policy", "console"}
+		allowed = nil
+		for _, v := range rows(plan["allowed_user_actions"]) {
+			allowed = append(allowed, platform.Text(v))
+		}
+		permissions = map[string]bool{}
+		for key, value := range object(plan["gpu_user_permissions"]) {
+			permissions[key] = platform.Bool(value)
+		}
+		gpuPolicy = platform.Row{}
+		for key, value := range object(plan["gpu_policy"]) {
+			gpuPolicy[key] = value
+		}
+		rebalance := object(gpuPolicy["rebalance"])
+		rebalance["max_hourly_pt"] = spec.GPU.MaxHourlyPT
+		gpuPolicy["rebalance"] = rebalance
 	}
 	if allowed == nil {
 		allowed = []string{}
-	}
-	permissions := spec.GPUUserPermissions
-	if !custom {
-		permissions = map[string]bool{"idle": true, "idle_timeout": true, "idle_action": true, "rebalance": true, "allow_live": true, "max_hourly_pt": true}
 	}
 	if permissions == nil {
 		permissions = map[string]bool{}
@@ -192,9 +209,13 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 	if custom {
 		product, billingMode = "custom", "admin_exempt"
 	}
-	r := platform.Row{"user_id": owner, "node_id": nodeID, "image_id": imageID, "instance_plan_id": nil, "logical_name": spec.Name, "project_name": binding["project_name"], "incus_name": incusName, "image_type": spec.InstanceType, "architecture": image["architecture"], "image_fingerprint": image["fingerprint"], "vcpus": spec.Resources.VCPUs, "memory_bytes": memory, "disk_bytes": disk, "storage_pool": node["default_storage_pool"], "pricing_version_id": pricingID, "cpu_hourly_pt": pricing["cpu_hourly_pt"], "memory_gib_hourly_pt": pricing["memory_gib_hourly_pt"], "disk_gib_hourly_pt": pricing["disk_gib_hourly_pt"], "credit_policy_version_id": creditID, "billing_mode": billingMode, "desired_state": "running", "observed_state": "pending", "provisioning_state": "pending", "auto_release_gpu": false, "auto_rebind_gpu": false, "idle_policy_version_id": idleID, "max_gpu_hourly_pt": spec.GPU.MaxHourlyPT, "init_template_version_id": nil, "init_parameters": jsonText(spec.InitParameters), "incus_config_snapshot": "{}", "product_type": product, "allowed_user_actions": jsonText(allowed), "gpu_user_permissions": jsonText(permissions), "policy_versions": jsonText(versions), "gpu_policy": jsonText(platform.Row{"idle": platform.Row{"enabled": false, "timeout_seconds": 1800, "action": "detach_gpu"}, "rebalance": platform.Row{"enabled": false, "allow_live": false, "max_hourly_pt": spec.GPU.MaxHourlyPT}}), "revision": 1, "created_at": a.Time(), "updated_at": a.Time()}
+	r := platform.Row{"user_id": owner, "node_id": nodeID, "image_id": imageID, "instance_plan_id": nil, "logical_name": spec.Name, "project_name": binding["project_name"], "incus_name": incusName, "image_type": spec.InstanceType, "architecture": image["architecture"], "image_fingerprint": image["fingerprint"], "vcpus": spec.Resources.VCPUs, "memory_bytes": memory, "disk_bytes": disk, "storage_pool": node["default_storage_pool"], "pricing_version_id": pricingID, "cpu_hourly_pt": pricing["cpu_hourly_pt"], "memory_gib_hourly_pt": pricing["memory_gib_hourly_pt"], "disk_gib_hourly_pt": pricing["disk_gib_hourly_pt"], "credit_policy_version_id": creditID, "billing_mode": billingMode, "desired_state": "running", "observed_state": "pending", "provisioning_state": "pending", "auto_release_gpu": false, "auto_rebind_gpu": false, "idle_policy_version_id": idleID, "max_gpu_hourly_pt": spec.GPU.MaxHourlyPT, "init_template_version_id": nil, "init_parameters": jsonText(spec.InitParameters), "incus_config_snapshot": "{}", "product_type": product, "allowed_user_actions": jsonText(allowed), "gpu_user_permissions": jsonText(permissions), "policy_versions": jsonText(versions), "gpu_policy": jsonText(gpuPolicy), "revision": 1, "created_at": a.Time(), "updated_at": a.Time()}
+	idle := object(gpuPolicy["idle"])
+	r["auto_release_gpu"] = platform.Bool(idle["enabled"]) && platform.Text(idle["action"]) == "detach_gpu"
+	r["auto_rebind_gpu"] = platform.Bool(object(gpuPolicy["rebalance"])["enabled"])
 	if !custom {
 		r["instance_plan_id"] = plan["id"]
+		r["plan_snapshot"] = jsonText(platform.Row{"revision": platform.Text(plan["revision"]), "vcpus": platform.Uint(plan["vcpus"]), "memory_bytes": platform.Text(plan["memory_bytes"]), "disk_bytes": platform.Text(plan["disk_bytes"]), "allowed_overrides": object(plan["allowed_overrides"])})
 	}
 	if templateID != 0 {
 		r["init_template_version_id"] = templateID

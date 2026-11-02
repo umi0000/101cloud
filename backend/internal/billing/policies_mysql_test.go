@@ -236,7 +236,7 @@ func TestMySQLPolicyProfilesEditSwitchDelete(t *testing.T) {
 	// Delete a non-economic profile referenced only by plan policy_versions JSON: rejected.
 	planScheduling := create("gpu-scheduling", "plan-scheduling")
 	versions, _ := json.Marshal(map[string]string{"pricing": defaults["pricing"], "credit": defaults["credit"], "gpu-idle": defaults["gpu-idle"], "gpu-scheduling": planScheduling.ID})
-	if err := db.Exec("INSERT INTO instance_plans(id,code,version,name,image_type,vcpus,memory_bytes,disk_bytes,gpu_count,pricing_version_id,credit_policy_version_id,idle_policy_version_id,init_parameters,allow_residency,status,allowed_overrides,policy_versions) VALUES(1,'plan','1','Plan','container',1,1073741824,10737418240,0,?,?,?,JSON_OBJECT(),FALSE,'draft',JSON_OBJECT(),?)",
+	if err := db.Exec("INSERT INTO instance_plans(id,code,version,name,image_type,vcpus,memory_bytes,disk_bytes,gpu_count,pricing_version_id,credit_policy_version_id,idle_policy_version_id,init_parameters,allow_residency,status,allowed_overrides,policy_versions,gpu_policy,allowed_user_actions,gpu_user_permissions) VALUES(1,'plan','1','Plan','container',1,1073741824,10737418240,0,?,?,?,JSON_OBJECT(),FALSE,'disabled',JSON_OBJECT(),?,JSON_OBJECT(),JSON_ARRAY(),JSON_OBJECT())",
 		sourceOf(defaults["pricing"]), sourceOf(defaults["credit"]), sourceOf(defaults["gpu-idle"]), string(versions)).Error; err != nil {
 		t.Fatal(err)
 	}

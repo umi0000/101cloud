@@ -9,7 +9,7 @@ export const overridesPreferences = defineOverridesPreferences({
     accessMode: 'frontend',
     compact: true,
     defaultAvatar: '',
-    defaultHomePath: '/admin/dashboard',
+    defaultHomePath: '/',
     enableCheckUpdates: false,
     enablePreferences: true,
     enableRefreshToken: false,

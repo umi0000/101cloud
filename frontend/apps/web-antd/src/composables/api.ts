@@ -184,6 +184,7 @@ export function usePolling(fn: () => Promise<unknown> | void, intervalMs: () => 
         // 单次失败不终止轮询
       }
     }
+    if (stopped) return;
     timer = window.setTimeout(tick, intervalMs());
   }
 

@@ -1,9 +1,9 @@
 <script lang="ts" setup>
 /**
- * 修改实例规格（运行中须确认重启）。custom：自由资源；elastic：受套餐 allowed_overrides 限制并发送套餐 policy_versions。
+ * 修改实例规格（运行中须确认重启）。custom：自由资源；elastic：受创建时冻结的套餐资源与 allowed_overrides 限制。
  * 磁盘不可缩容。后端没有调整规格的报价接口，不显示新费用。
  */
-import type { Instance, OverrideKey, Plan, ResizeLimits, Resources } from '#/api/types';
+import type { Instance, OverrideKey, ResizeLimits, Resources } from '#/api/types';
 
 import { computed, onBeforeUnmount, ref, watch } from 'vue';
 
@@ -16,7 +16,7 @@ import { trackAccepted, useAction } from '#/composables/api';
 import { describeError } from '#/locales/errors';
 import { bytesToGib, formatBytes, gibToBytes } from '#/utils/format';
 
-const props = defineProps<{ etag: null | string; instance: Instance; plan: null | Plan }>();
+const props = defineProps<{ etag: null | string; instance: Instance }>();
 const emit = defineEmits<{ done: [] }>();
 const open = defineModel<boolean>('open', { default: false });
 
@@ -24,6 +24,7 @@ const GIB = 1024n ** 3n;
 const form = ref({ disk_gib: 0, memory_gib: 0, vcpus: 0 });
 const action = useAction();
 const elastic = computed(() => props.instance.product_type === 'elastic');
+const snapshot = computed(() => props.instance.plan_snapshot);
 const running = computed(() => props.instance.observed_state === 'running');
 const lifecycleDisabled = computed(() => props.instance.provisioning_state !== 'ready'
   || props.instance.state_stale || !!props.instance.active_task_id || !props.instance.capabilities.resize
@@ -80,10 +81,10 @@ function bound(key: ResKey): Bound {
   let max = limits.value ? BigInt(limits.value.max_resources[key]) : 0n;
   if (key === 'vcpus' && max > 65_535n) max = 65_535n;
   if (!elastic.value) return { fixed: false, max, min: floor, step: 1n };
-  const p = props.plan;
+  const p = snapshot.value;
   const o = p?.allowed_overrides[key];
   if (!p || !o) {
-    const v = BigInt(p ? p.resources[key] : props.instance.resources[key]);
+    const v = BigInt(p ? p[key] : props.instance.resources[key]);
     return { fixed: true, max: max < v ? max : v, min: v > floor ? v : floor, step: 1n };
   }
   const base = BigInt(o.min);
@@ -114,7 +115,7 @@ function unavailable(key: ResKey): boolean {
   return b.max < b.min || inputLimit(key, 'max') < inputLimit(key, 'min');
 }
 
-const inputsDisabled = computed(() => !limits.value || limitsLoading.value || (elastic.value && !props.plan));
+const inputsDisabled = computed(() => !limits.value || limitsLoading.value || (elastic.value && !snapshot.value));
 
 function toBytes(gib: number): null | string {
   try {
@@ -138,7 +139,7 @@ const problems = computed(() => {
   if (!limits.value || limitsLoading.value) return [limitsLoading.value ? '正在读取配额和节点容量，暂不可提交' : '可调整范围不可用，请重试后再提交'];
   const r = resources.value;
   if (!r) return ['请输入有效的资源数值（容量最多 3 位小数）'];
-  if (elastic.value && !props.plan) return ['套餐信息不可用，无法按套餐范围调整'];
+  if (elastic.value && !snapshot.value) return ['创建时的套餐配置不可用，无法按冻结范围调整'];
   const out: string[] = [];
   for (const key of ['vcpus', 'memory_bytes', 'disk_bytes'] as const) {
     const v = BigInt(r[key]);
@@ -149,7 +150,7 @@ const problems = computed(() => {
     else if (v < b.min || input < inputLimit(key, 'min')) out.push(`${NAMES[key]}不能小于 ${inputLimit(key, 'min')}${key === 'vcpus' ? '' : ' GiB'}${key === 'disk_bytes' ? '（禁止缩容）' : ''}`);
     else if (v > b.max || input > inputLimit(key, 'max')) out.push(`${NAMES[key]}不能大于 ${inputLimit(key, 'max')}${key === 'vcpus' ? '' : ' GiB'}`);
     else if (elastic.value && b.step > 0n) {
-      const o = props.plan?.allowed_overrides[key];
+      const o = snapshot.value?.allowed_overrides[key];
       if (o && (v - BigInt(o.min)) % b.step !== 0n) out.push(`${NAMES[key]}必须按 ${show(key, b.step)} 递增`);
     }
   }
@@ -174,7 +175,6 @@ async function submit() {
   if (!r || lifecycleDisabled.value || problems.value.length > 0) return false;
   const body: Parameters<typeof instancesApi.resize>[1] = { resources: r };
   if (running.value) body.confirm_restart = true;
-  if (elastic.value && props.plan) body.policy_versions = { ...props.plan.policy_versions };
   const res = await action.run((key) => instancesApi.resize(props.instance.id, body, { ifMatch: props.etag, key }), {
     onConflict: () => emit('done'),
     success: '已提交修改实例规格',
@@ -189,7 +189,7 @@ async function submit() {
 <template>
   <ConfirmAction
     v-model:open="open"
-    :description="`${running ? '执行此操作将重启实例：正常停止后修改规格，再重新启动。' : ''}${elastic ? '标准实例还受套餐范围限制。' : '自定义实例不受套餐范围限制。'}允许总量按用户配额、节点容量及常驻预算计算，已排除当前实例占用；提交时重新校验。`"
+    :description="`${running ? '执行此操作将重启实例：正常停止后修改规格，再重新启动。' : ''}${elastic ? '标准实例受创建时冻结的套餐范围限制，后续套餐编辑不会改变此范围。' : '自定义实例不受套餐范围限制。'}允许总量按用户配额、节点容量及常驻预算计算，已排除当前实例占用；提交时重新校验。`"
     :disabled="lifecycleDisabled || inputsDisabled || problems.length > 0"
     :on-confirm="submit"
     :risk-text="running ? '我确认执行此操作将重启实例，期间服务会中断' : ''"

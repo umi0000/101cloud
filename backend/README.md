@@ -6,9 +6,21 @@
 
 实例调整容量预览：`GET /api/v1/instances/:id/resize-limits`（管理员使用 `/api/v1/admin/instances/:id/resize-limits`）按所属用户配额、节点可分配容量和 custom 常驻预算返回此实例可调整到的总资源上限。响应 `data.max_resources` 的 `vcpus` 为整数，`memory_bytes`、`disk_bytes` 为十进制字符串。聚合排除此实例；与正式准入共用预留统计，保留未知状态占用，仅释放有明确安全标记的创建失败预留；停止的 elastic 实例只在节点层释放 CPU/内存，不释放磁盘。接口只读、不查询 Agent、不报价、不预留或修改配置；所属用户未启用、配额缺失、实例数量超额或节点未验证/离线/资源观测过期时返回错误，不能视作无限容量。套餐范围和磁盘不可缩小约束仍适用，最终 POST 在原有锁下重新准入。MySQL 回归使用 `CLOUD_TEST_MYSQL_ADMIN_DSN`（需要创建/删除隔离测试数据库权限）；未设置时跳过。
 
-实例 resize/delete 由后端单个持久化任务编排，客户端不得串联 stop/resize/start 或 stop/delete。resize 的 `confirm_restart` 可选，但运行中必须为 `true`；非管理员 custom 实例还须同时拥有 resize、stop、start 权限。运行中正常关机确认后改配置、确认配置后启动，原已停止实例保持停止。任务保存 `restart_after_resize:true`、`previous_resources` 和期望 running，步骤为 `state.stop → resize.native → resize.confirmed → state.start`；进入启动意图后恢复不得重放早先停机或配置步骤。套餐、配额、节点/常驻预算、resize-limits 和磁盘禁止缩容约束不变。
+实例 resize/delete 由后端单个持久化任务编排，客户端不得串联 stop/resize/start 或 stop/delete。resize 的 `confirm_restart` 可选，但运行中必须为 `true`；所有非管理员elastic/custom实例须拥有resize权限，运行中还须stop/start权限。运行中正常关机确认后改配置、确认配置后启动，原已停止实例保持停止。任务保存 `restart_after_resize:true`、`previous_resources` 和期望 running，步骤为 `state.stop → resize.native → resize.confirmed → state.start`；进入启动意图后恢复不得重放早先停机或配置步骤。套餐、配额、节点/常驻预算、resize-limits 和磁盘禁止缩容约束不变。
 
 删除必须精确确认实例名并提交 `delete_data:true`。运行中删除仅管理员可用，另须 `mode:"force"`、`confirm_data_loss_risk:true`；强停可能丢失未保存数据。同一持久化任务保存 force=true，确认强停后才向 Agent 发 DELETE，确认删除后获取新鲜 GPU 实际占用证据才释放分配。超时/未知保留预留并核对记录操作，不盲目重放破坏性步骤；普通用户仅可删除已停止实例。
+
+套餐配置：`PlanCreate`/`PlanPatch`和`Plan`包含`node_ids`、`gpu_policy`、`allowed_user_actions`、`gpu_user_permissions`。node_ids须非空且不重复，网络覆盖全部所选节点，镜像匹配全部节点/网络项目。启用及active编辑要求节点已验证且active/online、网络已验证、项目镜像ready（提供GPU型号还须gpu_ready）。报价/创建node_id若提供必须匹配所选网络节点并在套餐内。
+
+gpu_policy使用idle.enabled/timeout_seconds/action和rebalance.enabled/allow_live/max_hourly_pt；超时及动作遵守绑定gpu-idle政策，GPU价格上限须数值相等（非负DECIMAL(20,6)字符串），报价/创建即使0卡也受上限约束。新套餐默认空闲/均衡/在线迁移关闭、用户动作start/stop/restart/console、GPU编辑权限{}；显式[]/{}不补全授权。VM不得启用GPU策略或授予GPU动作/true权限。套餐创建disabled，可任意多个独立active；任意状态可编辑含code/version（组合唯一），PATCH不改status且省略字段保留。POST /admin/plans/{id}/enable和/disable替代套餐publish/retire，要求If-Match和Idempotency-Key，active无效编辑原子回滚。模板/政策发布流程不变。
+
+弹性实例准入复制套餐策略/动作/权限，rebalance.max_hourly_pt使用本次准入请求上限，与实例唯一GPU上限一致；新套餐版本不重写既有实例。全部非管理员elastic/custom实例的生命周期、GPU变更、GPU策略及console按实例allowed_user_actions逐次授权，只有管理员可绕过动作列表，不绕过安全/容量/确认要求；改显示名不属于这些动作。GPU策略allowed_ranges.editable还与六项gpu_user_permissions相交（idle、idle_timeout、idle_action、rebalance、allow_live、max_hourly_pt），缺失键false；PUT对变更字段重新授权。管理员实例GPU策略接口可明确替换动作/权限，[]/{}可撤销授权。
+
+报价返回plan_revision，请求可选匹配；创建必须提交报价修订号，不匹配409 plan_changed且无副作用。20261102_20迁移为既有elastic冻结plan_snapshot={revision:字符串,vcpus:整数,memory_bytes:字符串,disk_bytes:字符串,allowed_overrides:对象}；新建同形，custom为null，resize读取冻结边界，套餐后续编辑仅影响未来创建。迁移不修改实例revision/state/config，孤儿elastic实例使迁移失败。
+
+Instance DTO暴露plan_snapshot（custom为null）。resize仅接受resources及可选confirm_restart，不再接受policy_versions；使用实例冻结价格/政策和上述资源边界，不因套餐停用或改价而改用新套餐。
+
+`20261102_10_plan_configuration.sql`在节点镜像迁移之后新增plan_nodes及套餐三个JSON配置列；节点从已有网络关联去重回填，不移动实例。旧套餐关闭GPU策略，容器保留旧完整动作/六项true编辑权限，VM只保留非GPU动作/空权限。既有elastic实例只修复对应SQL NULL或JSON null字段为旧兼容默认；保留已存策略（含已启用设置）、显式空数组/映射和其他非null值，不从当前套餐重新复制，GPU策略缺失时使用原实例价格上限。历史init.sql/旧迁移不改动，按前向迁移顺序升级。此处仅说明代码与迁移契约，不表示本次套餐配置扩展已部署或验证。
 
 ## 1. 部署前准备
 
@@ -246,7 +258,7 @@ curl -f https://cloud.example.com/api/v1/health/ready
 
 `20261102_00_node_images.sql` 在95迁移之后建立 `image_nodes`，历史 `init.sql` 保持原始checksum。现有local镜像与节点按default_project_name交叉生成pending配置和verification-only任务，未核验前绝不ready；旧remote记录不推断可信源。迁移不改现有实例冻结指纹/架构、额度或原任务（含unknown任务）。迁移任务参数仅包含字符串image_node_id；新API排队任务同时包含入队时冻结的config（image_id/node_id/project_name/architecture/fingerprint/instance_type/source_type/source_id/cloud_init/gpu_ready/variant），worker操作原生API前还会固化不可变日志。旧local镜像properties.cloud_init显式布尔值保留；仅当该属性缺失时，worker根据原生镜像properties.variant是否为cloud推断cloud-init，GPU兼容性绝不自动推断。派发结果不明须对账，不盲目重复下载；失败不删除已有原生镜像。
 
-6. 发布套餐，创建用户并明确配置配额。新用户配额全部为0，自定义实例还需 max_resident_instances。VM 套餐只提供 CPU；容器套餐可设可选 GPU（gpu.count=0、gpu.model 非空且 allowed_overrides.gpu_count.max≥1），提供 GPU 的套餐必须绑定 gpu-pricing。用户创建弹性实例时始终可以用 gpu.count=0 不选 GPU。
+6. 显式选择套餐node_ids，配置这些节点内网络和节点/项目镜像，设置GPU初始策略、用户动作与权限后启用。多个套餐可同时启用，任意时候可编辑或独立停用；active保存完整验证就绪性，既有实例冻结配置不变。创建用户并明确配额，新用户配额全部为0，自定义实例还需max_resident_instances。VM仅CPU；可选GPU容器提供型号及正数gpu_count范围并绑定gpu-pricing。用户可count=0，但价格上限仍受套餐约束。
 7. 先受控验证一个实例的创建、登录、停止、磁盘保留、GPU观测和控制台，再开放给成员。
 
 每日额度由后台任务处理，首次发放完成前账户可能尚未就绪。自定义实例的申请和沟通在平台外完成，平台只保留管理员 `POST /admin/custom-instances` 直接下发（请求字段仍为 `approved_config`）及已有实例纳管，不提供申请/审批页面或接口。自定义实例按admin_exempt记录，不受每日额度停机影响，仍受资源及max_resident_instances配额约束。当前OpenAPI包含147个操作。
@@ -256,6 +268,8 @@ curl -f https://cloud.example.com/api/v1/health/ready
 ## 12. 更新、备份与排错
 
 更新顺序：备份数据库和主密钥 → 停止后端 → 上传新二进制 → 用迁移账户执行 migrate → 启动服务 → 检查健康与日志。不要在不兼容的旧程序继续写库时升级结构。
+
+实例列表和详情（普通用户/管理员）新增字符串字段 `image_os_name`、`image_os_release`，通过来源镜像只读关联查询返回真实 OS，包含 disabled/retired 镜像；缺失元数据为空字符串，客户端未知 OS 使用 Linux 图标，不从实例名称推断。此变更不需要数据库迁移，不改现有镜像内容、实例冻结配置、权限或 revision。
 
 自定义申请退役升级需在停服及备份后执行 `CLOUD_MYSQL_DSN='<迁移账户DSN>' /usr/local/bin/101cloud-backend migrate`。新增 `20261030_80_retire_custom_requests.sql` 删除custom_instance_requests、residency_requests和instances.custom_reason；不会删除实例、任务、用户或通用审计。首次install同样按顺序执行旧建表及前向删除迁移；不得修改已应用的init.sql或历史迁移。
 
@@ -303,3 +317,11 @@ HTTP监听127.0.0.1:8080，就绪检查、随机管理员登录、真实Agent固
 2026-10-30 契约修正部署：新增 `CLOUD_TRUSTED_PROXIES`（X-Forwarded-For）、`CLOUD_ORIGIN` 支持 http/https（Cookie 名称与 Secure 随协议变化）、密码错误独立返回 `invalid_credentials`、列表与详情字段类型统一、对外政策版本引用统一为 `policy_versions.id`、弹性实例可选择不带 GPU。本地临时 MySQL 8.4 上 `go test -race ./...`（含 MySQL 回归）与 `go vet ./...` 通过，并用真实 HTTP 进程（http Origin、可信代理 127.0.0.1）验证 27 项：HTTP Cookie 名与 Secure、两类 401、改密码失败会话保留、按转发 IP 分桶限流、政策/镜像/地址池/绑定列表字段类型、GPU 定价与额度账户 ID、可选 GPU 套餐发布、报价 0 张/1 张/超范围。服务器仅替换二进制（备份 `/usr/local/bin/101cloud-backend.bak-20261030172121`），`backend.env` 与数据库结构未改；部署后只读核对真实数据：列表字段为对象/数组/布尔，GPU `gpu_price_version_id`、`/catalog/gpu-options` 的 `id`、使用记录与 GPU 分配的版本 ID 均等于对应政策版本 `id`，HTTPS Origin 下仍为 `__Host-` Secure Cookie，错误密码返回 `invalid_credentials`。当前未配置 Nginx，`CLOUD_TRUSTED_PROXIES` 保持为空。
 
 2026-11-02 节点镜像版本已仅部署 `.111`：新增 `20261102_00_node_images.sql`，旧本地镜像通过任务73/74精确原生核验后ready，显式保留旧GPU声明并从真实cloud变体补齐缺失的cloud-init信息。浏览器从节点Agent真实目录登记并下载Alpine3.22/cloud/x86_64（镜像3、任务76），原生完整指纹 `04dbb9362a46ef57716981d224a47577d1dde1ad6c2101d2a517d375e2666992`、19.34 MiB、私有、default项目已核对；旧镜像2另经本地管理任务77只读验证成功。创建选择器按实际网络项目查询就绪镜像，其他项目无配置时为空。实例15/18/19的冻结指纹、架构、规格、状态及未知任务43均保持原状，未触发任何实例生命周期操作或修改真实政策/配额。后端vet、全量race/真实MySQL/TLS回归及前端类型/lint/build通过；多节点差异配置和部分失败在隔离节点协议环境验证，线上仅有一个管理节点。完整数据库、旧后端、前端链接和Agent备份位于 `/var/backups/101cloud/`，分别为 `before-node-images-20261102.sql.gz`、`backend-before-node-images-20261102`、`frontend-before-node-images-20261102.link`、`hostagent-before-node-images-20261102`。前端发布目录与详细验收见 `../frontend/README.md`。
+
+2026-11-02 套餐配置版本仅部署 `.111`：应用 `20261102_10_plan_configuration.sql`，新增节点白名单及套餐 GPU 策略、实例动作、GPU 编辑权限；创建 elastic 实例冻结配置与权限，允许降低但不能突破套餐 GPU 上限，用户生命周期/GPU/终端操作与策略字段均执行授权。节点选择与网络实际节点一致，不变更既有实例位置。`go vet ./...` 和隔离 MySQL 8.4 下 `go test -race -p 1 ./... -count=1` 全量通过，覆盖真实迁移/外键、带固定证书的 TLS 存储准入、HTTP 创建/权限变更、终端新建及既有会话授权撤销、节点范围、空权限和配置快照保留。初次并行回归中新增夹具使用退役配额字段的问题已修正；另一次既有删除证据用例在并发压力下300ms前未到达采集步骤，串行全量验证通过，未修改删除生产逻辑或该用例。
+
+真实后端进程和浏览器在隔离库验证套餐复制、草稿保存、发布与只读回显，未声称真实 GPU 换卡/空闲回收硬件验收。OpenAPI通过规范校验，303个内部引用可解析。上线前完整备份 `/var/backups/101cloud/before-plan-configuration-20261102.sql.gz`（gzip完整性通过），旧后端 `backend-before-plan-configuration-20261102`，旧前端链接 `frontend-before-plan-configuration-20261102`。已重启后端，服务active；8条既有实例的状态、冻结指纹/架构/规格、GPU策略和授权快照逐项核对不变，无实例创建/停止/调整操作，Host Agent与Nginx不改。前端发布及实际界面验证见 `../frontend/README.md`。
+
+2026-11-02 可编辑套餐版本仅部署 `.111`：应用 `20261102_20_editable_plans.sql`，套餐切换为独立active/disabled、默认disabled，启停不影响其他套餐，所有状态均可直接编辑（active编辑仍完整校验就绪引用）。旧draft/retired迁为disabled，active不变。新增实例plan_snapshot冻结资源基准与allowed_overrides；新建匹配报价plan_revision，旧报价409 plan_changed且不产生资源副作用，resize只读冻结范围和实例原价格/政策。`go vet ./...`、隔离MySQL 8.4上的 `go test -race -p 1 ./... -count=1` 全量通过，覆盖多套餐独立启停/编辑、失败回滚与ETag冲突、报价失效、新旧实例规格隔离、停用后按原冻结范围调整、fresh/upgrade迁移。前端类型检查/oxlint/build与OpenAPI规范校验通过，303个内部引用可解析。
+
+真实后端进程与浏览器完成双套餐同时启用及在线编辑、独立停用/重新启用、冻结范围调整弹窗只读验收，测试数据仅存在隔离本地库；不声称真实GPU或虚拟机生命周期硬件操作。线上后端active，已有8条实例和1个active套餐的原状态、规格及策略授权快照一致；该套餐code1/v1的revision仍为2，未在线上修改套餐或实例。备份 `/var/backups/101cloud/before-editable-plans-20261102.sql.gz`（gzip完整性已验证）、旧后端 `backend-before-editable-plans-20261102`、旧前端链接 `frontend-before-editable-plans-20261102`；未改Host Agent、Nginx或长期运行账户配置。

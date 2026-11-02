@@ -6,10 +6,10 @@ import { useAccessStore } from '@vben/stores';
 import { startProgress, stopProgress } from '@vben/utils';
 
 import { accessRoutes, coreRouteNames } from '#/router/routes';
-import { MEMBER_PENDING_PATH } from '#/router/routes/core';
 import { useAuthStore } from '#/store';
 
 import { generateAccess } from './access';
+import { getHomePath, getLoginRedirect } from './home';
 
 function setupCommonGuard(router: Router) {
   const loadedPaths = new Set<string>();
@@ -43,31 +43,28 @@ function setupAccessGuard(router: Router) {
       await authStore.probe();
     }
 
-    if (coreRouteNames.includes(to.name as string)) {
-      if (to.path === LOGIN_PATH && authStore.me) {
-        return authStore.isAdmin
-          ? decodeURIComponent((to.query?.redirect as string) || preferences.app.defaultHomePath)
-          : MEMBER_PENDING_PATH;
-      }
-      return true;
-    }
-
     if (!authStore.me) {
+      if (to.path !== '/' && coreRouteNames.includes(to.name as string)) return true;
       if (to.meta.ignoreAccess) return true;
       return {
         path: LOGIN_PATH,
-        query:
-          to.fullPath === preferences.app.defaultHomePath
-            ? {}
-            : { redirect: encodeURIComponent(to.fullPath) },
+        query: to.path === '/' ? {} : { redirect: encodeURIComponent(to.fullPath) },
         replace: true,
       };
     }
 
-    // 成员端尚未实现：非管理员只能看到占位页（后端仍对 /admin 接口强制 admin 角色）。
-    if (!authStore.isAdmin) {
-      return to.path === MEMBER_PENDING_PATH ? true : { path: MEMBER_PENDING_PATH, replace: true };
+    const role = authStore.me.user.role;
+    if (to.path === LOGIN_PATH) {
+      return { path: getLoginRedirect(to.query.redirect, role), replace: true };
     }
+    if (
+      to.path === '/' ||
+      (!authStore.isAdmin && (to.path === '/admin' || to.path.startsWith('/admin/'))) ||
+      (authStore.isAdmin && to.path === '/instances')
+    ) {
+      return { path: getHomePath(role), replace: true };
+    }
+    if (coreRouteNames.includes(to.name as string)) return true;
 
     if (accessStore.isAccessChecked) {
       return true;

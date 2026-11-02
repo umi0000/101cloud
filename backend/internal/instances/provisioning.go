@@ -467,7 +467,7 @@ func gpuPolicyDTO(c *gin.Context, a *platform.App, r platform.Row, b gpuPolicyBo
 	for key := range customGPUPermissions {
 		editable[key] = true
 	}
-	if platform.Text(r["product_type"]) == "custom" && !c.GetBool("admin") {
+	if !c.GetBool("admin") {
 		permissions := object(r["gpu_user_permissions"])
 		canChange := false
 		for _, v := range rows(r["allowed_user_actions"]) {
@@ -550,7 +550,7 @@ func putGPUPolicy(c *gin.Context, a *platform.App) (any, error) {
 	if e != nil {
 		return nil, e
 	}
-	if !c.GetBool("admin") && platform.Text(r["product_type"]) == "custom" {
+	if !c.GetBool("admin") {
 		permissions := object(r["gpu_user_permissions"])
 		for key, changed := range map[string]bool{"idle": cfg.Idle.Enabled != previous.Idle.Enabled, "idle_timeout": cfg.Idle.TimeoutSeconds != previous.Idle.TimeoutSeconds, "idle_action": cfg.Idle.Action != previous.Idle.Action, "rebalance": cfg.Rebalance.Enabled != previous.Rebalance.Enabled, "allow_live": cfg.Rebalance.AllowLive != previous.Rebalance.AllowLive, "max_hourly_pt": !price.Equal(decimalValue(previous.Rebalance.MaxHourlyPT))} {
 			if changed && !platform.Bool(permissions[key]) {

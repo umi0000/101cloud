@@ -15,7 +15,7 @@ import StatusTag from '#/components/status-tag.vue';
 import TimeText from '#/components/time-text.vue';
 import { useAction, useCursorList } from '#/composables/api';
 import { ENUMS } from '#/locales/enums';
-import { formatBytes } from '#/utils/format';
+import { formatBytes, formatPt } from '#/utils/format';
 
 import PlanDrawer from './plan-drawer.vue';
 
@@ -33,10 +33,11 @@ const columns = [
   { dataIndex: 'name', title: '名称' },
   { key: 'type', title: '类型', width: 80 },
   { key: 'resources', title: '基准资源' },
-  { key: 'gpu', title: 'GPU' },
+  { key: 'nodes', title: '可用节点' },
+  { key: 'gpu', title: 'GPU / 策略' },
   { key: 'status', title: '状态', width: 80 },
   { key: 'updated', title: '更新', width: 120 },
-  { key: 'actions', title: '', width: 190 },
+  { key: 'actions', title: '', width: 250 },
 ];
 
 const drawerOpen = ref(false);
@@ -56,35 +57,42 @@ function gpuSummary(p: Plan): string {
   return `${p.gpu.model} · ${count}${optional ? `（可选 ${optional.min}–${optional.max}）` : ''}`;
 }
 
-const publishTarget = ref<null | Plan>(null);
-const publishOpen = ref(false);
-function askPublish(p: Plan) {
-  publishTarget.value = p;
-  publishOpen.value = true;
+function gpuPolicySummary(p: Plan): string {
+  if (p.instance_type === 'virtual-machine') return '不支持 GPU 策略';
+  const { idle, rebalance } = p.gpu_policy;
+  const idleText = idle.enabled ? `空闲 ${idle.timeout_seconds} 秒后${idle.action === 'detach_gpu' ? '移除 GPU' : '停止实例'}` : '空闲回收关闭';
+  return `${idleText}；均衡${rebalance.enabled ? '开启' : '关闭'}${rebalance.allow_live ? ' · 允许运行中换卡' : ''}；上限 ${formatPt(rebalance.max_hourly_pt)} pt/h`;
 }
-async function publish() {
-  const p = publishTarget.value;
+
+const enableTarget = ref<null | Plan>(null);
+const enableOpen = ref(false);
+function askEnable(p: Plan) {
+  enableTarget.value = p;
+  enableOpen.value = true;
+}
+async function enable() {
+  const p = enableTarget.value;
   if (!p) return false;
-  const r = await action.run((key) => catalogApi.publishPlan(p.id, { ifMatch: revisionTag(p.revision), key }), {
+  const r = await action.run((key) => catalogApi.enablePlan(p.id, { ifMatch: revisionTag(p.revision), key }), {
     onConflict: () => list.load(),
-    success: '套餐已发布',
+    success: '套餐已启用',
   });
   await list.load();
   return !!r;
 }
 
-const retireTarget = ref<null | Plan>(null);
-const retireOpen = ref(false);
-function askRetire(p: Plan) {
-  retireTarget.value = p;
-  retireOpen.value = true;
+const disableTarget = ref<null | Plan>(null);
+const disableOpen = ref(false);
+function askDisable(p: Plan) {
+  disableTarget.value = p;
+  disableOpen.value = true;
 }
-async function retire() {
-  const p = retireTarget.value;
+async function disable() {
+  const p = disableTarget.value;
   if (!p) return false;
-  const r = await action.run((key) => catalogApi.retirePlan(p.id, { ifMatch: revisionTag(p.revision), key }), {
+  const r = await action.run((key) => catalogApi.disablePlan(p.id, { ifMatch: revisionTag(p.revision), key }), {
     onConflict: () => list.load(),
-    success: '套餐已退役',
+    success: '套餐已停用',
   });
   await list.load();
   return !!r;
@@ -98,6 +106,7 @@ onMounted(() => list.load());
     <Space class="mb-3" wrap>
       <Button type="primary" @click="openDrawer('create', null)">新建套餐</Button>
       <Select v-model:value="filters.instance_type" allow-clear class="w-28" :options="typeOptions" placeholder="类型" />
+      <span class="text-muted-foreground text-xs">多个套餐可同时启用；所有套餐均可随时编辑，修改仅用于后续创建，已有实例保持创建时配置。</span>
     </Space>
     <Table
       :columns="columns"
@@ -105,6 +114,7 @@ onMounted(() => list.load());
       :loading="list.loading.value"
       :pagination="false"
       row-key="id"
+      :scroll="{ x: 1200 }"
       size="small"
     >
       <template #bodyCell="{ column, record }">
@@ -117,21 +127,24 @@ onMounted(() => list.load());
           {{ record.resources.vcpus }} 核 / {{ formatBytes(record.resources.memory_bytes) }} /
           {{ formatBytes(record.resources.disk_bytes) }}
         </template>
-        <template v-else-if="column.key === 'gpu'">{{ gpuSummary(record as Plan) }}</template>
-        <template v-else-if="column.key === 'status'"><StatusTag kind="catalogStatus" :value="record.status" /></template>
+        <template v-else-if="column.key === 'nodes'">
+          <div v-for="id in (record as Plan).node_ids" :key="id">{{ refs.nodeName(id) }}</div>
+          <span v-if="(record as Plan).node_ids.length === 0" class="text-muted-foreground">未配置</span>
+        </template>
+        <template v-else-if="column.key === 'gpu'">
+          <div>{{ gpuSummary(record as Plan) }}</div>
+          <div class="text-muted-foreground text-xs">{{ gpuPolicySummary(record as Plan) }}</div>
+        </template>
+        <template v-else-if="column.key === 'status'"><StatusTag kind="planStatus" :value="record.status" /></template>
         <template v-else-if="column.key === 'updated'"><TimeText :value="record.updated_at" /></template>
         <template v-else-if="column.key === 'actions'">
-          <template v-if="record.status === 'draft'">
-            <Button size="small" type="link" @click="openDrawer('edit', record as Plan)">编辑</Button>
-            <Button size="small" type="link" @click="askPublish(record as Plan)">发布</Button>
-          </template>
-          <template v-else>
-            <Button size="small" type="link" @click="openDrawer('view', record as Plan)">查看</Button>
-            <Button size="small" type="link" @click="openDrawer('create', record as Plan)">新版本</Button>
-            <Button v-if="record.status === 'active'" danger size="small" type="link" @click="askRetire(record as Plan)">
-              退役
-            </Button>
-          </template>
+          <Button size="small" type="link" @click="openDrawer('view', record as Plan)">查看</Button>
+          <Button size="small" type="link" @click="openDrawer('edit', record as Plan)">编辑</Button>
+          <Button size="small" type="link" @click="openDrawer('create', record as Plan)">复制</Button>
+          <Button v-if="record.status === 'disabled'" size="small" type="link" @click="askEnable(record as Plan)">启用</Button>
+          <Button v-else-if="record.status === 'active'" danger size="small" type="link" @click="askDisable(record as Plan)">
+            停用
+          </Button>
         </template>
       </template>
     </Table>
@@ -148,17 +161,17 @@ onMounted(() => list.load());
     <PlanDrawer v-model:open="drawerOpen" :mode="drawerMode" :refs="props.refs" :source="drawerSource" @saved="list.load" />
 
     <ConfirmAction
-      v-model:open="publishOpen"
-      description="发布前后端校验：引用的政策、镜像、模板都已发布，网络已验证。发布后套餐不能修改，只能退役。"
-      :on-confirm="publish"
-      :title="`发布套餐 ${publishTarget?.code ?? ''} v${publishTarget?.version ?? ''}`"
+      v-model:open="enableOpen"
+      description="启用前校验：所选节点可用且各有兼容的已验证网络；镜像在每个节点/项目就绪；GPU 策略符合绑定政策；引用的政策、镜像、模板均已发布。仅启用此套餐，不会停用其他套餐；启用后仍可编辑。"
+      :on-confirm="enable"
+      :title="`启用套餐 ${enableTarget?.code ?? ''} v${enableTarget?.version ?? ''}`"
     />
     <ConfirmAction
-      v-model:open="retireOpen"
+      v-model:open="disableOpen"
       danger
-      description="退役后用户不能再用此套餐创建实例；已有实例不受影响。"
-      :on-confirm="retire"
-      :title="`退役套餐 ${retireTarget?.code ?? ''} v${retireTarget?.version ?? ''}`"
+      description="停用后用户不能再用此套餐创建实例；其他套餐和已有实例不受影响。停用后仍可编辑或重新启用。"
+      :on-confirm="disable"
+      :title="`停用套餐 ${disableTarget?.code ?? ''} v${disableTarget?.version ?? ''}`"
     />
   </div>
 </template>

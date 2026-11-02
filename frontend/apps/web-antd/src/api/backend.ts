@@ -47,7 +47,6 @@ import type {
   PlatformBindings,
   PolicyKind,
   PolicyVersion,
-  PolicyVersions,
   RedemptionCode,
   ResizeLimits,
   Resources,
@@ -99,6 +98,16 @@ export const authApi = {
     }),
   logout: () => api.post('/auth/logout', { body: {}, silentAuth: true }),
   me: (silent = false) => api.get<Me>('/me', { silentAuth: silent }),
+};
+
+/* ---------------- 普通用户：实例首页与额度 ---------------- */
+
+export const memberApi = {
+  creditAccount: () => detail<CreditAccount>('/credits/account'),
+  gpuAllocations: (id: ID) =>
+    detail<GPUAllocation[]>(`/instances/${id}/gpu-allocations`),
+  instances: (q?: Query) => list<Instance>('/instances', q),
+  network: (id: ID) => detail<InstanceNetwork[]>(`/instances/${id}/network`),
 };
 
 /* ---------------- 管理端：用户 ---------------- */
@@ -319,7 +328,7 @@ export const instancesApi = {
     patch<Instance>(ai(id), { name }, w),
   resize: (
     id: ID,
-    body: { confirm_restart?: boolean; policy_versions?: PolicyVersions; resources: Resources },
+    body: { confirm_restart?: boolean; resources: Resources },
     w: Write,
   ) => post<TaskAccepted>(ai(id, '/resize'), body, w),
   resizeLimits: (id: ID) => detail<ResizeLimits>(ai(id, '/resize-limits')),
@@ -360,12 +369,12 @@ export const catalogApi = {
     list<NetworkOption>('/catalog/network-options', q),
   plan: (id: ID) => detail<Plan>(`/admin/plans/${id}`),
   plans: (q?: Query) => list<Plan>('/admin/plans', q),
-  publishPlan: (id: ID, w: Write) =>
-    post<Plan>(`/admin/plans/${id}/publish`, {}, w),
+  enablePlan: (id: ID, w: Write) =>
+    post<Plan>(`/admin/plans/${id}/enable`, {}, w),
   publishTemplate: (id: ID, w: Write) =>
     post<InitTemplate>(`/admin/init-templates/${id}/publish`, {}, w),
-  retirePlan: (id: ID, w: Write) =>
-    post<Plan>(`/admin/plans/${id}/retire`, {}, w),
+  disablePlan: (id: ID, w: Write) =>
+    post<Plan>(`/admin/plans/${id}/disable`, {}, w),
   retireTemplate: (id: ID, w: Write) =>
     post<InitTemplate>(`/admin/init-templates/${id}/retire`, {}, w),
   template: (id: ID) => detail<InitTemplate>(`/admin/init-templates/${id}`),
@@ -375,10 +384,9 @@ export const catalogApi = {
     body: Partial<{ properties: Image['properties']; status: Image['status'] }>,
     w: Write,
   ) => patch<Image>(`/admin/images/${id}`, body, w),
-  /** 后端只接受草稿套餐的这些字段；code/version/status 不可改。 */
   updatePlan: (
     id: ID,
-    body: Partial<Omit<PlanInput, 'code' | 'version'>>,
+    body: Partial<PlanInput>,
     w: Write,
   ) => patch<Plan>(`/admin/plans/${id}`, body, w),
   /** 后端只接受草稿模板的 name/script/parameter_schema/timeout_seconds/phase。 */

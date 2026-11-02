@@ -4,14 +4,13 @@ import type { ErrorText } from '#/locales/errors';
 import { onBeforeUnmount, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
-import { preferences } from '@vben/preferences';
-
 import { Alert, Button, Form, FormItem, Input, InputPassword } from 'ant-design-vue';
 
 import { ApiError } from '#/api/request';
 import ErrorFeedback from '#/components/error-feedback.vue';
 import { describeError } from '#/locales/errors';
 import { useAuthStore } from '#/store';
+import { getLoginRedirect } from '#/router/home';
 
 defineOptions({ name: 'Login' });
 
@@ -44,13 +43,17 @@ async function submit() {
     return;
   }
   try {
+    const previousUser = authStore.me?.user;
     await authStore.login(form.username, form.password);
     form.password = '';
-    if (!props.embedded) {
-      const redirect = route.query.redirect as string | undefined;
-      await router.replace(
-        redirect ? decodeURIComponent(redirect) : preferences.app.defaultHomePath,
-      );
+    if (authStore.me) {
+      const changedUser = previousUser && (previousUser.id !== authStore.me.user.id || previousUser.role !== authStore.me.user.role);
+      if (!props.embedded || changedUser) {
+        await router.replace({
+          path: getLoginRedirect(props.embedded ? undefined : route.query.redirect, authStore.me.user.role),
+          force: !!changedUser,
+        });
+      }
     }
   } catch (error) {
     if (error instanceof ApiError && error.code === 'rate_limited' && error.retryAfter) {

@@ -131,7 +131,10 @@ func planDTO(db *gorm.DB, r platform.Row) (platform.Row, error) {
 	p["gpu"] = GPURequest{Count: platform.Uint(r["gpu_count"]), Model: model, AccessMode: platform.Text(r["gpu_access_mode"]), MaxHourlyPT: platform.Text(r["gpu_max_hourly_pt"])}
 	p["allowed_overrides"] = jsonValue(r["allowed_overrides"])
 	p["policy_versions"] = jsonValue(r["policy_versions"])
-	for _, v := range []struct{ table, col, key string }{{"plan_images", "image_id", "image_ids"}, {"plan_network_options", "network_option_id", "network_option_ids"}} {
+	p["gpu_policy"] = jsonValue(r["gpu_policy"])
+	p["allowed_user_actions"] = jsonValue(r["allowed_user_actions"])
+	p["gpu_user_permissions"] = jsonValue(r["gpu_user_permissions"])
+	for _, v := range []struct{ table, col, key string }{{"plan_nodes", "node_id", "node_ids"}, {"plan_images", "image_id", "image_ids"}, {"plan_network_options", "network_option_id", "network_option_ids"}} {
 		var ids []uint64
 		if e := db.Table(v.table).Where("plan_id = ?", r["id"]).Order(v.col).Pluck(v.col, &ids).Error; e != nil {
 			return nil, platform.WrapDB(e)

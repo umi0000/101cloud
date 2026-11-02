@@ -44,6 +44,7 @@ export const ENUMS: Record<string, Dict> = {
     draft: L('草稿', 'warning'),
     retired: L('已退役'),
   },
+  planStatus: { active: L('启用', 'success'), disabled: L('停用') },
   codeStatus: { active: L('有效', 'success'), disabled: L('已禁用') },
   consoleStatus: {
     active: L('已连接', 'success'),
@@ -68,6 +69,18 @@ export const ENUMS: Record<string, Dict> = {
     release: L('释放预留'),
     reserve: L('预留', 'processing'),
     settle: L('结算'),
+  },
+  gpuAttachment: {
+    attached: L('已挂载', 'success'),
+    attaching: L('挂载中', 'processing'),
+    cancelled: L('预留已取消'),
+    configuration_missing: L('挂载配置待核对', 'warning'),
+    configuration_unknown: L('挂载配置未知', 'warning'),
+    failed: L('分配失败', 'error'),
+    released: L('已释放'),
+    releasing: L('释放中，待确认', 'processing'),
+    reserved: L('已预留，待挂载', 'processing'),
+    unknown: L('分配结果待核对', 'warning'),
   },
   gpuHealth: {
     error: L('错误', 'error'),

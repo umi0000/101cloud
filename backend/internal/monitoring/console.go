@@ -150,7 +150,7 @@ func (s *consoleService) create(c *gin.Context) (any, error) {
 		return nil, platform.E(404, "not_found", "实例不存在")
 	}
 	if !admin && !consoleAllowed(inst) {
-		return nil, platform.E(403, "action_not_allowed", "管理员未授权此自定义实例的控制台操作")
+		return nil, platform.E(403, "action_not_allowed", "管理员未授权此实例的控制台操作")
 	}
 	if platform.Text(inst["observed_state"]) != "running" || inst["deleted_at"] != nil || platform.Text(inst["provisioning_state"]) != "ready" {
 		return nil, platform.E(409, "instance_unavailable", "实例未运行或不可运维")
@@ -998,9 +998,6 @@ func (w *consoleWire) read() (int, []byte, error) {
 }
 
 func consoleAllowed(inst platform.Row) bool {
-	if platform.Text(inst["product_type"]) != "custom" {
-		return true
-	}
 	var actions []string
 	if json.Unmarshal([]byte(platform.Text(inst["allowed_user_actions"])), &actions) != nil {
 		return false

@@ -68,6 +68,8 @@ func TestElasticGPUCountMustMatchPlanOffering(t *testing.T) {
 	if e := checkRequest(vm, GPURequest{Count: 0, AccessMode: "shared", MaxHourlyPT: "0"}); e != nil {
 		t.Fatalf("CPU-only VM request rejected: %v", e)
 	}
+	requireValidation(t, checkRequest(gpuPlan(0, `{}`), GPURequest{Count: 0, AccessMode: "shared", MaxHourlyPT: "3.000001"}))
+	requireValidation(t, checkRequest(vm, GPURequest{Count: 0, AccessMode: "shared", MaxHourlyPT: "0.000001"}))
 }
 
 func TestPlanDefinitionAcceptsOptionalGPUOffering(t *testing.T) {
@@ -99,6 +101,7 @@ func TestMySQLQuoteUsesReadyImageForNetworkProject(t *testing.T) {
 	for table, definition := range map[string]string{
 		"instance_plans":        "id BIGINT PRIMARY KEY,status VARCHAR(24),image_type VARCHAR(24),vcpus BIGINT,memory_bytes BIGINT,disk_bytes BIGINT,gpu_count BIGINT,gpu_model VARCHAR(64),gpu_access_mode VARCHAR(24),gpu_max_hourly_pt VARCHAR(24),allowed_overrides JSON,policy_versions JSON,init_template_version_id BIGINT",
 		"plan_images":           "plan_id BIGINT,image_id BIGINT",
+		"plan_nodes":            "plan_id BIGINT,node_id BIGINT",
 		"plan_network_options":  "plan_id BIGINT,network_option_id BIGINT",
 		"images":                "id BIGINT PRIMARY KEY,status VARCHAR(24),image_type VARCHAR(24),architecture VARCHAR(24),fingerprint BINARY(32),gpu_ready BOOL,properties JSON",
 		"image_nodes":           "id BIGINT PRIMARY KEY,image_id BIGINT,node_id BIGINT,project_name VARCHAR(64),architecture VARCHAR(24),fingerprint BINARY(32),gpu_ready BOOL,cloud_init BOOL,properties JSON,status VARCHAR(24),source_id VARCHAR(24),variant VARCHAR(64),revision BIGINT,last_verified_at DATETIME(6)",
@@ -115,6 +118,7 @@ func TestMySQLQuoteUsesReadyImageForNetworkProject(t *testing.T) {
 		`INSERT INTO instance_plans VALUES(1,'active','container',2,4294967296,21474836480,1,'NVIDIA A100','exclusive','3',JSON_OBJECT(),'{"pricing":"1","credit":"2","gpu-idle":"3","gpu-scheduling":"4","gpu-pricing":"5"}',NULL)`,
 		`INSERT INTO plan_images VALUES(1,1)`,
 		`INSERT INTO plan_network_options VALUES(1,1)`,
+		`INSERT INTO plan_nodes VALUES(1,1)`,
 		`INSERT INTO images VALUES(1,'active','container','aarch64',UNHEX(REPEAT('bb',32)),FALSE,JSON_OBJECT())`,
 		`INSERT INTO nodes VALUES(1,'{"architecture":"x86_64"}','default')`,
 		`INSERT INTO network_pools VALUES(1,'active')`,
@@ -135,6 +139,16 @@ func TestMySQLQuoteUsesReadyImageForNetworkProject(t *testing.T) {
 	}
 	if platform.Text(validated.Image["architecture"]) != "x86_64" || !platform.Bool(validated.Image["gpu_ready"]) || workerQuoteFingerprint(validated.Image["fingerprint"]) != strings.Repeat("aa", 32) {
 		t.Fatalf("quote did not freeze selected project's metadata: %+v", validated.Image)
+	}
+	wrongNode := spec
+	wrongNode.NodeID = "2"
+	requireValidation(t, func() error { _, err := ValidateElastic(ctx, db, a, wrongNode, nil); return err }())
+	if err := db.Table("plan_nodes").Where("plan_id=1").Delete(&platform.Row{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	requireValidation(t, func() error { _, err := ValidateElastic(ctx, db, a, spec, nil); return err }())
+	if err := db.Exec("INSERT INTO plan_nodes VALUES(1,1)").Error; err != nil {
+		t.Fatal(err)
 	}
 	for _, status := range []string{"pending", "downloading", "failed", "unknown"} {
 		if err := db.Table("image_nodes").Where("id=2").Update("status", status).Error; err != nil {

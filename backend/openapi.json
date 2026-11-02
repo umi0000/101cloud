@@ -1919,30 +1919,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "type": "object",
-                      "properties": {
-                        "items": {
-                          "type": "array",
-                          "items": {
-                            "type": "object"
-                          }
-                        },
-                        "next_cursor": {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "items",
-                        "next_cursor"
-                      ],
-                      "additionalProperties": false
+                      "$ref": "#/components/schemas/GPUPolicyView"
                     },
                     "request_id": {
                       "type": "string"
@@ -1967,7 +1944,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Administrator required. ",
+        "description": "Administrator required. Replaces GPU policy and may explicitly replace allowed_user_actions and gpu_user_permissions on elastic or custom instances; empty arrays/maps revoke permissions. Platform and hardware safety restrictions still apply.",
         "parameters": [
           {
             "in": "path",
@@ -2005,7 +1982,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
+                      "$ref": "#/components/schemas/GPUPolicyView"
                     },
                     "request_id": {
                       "type": "string"
@@ -2029,66 +2006,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "idle": {
-                    "type": "object",
-                    "properties": {
-                      "enabled": {
-                        "type": "boolean"
-                      },
-                      "timeout_seconds": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "action": {
-                        "type": "string",
-                        "enum": [
-                          "detach_gpu",
-                          "stop_instance"
-                        ]
-                      }
-                    },
-                    "required": [
-                      "enabled",
-                      "timeout_seconds",
-                      "action"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "rebalance": {
-                    "type": "object",
-                    "properties": {
-                      "enabled": {
-                        "type": "boolean"
-                      },
-                      "allow_live": {
-                        "type": "boolean"
-                      },
-                      "max_hourly_pt": {
-                        "type": "string",
-                        "pattern": "^[0-9]+(?:\\.[0-9]{1,6})?$"
-                      }
-                    },
-                    "required": [
-                      "enabled",
-                      "allow_live",
-                      "max_hourly_pt"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "allowed_user_actions": {
-                    "type": "array",
-                    "items": {
-                      "type": "string"
-                    }
-                  }
-                },
-                "required": [
-                  "idle",
-                  "rebalance"
-                ],
-                "additionalProperties": false
+                "$ref": "#/components/schemas/AdminGPUPolicy"
               }
             }
           }
@@ -3653,7 +3571,7 @@
                         "items": {
                           "type": "array",
                           "items": {
-                            "type": "object"
+                            "$ref": "#/components/schemas/Plan"
                           }
                         },
                         "next_cursor": {
@@ -3696,7 +3614,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Administrator required. ",
+        "description": "Administrator required. Creates a disabled independently editable plan with an explicit nonempty node_ids allowlist. Enable explicitly after configuration.",
         "parameters": [
           {
             "in": "header",
@@ -3726,7 +3644,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
+                      "$ref": "#/components/schemas/Plan"
                     },
                     "request_id": {
                       "type": "string"
@@ -3784,7 +3702,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
+                      "$ref": "#/components/schemas/Plan"
                     },
                     "request_id": {
                       "type": "string"
@@ -3809,7 +3727,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Administrator required. ",
+        "description": "Administrator required. All plans may be patched including code/version; omitted fields retain stored values. Status changes only through enable/disable. Active edits validate full reference and placement readiness atomically. Existing instances retain frozen configuration.",
         "parameters": [
           {
             "in": "path",
@@ -3847,7 +3765,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
+                      "$ref": "#/components/schemas/Plan"
                     },
                     "request_id": {
                       "type": "string"
@@ -3871,96 +3789,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "code": {
-                    "type": "string"
-                  },
-                  "version": {
-                    "type": "string"
-                  },
-                  "name": {
-                    "type": "string"
-                  },
-                  "instance_type": {
-                    "type": "string",
-                    "enum": [
-                      "container",
-                      "virtual-machine"
-                    ]
-                  },
-                  "resources": {
-                    "$ref": "#/components/schemas/Resources"
-                  },
-                  "gpu": {
-                    "$ref": "#/components/schemas/GPURequest",
-                    "description": "Plan GPU offering; only count/model/access_mode/max_hourly_pt apply. VM plans: count 0, model null, no gpu_count override with max > 0. Container plans: model null requires count 0 and no gpu_count override max > 0; model set requires count > 0, or count 0 with allowed_overrides.gpu_count.max >= 1 (optional GPU). A plan with a model requires policy_versions.gpu-pricing. Only count > 0 requires every image to be gpu_ready. Violations return 422 validation_failed."
-                  },
-                  "image_ids": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "pattern": "^[1-9][0-9]*$"
-                    }
-                  },
-                  "network_option_ids": {
-                    "type": "array",
-                    "items": {
-                      "type": "string",
-                      "pattern": "^[1-9][0-9]*$"
-                    }
-                  },
-                  "allowed_overrides": {
-                    "type": "object",
-                    "additionalProperties": {
-                      "type": "object",
-                      "properties": {
-                        "min": {
-                          "type": "string",
-                          "pattern": "^[0-9]+$"
-                        },
-                        "max": {
-                          "type": "string",
-                          "pattern": "^[0-9]+$"
-                        },
-                        "step": {
-                          "type": "string",
-                          "pattern": "^[0-9]+$"
-                        }
-                      },
-                      "required": [
-                        "min",
-                        "max",
-                        "step"
-                      ],
-                      "additionalProperties": false
-                    }
-                  },
-                  "policy_versions": {
-                    "$ref": "#/components/schemas/PolicyVersions"
-                  },
-                  "init_template_version_id": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "pattern": "^[1-9][0-9]*$"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  },
-                  "status": {
-                    "type": "string",
-                    "enum": [
-                      "active",
-                      "disabled",
-                      "retired"
-                    ]
-                  }
-                },
-                "required": [],
-                "additionalProperties": false
+                "$ref": "#/components/schemas/PlanPatch"
               }
             }
           }
@@ -5512,7 +5341,7 @@
                         "items": {
                           "type": "array",
                           "items": {
-                            "type": "object"
+                            "$ref": "#/components/schemas/Plan"
                           }
                         },
                         "next_cursor": {
@@ -5578,7 +5407,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
+                      "$ref": "#/components/schemas/Plan"
                     },
                     "request_id": {
                       "type": "string"
@@ -6784,7 +6613,7 @@
         "tags": [
           "instances"
         ],
-        "description": "",
+        "description": "Returns stored and effective GPU policy, active platform ranges, and six per-field editable flags. For any nonadministrator, editable requires both gpu_policy in the instance action allowlist and the corresponding gpu_user_permissions flag; missing flags are false.",
         "parameters": [
           {
             "in": "path",
@@ -6821,30 +6650,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "type": "object",
-                      "properties": {
-                        "items": {
-                          "type": "array",
-                          "items": {
-                            "type": "object"
-                          }
-                        },
-                        "next_cursor": {
-                          "anyOf": [
-                            {
-                              "type": "string"
-                            },
-                            {
-                              "type": "null"
-                            }
-                          ]
-                        }
-                      },
-                      "required": [
-                        "items",
-                        "next_cursor"
-                      ],
-                      "additionalProperties": false
+                      "$ref": "#/components/schemas/GPUPolicyView"
                     },
                     "request_id": {
                       "type": "string"
@@ -6869,7 +6675,7 @@
         "tags": [
           "instances"
         ],
-        "description": "",
+        "description": "Replaces all idle/rebalance fields. Both elastic and custom nonadministrators require gpu_policy in allowed_user_actions, and each changed field requires its matching gpu_user_permissions flag. Unchanged unauthorized fields may be round-tripped. Active platform policy bounds and container safety checks remain enforced.",
         "parameters": [
           {
             "in": "path",
@@ -6907,7 +6713,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
+                      "$ref": "#/components/schemas/GPUPolicyView"
                     },
                     "request_id": {
                       "type": "string"
@@ -6931,60 +6737,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "idle": {
-                    "type": "object",
-                    "properties": {
-                      "enabled": {
-                        "type": "boolean"
-                      },
-                      "timeout_seconds": {
-                        "type": "integer",
-                        "minimum": 1
-                      },
-                      "action": {
-                        "type": "string",
-                        "enum": [
-                          "detach_gpu",
-                          "stop_instance"
-                        ]
-                      }
-                    },
-                    "required": [
-                      "enabled",
-                      "timeout_seconds",
-                      "action"
-                    ],
-                    "additionalProperties": false
-                  },
-                  "rebalance": {
-                    "type": "object",
-                    "properties": {
-                      "enabled": {
-                        "type": "boolean"
-                      },
-                      "allow_live": {
-                        "type": "boolean"
-                      },
-                      "max_hourly_pt": {
-                        "type": "string",
-                        "pattern": "^[0-9]+(?:\\.[0-9]{1,6})?$"
-                      }
-                    },
-                    "required": [
-                      "enabled",
-                      "allow_live",
-                      "max_hourly_pt"
-                    ],
-                    "additionalProperties": false
-                  }
-                },
-                "required": [
-                  "idle",
-                  "rebalance"
-                ],
-                "additionalProperties": false
+                "$ref": "#/components/schemas/GPUPolicy"
               }
             }
           }
@@ -8740,9 +8493,6 @@
                   "resources": {
                     "$ref": "#/components/schemas/Resources"
                   },
-                  "policy_versions": {
-                    "$ref": "#/components/schemas/PolicyVersions"
-                  },
                   "confirm_restart": {
                     "type": "boolean",
                     "description": "Optional for stopped instances; must be true for running instances to authorize graceful stop, resize and restart in one durable task."
@@ -9395,9 +9145,9 @@
         }
       }
     },
-    "/admin/plans/{id}/publish": {
+    "/admin/plans/{id}/enable": {
       "post": {
-        "operationId": "post_admin_plans_id_publish",
+        "operationId": "post_admin_plans_id_enable",
         "tags": [
           "admin"
         ],
@@ -9449,7 +9199,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
+                      "$ref": "#/components/schemas/Plan"
                     },
                     "request_id": {
                       "type": "string"
@@ -9483,9 +9233,9 @@
         }
       }
     },
-    "/admin/plans/{id}/retire": {
+    "/admin/plans/{id}/disable": {
       "post": {
-        "operationId": "post_admin_plans_id_retire",
+        "operationId": "post_admin_plans_id_disable",
         "tags": [
           "admin"
         ],
@@ -9537,7 +9287,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
+                      "$ref": "#/components/schemas/Plan"
                     },
                     "request_id": {
                       "type": "string"
@@ -10967,7 +10717,7 @@
         "tags": [
           "instances"
         ],
-        "description": "Resize an owned instance within plan, quota, node capacity and resident budget; disk shrinking is forbidden. A running instance requires confirm_restart:true; nonadministrator custom instances additionally require resize, stop and start permissions. One durable backend task gracefully stops, confirms configuration and restarts; stopped instances stay stopped. No client stop/start choreography; recovery never replays stop or resize after start intent.",
+        "description": "Resize an owned instance within plan, quota, node capacity and resident budget; disk shrinking is forbidden. All nonadministrators require the instance resize permission; running instances also require stop/start permissions and confirm_restart:true. One durable backend task gracefully stops, confirms configuration and restarts; stopped instances stay stopped. No client stop/start choreography; recovery never replays stop or resize after start intent.",
         "parameters": [
           {
             "in": "path",
@@ -11044,12 +10794,9 @@
                   "resources": {
                     "$ref": "#/components/schemas/Resources"
                   },
-                  "policy_versions": {
-                    "$ref": "#/components/schemas/PolicyVersions"
-                  },
                   "confirm_restart": {
                     "type": "boolean",
-                    "description": "Optional for stopped instances; must be true for running instances. Nonadministrator custom instances require resize, stop and start permissions."
+                    "description": "Optional for stopped instances; must be true for running instances. Nonadministrators of elastic and custom instances require resize, stop and start permissions."
                   }
                 },
                 "required": [
@@ -11245,7 +10992,11 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
+                      "type":"object",
+                      "properties":{"plan_revision":{"type":"string","pattern":"^[1-9][0-9]*$"}},
+                      "required":["plan_revision"],
+                      "additionalProperties":true,
+                      "description":"Quote price details, policy_versions, expires_at, admissible and reasons. Submit plan_revision on creation; missing or changed revision returns 409 plan_changed before side effects."
                     },
                     "request_id": {
                       "type": "string"
@@ -11687,6 +11438,7 @@
             "type": "string",
             "pattern": "^[1-9][0-9]*$"
           },
+          "plan_revision": {"type":"string","pattern":"^[1-9][0-9]*$","description":"Optional quote freshness guard; mismatch returns 409 plan_changed."},
           "image_id": {
             "type": "string",
             "pattern": "^[1-9][0-9]*$"
@@ -11695,12 +11447,15 @@
             "type": "string",
             "pattern": "^[1-9][0-9]*$"
           },
+          "node_id": {
+            "$ref": "#/components/schemas/ElasticNodeID"
+          },
           "resources": {
             "$ref": "#/components/schemas/Resources"
           },
           "gpu": {
             "$ref": "#/components/schemas/GPURequest",
-            "description": "Only count/model/access_mode/max_hourly_pt apply. count 0 opts out of GPUs on any plan, regardless of the plan's base count or gpu_count.min: model must be null, the plan's model/access_mode/price limit are not compared, and gpu_hourly_pt is 0. count > 0 requires a container plan that offers GPUs; count must equal the plan base or fit allowed_overrides.gpu_count min/max/step; model and access_mode must equal the plan's; max_hourly_pt must not exceed the plan limit; the image must be gpu_ready. Violations return 422 validation_failed."
+            "description": "Only count/model/access_mode/max_hourly_pt apply. max_hourly_pt is a nonnegative DECIMAL(20,6) string and must not exceed the plan cap even when count is 0. count 0 opts out on any plan regardless of its base count or gpu_count.min; model must be null, access_mode is not compared with the offering and GPU charge is 0. count > 0 requires a GPU-capable container plan, count equal to the base or within allowed_overrides.gpu_count min/max/step, matching model/access_mode, a GPU-ready image and gpu-pricing policy. Violations return 422 validation_failed."
           },
           "init_parameters": {
             "type": "object"
@@ -11727,6 +11482,7 @@
             "type": "string",
             "pattern": "^[1-9][0-9]*$"
           },
+          "plan_revision": {"type":"string","pattern":"^[1-9][0-9]*$","description":"Required revision returned by quote; mismatch returns 409 plan_changed before side effects."},
           "image_id": {
             "type": "string",
             "pattern": "^[1-9][0-9]*$"
@@ -11735,12 +11491,15 @@
             "type": "string",
             "pattern": "^[1-9][0-9]*$"
           },
+          "node_id": {
+            "$ref": "#/components/schemas/ElasticNodeID"
+          },
           "resources": {
             "$ref": "#/components/schemas/Resources"
           },
           "gpu": {
             "$ref": "#/components/schemas/GPURequest",
-            "description": "Same rules as ElasticSpec.gpu: count 0 opts out of GPUs on any plan (model null, no GPU charge); count > 0 must match the plan's GPU offering."
+            "description": "Same rules as ElasticSpec.gpu, including the plan price cap when count is 0. Admission snapshots the plan GPU policy and user permissions; the instance rebalance cap uses this admitted request cap."
           },
           "init_parameters": {
             "type": "object"
@@ -11752,6 +11511,7 @@
         "required": [
           "name",
           "plan_id",
+          "plan_revision",
           "image_id",
           "network_option_id",
           "resources",
@@ -11805,28 +11565,10 @@
             ]
           },
           "allowed_user_actions": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "enum": [
-                "start",
-                "stop",
-                "restart",
-                "resize",
-                "delete",
-                "gpu_attach",
-                "gpu_detach",
-                "gpu_rebind",
-                "gpu_policy",
-                "console"
-              ]
-            }
+            "$ref": "#/components/schemas/AllowedUserActions"
           },
           "gpu_user_permissions": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "boolean"
-            }
+            "$ref": "#/components/schemas/GPUUserPermissions"
           }
         },
         "required": [
@@ -12117,6 +11859,7 @@
       "Instance": {
         "type": "object",
         "properties": {
+          "plan_snapshot": {"type":["object","null"],"description":"Frozen elastic admission baseline and override bounds used for resize; custom is null.","properties":{"revision":{"type":"string"},"vcpus":{"type":"integer","minimum":1},"memory_bytes":{"type":"string"},"disk_bytes":{"type":"string"},"allowed_overrides":{"type":"object"}},"required":["revision","vcpus","memory_bytes","disk_bytes","allowed_overrides"],"additionalProperties":false},
           "resource_reservations_released": {
             "type": "boolean",
             "description": "Only a failed, proven never-dispatched creation with completed atomic reservation release reports true."
@@ -12149,6 +11892,14 @@
               "virtual-machine"
             ]
           },
+          "image_os_name": {
+            "type": "string",
+            "description": "Source image OS name, including disabled or retired images; empty when unavailable. Never inferred from the instance name."
+          },
+          "image_os_release": {
+            "type": "string",
+            "description": "Source image OS release, including disabled or retired images; empty when unavailable."
+          },
           "plan_id": {
             "anyOf": [
               {
@@ -12162,6 +11913,10 @@
           },
           "resources": {
             "$ref": "#/components/schemas/Resources"
+          },
+          "allowed_user_actions": {
+            "$ref": "#/components/schemas/AllowedUserActions",
+            "description": "Frozen instance action allowlist, copied from the plan at elastic admission. Administrators alone bypass it."
           },
           "desired_state": {
             "type": "string",
@@ -12230,7 +11985,7 @@
           },
           "capabilities": {
             "type": "object",
-            "description": "UI hints only; server reauthorizes each request. Resize/delete require ready provisioning and fresh observed state. Running delete is administrator-only; running custom resize by nonadministrators requires resize, stop and start permissions.",
+            "description": "UI hints only; the server reauthorizes every request against the instance allowed_user_actions for elastic and custom products. Only administrators bypass the action allowlist, not hardware/capacity or confirmation checks. Resize/delete require ready provisioning and fresh observed state. Running delete is administrator-only; running resize by nonadministrators additionally requires stop and start permissions.",
             "properties": {
               "resize": { "type": "boolean", "description": "Whether stopped/running resize is available; running requests still require confirm_restart:true." },
               "delete": { "type": "boolean", "description": "Whether deletion is available; running deletion still requires administrator mode:force and explicit risk, exact-name and data confirmations." }
@@ -12245,6 +12000,8 @@
           "name",
           "product_type",
           "billing_mode",
+          "image_os_name",
+          "image_os_release",
           "resources",
           "observed_state"
         ],
@@ -13259,7 +13016,26 @@
           },
           "gpu": {
             "$ref": "#/components/schemas/GPURequest",
-            "description": "Plan GPU offering; only count/model/access_mode/max_hourly_pt apply. VM plans: count 0, model null, no gpu_count override with max > 0. Container plans: model null requires count 0 and no gpu_count override max > 0; model set requires count > 0, or count 0 with allowed_overrides.gpu_count.max >= 1 (optional GPU). A plan with a model requires policy_versions.gpu-pricing. Only count > 0 requires every image to be gpu_ready. Violations return 422 validation_failed."
+            "description": "Plan GPU offering: only count/model/access_mode/max_hourly_pt apply. VM plans require count 0, model null and no positive GPU override. Container plans with a model require positive count or an optional GPU override max >= 1, a gpu-pricing policy, and GPU-ready image configurations on every selected node/project. max_hourly_pt must equal gpu_policy.rebalance.max_hourly_pt numerically (DECIMAL(20,6))."
+          },
+          "node_ids": {
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+            "description": "Explicit node allowlist. All selected network bindings must belong to these nodes; each node needs at least one compatible selected network. Every selected image must resolve in every selected node/network project with compatible architecture; publication requires verified active online nodes, validated networks and ready images. This does not enable automatic placement or move instances."
+          },
+          "gpu_policy": {
+            "$ref": "#/components/schemas/GPUPolicy",
+            "description": "Initial instance policy. Timeout/action must fit the pinned gpu-idle policy even when disabled; enabled idle requires that policy to permit it. Price cap must equal gpu.max_hourly_pt. Omission defaults idle/rebalance/live to disabled and uses the pinned idle default timeout/action. VM plans cannot enable idle, rebalance or live migration."
+          },
+          "allowed_user_actions": {
+            "$ref": "#/components/schemas/AllowedUserActions",
+            "description": "Copied to new instances. Omission defaults to start, stop, restart, console; explicit [] denies all listed user actions. VM plans reject GPU-specific actions."
+          },
+          "gpu_user_permissions": {
+            "$ref": "#/components/schemas/GPUUserPermissions",
+            "description": "Copied to new instances. Omission defaults to {}; explicit {} is preserved. VM plans cannot grant any true GPU edit permission."
           },
           "image_ids": {
             "type": "array",
@@ -13323,6 +13099,7 @@
           "instance_type",
           "resources",
           "gpu",
+          "node_ids",
           "image_ids",
           "network_option_ids",
           "allowed_overrides",
@@ -13330,6 +13107,325 @@
         ],
         "additionalProperties": false
       },
+        "PlanPatch": {
+          "type": "object",
+          "description": "Partial update in active or disabled state. Omitted fields retain values. code/version are editable and unique together. Status is not patchable; active edits require fully ready references and placement.",
+          "properties": {
+            "code": {"$ref":"#/components/schemas/PlanCreate/properties/code"},
+            "version": {"$ref":"#/components/schemas/PlanCreate/properties/version"},
+            "name": {
+              "$ref": "#/components/schemas/PlanCreate/properties/name"
+            },
+            "instance_type": {
+              "$ref": "#/components/schemas/PlanCreate/properties/instance_type"
+            },
+            "resources": {
+              "$ref": "#/components/schemas/PlanCreate/properties/resources"
+            },
+            "gpu": {
+              "$ref": "#/components/schemas/PlanCreate/properties/gpu"
+            },
+            "node_ids": {
+              "$ref": "#/components/schemas/PlanCreate/properties/node_ids"
+            },
+            "gpu_policy": {
+              "$ref": "#/components/schemas/PlanCreate/properties/gpu_policy"
+            },
+            "allowed_user_actions": {
+              "$ref": "#/components/schemas/PlanCreate/properties/allowed_user_actions"
+            },
+            "gpu_user_permissions": {
+              "$ref": "#/components/schemas/PlanCreate/properties/gpu_user_permissions"
+            },
+            "image_ids": {
+              "$ref": "#/components/schemas/PlanCreate/properties/image_ids"
+            },
+            "network_option_ids": {
+              "$ref": "#/components/schemas/PlanCreate/properties/network_option_ids"
+            },
+            "allowed_overrides": {
+              "$ref": "#/components/schemas/PlanCreate/properties/allowed_overrides"
+            },
+            "policy_versions": {
+              "$ref": "#/components/schemas/PlanCreate/properties/policy_versions"
+            },
+            "init_template_version_id": {
+              "$ref": "#/components/schemas/PlanCreate/properties/init_template_version_id"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Plan": {
+          "type": "object",
+          "description": "Identical admin/public representation. Plans remain independently editable and enabled; edits affect future creation only. Existing instance resources, authorizations and resize bounds are frozen at admission.",
+          "properties": {
+            "code": {
+              "$ref": "#/components/schemas/PlanCreate/properties/code"
+            },
+            "version": {
+              "$ref": "#/components/schemas/PlanCreate/properties/version"
+            },
+            "name": {
+              "$ref": "#/components/schemas/PlanCreate/properties/name"
+            },
+            "instance_type": {
+              "$ref": "#/components/schemas/PlanCreate/properties/instance_type"
+            },
+            "resources": {
+              "$ref": "#/components/schemas/PlanCreate/properties/resources"
+            },
+            "gpu": {
+              "$ref": "#/components/schemas/PlanCreate/properties/gpu"
+            },
+            "node_ids": {
+              "$ref": "#/components/schemas/PlanCreate/properties/node_ids"
+            },
+            "gpu_policy": {
+              "$ref": "#/components/schemas/PlanCreate/properties/gpu_policy"
+            },
+            "allowed_user_actions": {
+              "$ref": "#/components/schemas/PlanCreate/properties/allowed_user_actions"
+            },
+            "gpu_user_permissions": {
+              "$ref": "#/components/schemas/PlanCreate/properties/gpu_user_permissions"
+            },
+            "image_ids": {
+              "$ref": "#/components/schemas/PlanCreate/properties/image_ids"
+            },
+            "network_option_ids": {
+              "$ref": "#/components/schemas/PlanCreate/properties/network_option_ids"
+            },
+            "allowed_overrides": {
+              "$ref": "#/components/schemas/PlanCreate/properties/allowed_overrides"
+            },
+            "policy_versions": {
+              "$ref": "#/components/schemas/PlanCreate/properties/policy_versions"
+            },
+            "init_template_version_id": {
+              "$ref": "#/components/schemas/PlanCreate/properties/init_template_version_id"
+            },
+            "id": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            },
+            "status": {
+              "type": "string",
+              "enum": [
+                "active",
+                "disabled"
+              ]
+            },
+            "pricing_version_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "Pricing policy-version ID, equal to policy_versions.pricing when configured."
+            },
+            "revision": {
+              "type": "string",
+              "pattern": "^[0-9]+$"
+            },
+            "created_at": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "updated_at": {
+              "type": "string",
+              "format": "date-time"
+            }
+          },
+          "required": [
+            "code",
+            "version",
+            "name",
+            "instance_type",
+            "resources",
+            "gpu",
+            "node_ids",
+            "gpu_policy",
+            "allowed_user_actions",
+            "gpu_user_permissions",
+            "image_ids",
+            "network_option_ids",
+            "allowed_overrides",
+            "policy_versions",
+            "init_template_version_id",
+            "id",
+            "status",
+            "pricing_version_id",
+            "revision",
+            "created_at",
+            "updated_at"
+          ],
+          "additionalProperties": false
+        },
+        "AllowedUserActions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "enum": [
+              "start",
+              "stop",
+              "restart",
+              "resize",
+              "delete",
+              "gpu_attach",
+              "gpu_detach",
+              "gpu_rebind",
+              "gpu_policy",
+              "console"
+            ]
+          },
+          "description": "Allowlist for nonadministrator instance lifecycle/GPU actions and console access; [] grants none. A display-name rename is not one of these action identifiers."
+        },
+        "GPUUserPermissions": {
+          "type": "object",
+          "properties": {
+            "idle": {
+              "type": "boolean",
+              "default": false
+            },
+            "idle_timeout": {
+              "type": "boolean",
+              "default": false
+            },
+            "idle_action": {
+              "type": "boolean",
+              "default": false
+            },
+            "rebalance": {
+              "type": "boolean",
+              "default": false
+            },
+            "allow_live": {
+              "type": "boolean",
+              "default": false
+            },
+            "max_hourly_pt": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "additionalProperties": false,
+          "description": "Six GPU policy field-edit permissions; omitted keys mean false. idle controls idle.enabled; idle_timeout controls idle.timeout_seconds; idle_action controls idle.action; rebalance controls rebalance.enabled; allow_live and max_hourly_pt control the corresponding rebalance fields. Nonadministrators also need the gpu_policy action."
+        },
+        "ElasticNodeID": {
+          "type": "string",
+          "pattern": "^[1-9][0-9]*$",
+          "description": "Optional node assertion for quote/create. Must equal the selected network_option_id binding node and belong to the selected plan node_ids. Omission derives the node from that same binding; never arbitrary placement."
+        },
+        "AdminGPUPolicy": {
+          "type": "object",
+          "properties": {
+            "idle": {
+              "$ref": "#/components/schemas/GPUPolicy/properties/idle"
+            },
+            "rebalance": {
+              "$ref": "#/components/schemas/GPUPolicy/properties/rebalance"
+            },
+            "allowed_user_actions": {
+              "$ref": "#/components/schemas/AllowedUserActions"
+            },
+            "gpu_user_permissions": {
+              "$ref": "#/components/schemas/GPUUserPermissions"
+            }
+          },
+          "required": [
+            "idle",
+            "rebalance"
+          ],
+          "additionalProperties": false
+        },
+        "GPUPolicyView": {
+          "type": "object",
+          "properties": {
+            "idle": {
+              "$ref": "#/components/schemas/GPUPolicy/properties/idle"
+            },
+            "rebalance": {
+              "$ref": "#/components/schemas/GPUPolicy/properties/rebalance"
+            },
+            "effective_policy": {
+              "type": "object",
+              "description": "Effective idle/rebalance and platform safety requirements; may disable stored settings when blocked.",
+              "additionalProperties": true
+            },
+            "allowed_ranges": {
+              "type": "object",
+              "properties": {
+                "idle": {
+                  "type": "object"
+                },
+                "rebalance": {
+                  "type": "object"
+                },
+                "editable": {
+                  "$ref": "#/components/schemas/GPUUserPermissions"
+                }
+              },
+              "required": [
+                "idle",
+                "rebalance",
+                "editable"
+              ],
+              "additionalProperties": false
+            },
+            "policy_versions": {
+              "type": "object",
+              "properties": {
+                "gpu-idle": {"$ref": "#/components/schemas/PolicyVersions/properties/gpu-idle"},
+                "gpu-scheduling": {"$ref": "#/components/schemas/PolicyVersions/properties/gpu-scheduling"}
+              },
+              "required": ["gpu-idle", "gpu-scheduling"],
+              "additionalProperties": false
+            },
+            "revision": {
+              "type": "string"
+            },
+            "idle_since": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "last_rebound_at": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "format": "date-time"
+            },
+            "blocked_reasons": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "allowed_user_actions": {
+              "$ref": "#/components/schemas/AllowedUserActions"
+            },
+            "gpu_user_permissions": {
+              "$ref": "#/components/schemas/GPUUserPermissions"
+            }
+          },
+          "required": [
+            "idle",
+            "rebalance",
+            "effective_policy",
+            "allowed_ranges",
+            "policy_versions",
+            "revision",
+            "idle_since",
+            "last_rebound_at",
+            "blocked_reasons",
+            "allowed_user_actions",
+            "gpu_user_permissions"
+          ],
+          "additionalProperties": false
+        },
       "ImageCreate": {
         "type": "object",
         "properties": {

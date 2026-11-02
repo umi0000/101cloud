@@ -276,3 +276,29 @@ func TestMySQLConsoleOldReadySessionStreamsOnce(t *testing.T) {
 		t.Fatal("stream did not stop when its bridge closed")
 	}
 }
+
+func TestMySQLElasticConsoleAuthorizationAppliesToAdmissionAndExistingSession(t *testing.T) {
+	s, row := consoleTestService(t)
+	if err := s.a.DB.Table("instances").Where("id=3").Updates(platform.Row{"product_type": "elastic", "allowed_user_actions": `[]`}).Error; err != nil {
+		t.Fatal(err)
+	}
+	c, _ := consoleTestContext(row, http.MethodPost, "/instances/3/console-sessions", `{"kind":"terminal","cols":80,"rows":24}`)
+	if _, err := s.create(c); err == nil {
+		t.Fatal("elastic instance without console permission opened a new session")
+	} else if api, ok := err.(*platform.HTTPError); !ok || api.Status != 403 || api.Code != "action_not_allowed" {
+		t.Fatalf("unexpected denial: %v", err)
+	}
+	if err := s.authorized(context.Background(), row, true); err == nil {
+		t.Fatal("existing elastic session retained revoked console access")
+	}
+	if err := s.a.DB.Table("instances").Where("id=3").Update("allowed_user_actions", `["console"]`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.authorized(context.Background(), row, true); err != nil {
+		t.Fatalf("authorized elastic console denied: %v", err)
+	}
+	c, response := consoleTestContext(row, http.MethodPost, "/instances/3/console-sessions", `{"kind":"terminal","cols":80,"rows":24}`)
+	if _, err := s.create(c); err != nil || response.Code != http.StatusCreated {
+		t.Fatalf("authorized elastic console admission failed: status=%d error=%v", response.Code, err)
+	}
+}

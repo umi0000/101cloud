@@ -54,6 +54,9 @@ export const useAuthStore = defineStore('auth', () => {
       await refreshCsrf();
       await authApi.login(username, password);
       const r = await authApi.me(true);
+      if (me.value && (me.value.user.id !== r.data.user.id || me.value.user.role !== r.data.user.role)) {
+        clear();
+      }
       applyMe(r.data);
       accessStore.setLoginExpired(false);
     } finally {

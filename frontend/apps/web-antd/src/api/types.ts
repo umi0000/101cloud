@@ -76,6 +76,7 @@ export interface Session {
 export type InstanceType = 'container' | 'virtual-machine';
 export type AccessMode = 'exclusive' | 'shared';
 export type CatalogStatus = 'active' | 'disabled' | 'draft' | 'retired';
+export type PlanStatus = 'active' | 'disabled';
 
 export interface ImageProperties {
   [key: string]: unknown;
@@ -211,33 +212,41 @@ export type PolicyVersions = Partial<Record<PolicyKind, ID>>;
 
 export interface Plan {
   allowed_overrides: AllowedOverrides;
+  allowed_user_actions: CustomAction[];
   code: string;
   created_at: Time;
   gpu: GPURequest;
+  gpu_policy: GPUPolicyConfig;
+  gpu_user_permissions: Record<string, boolean>;
   id: ID;
   image_ids: ID[];
   init_template_version_id: ID | null;
   instance_type: InstanceType;
   name: string;
   network_option_ids: ID[];
+  node_ids: ID[];
   policy_versions: PolicyVersions;
   pricing_version_id: ID | null;
   resources: Resources;
   revision: string;
-  status: CatalogStatus;
+  status: PlanStatus;
   updated_at: Time;
   version: string;
 }
 
 export interface PlanInput {
   allowed_overrides: AllowedOverrides;
+  allowed_user_actions: CustomAction[];
   code: string;
   gpu: GPURequest;
+  gpu_policy: GPUPolicyConfig;
+  gpu_user_permissions: Record<string, boolean>;
   image_ids: ID[];
   init_template_version_id?: ID | null;
   instance_type: InstanceType;
   name: string;
   network_option_ids: ID[];
+  node_ids: ID[];
   policy_versions: PolicyVersions;
   resources: Resources;
   version: string;
@@ -497,6 +506,11 @@ export interface Capabilities {
   stop: boolean;
 }
 
+export interface PlanSnapshot extends Resources {
+  allowed_overrides: AllowedOverrides;
+  revision: string;
+}
+
 export interface Instance {
   active_task_id: ID | null;
   billing_mode: 'admin_exempt' | 'credit';
@@ -510,12 +524,15 @@ export interface Instance {
   desired_state: 'deleted' | 'running' | 'stopped';
   id: ID;
   image_id: ID;
+  image_os_name: string;
+  image_os_release: string;
   instance_type: InstanceType;
   name: string;
   node_id: ID;
   observed_at: null | Time;
   observed_state: ObservedState;
   plan_id: ID | null;
+  plan_snapshot: null | PlanSnapshot;
   product_type: 'custom' | 'elastic';
   provisioning_state: ProvisioningState;
   /** 仅后端确认创建未派发且原子释放预留后为 true；缺失不视为释放。 */

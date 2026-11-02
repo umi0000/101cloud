@@ -119,6 +119,7 @@ func TestMySQLNodeImagesMigration(t *testing.T) {
 				// all image/node/task references used by this migration are real.
 				exec("SET FOREIGN_KEY_CHECKS=0",
 					"INSERT INTO instances(id,user_id,node_id,image_id,instance_plan_id,logical_name,project_name,incus_name,image_type,architecture,image_fingerprint,vcpus,memory_bytes,disk_bytes,storage_pool,pricing_version_id,cpu_hourly_pt,memory_gib_hourly_pt,disk_gib_hourly_pt,credit_policy_version_id,billing_mode,desired_state,observed_state,provisioning_state,auto_release_gpu,auto_rebind_gpu,idle_policy_version_id,max_gpu_hourly_pt,init_parameters,incus_config_snapshot,allowed_user_actions,gpu_user_permissions,policy_versions,gpu_policy) VALUES(7,1,1,1,1,'existing','project-a','existing','container','aarch64',UNHEX(SHA2('frozen',256)),1,1,1,'default',1,0,0,0,1,'admin_exempt','running','running','ready',FALSE,FALSE,1,0,JSON_OBJECT(),JSON_OBJECT('preserve',TRUE),JSON_ARRAY(),JSON_OBJECT(),JSON_OBJECT(),JSON_OBJECT())",
+					"UPDATE instances SET product_type='custom',instance_plan_id=NULL WHERE id=7",
 					"SET FOREIGN_KEY_CHECKS=1",
 					"INSERT INTO tasks(id,task_type,idempotency_scope,idempotency_key,user_id,node_id,instance_id,is_instance_mutation,status,parameters_redacted,result_redacted,revision) VALUES(43,'instance.create','existing','unknown43',1,1,7,1,'unknown',JSON_OBJECT('preserve',TRUE),JSON_OBJECT('operation','preserve'),9)")
 			}

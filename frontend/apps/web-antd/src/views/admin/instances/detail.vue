@@ -142,7 +142,7 @@ const planText = computed(() => {
   const p = i.value?.plan_id;
   if (!p) return '—';
   if (plan.value) return `${plan.value.name}（${plan.value.code} v${plan.value.version}）`;
-  return planMissing.value ? `套餐 #${p}（已下线）` : `套餐 #${p}`;
+  return planMissing.value ? `套餐 #${p}（不可用）` : `套餐 #${p}`;
 });
 
 const now = useNow(5000);
@@ -430,7 +430,7 @@ function resourcesText(x: Instance) {
         </div>
       </ConfirmAction>
 
-      <ResizeDialog v-model:open="resizeOpen" :etag="inst.etag.value" :instance="i" :plan="plan" @done="conflict" />
+      <ResizeDialog v-model:open="resizeOpen" :etag="inst.etag.value" :instance="i" @done="conflict" />
 
       <ConfirmAction
         v-model:open="deleteOpen"

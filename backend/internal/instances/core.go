@@ -36,6 +36,7 @@ type Spec struct {
 	Name                  string          `json:"name"`
 	InstanceType          string          `json:"instance_type,omitempty"`
 	PlanID                string          `json:"plan_id,omitempty"`
+	PlanRevision          string          `json:"plan_revision,omitempty"`
 	ImageID               string          `json:"image_id"`
 	NetworkOptionID       string          `json:"network_option_id"`
 	NodeID                string          `json:"node_id,omitempty"`
@@ -92,13 +93,25 @@ func queryRow(db *gorm.DB, table string, where string, args ...any) (platform.Ro
 func locked(db *gorm.DB) *gorm.DB         { return db.Clauses(clause.Locking{Strength: "UPDATE"}) }
 func bad(message string) error            { return platform.E(422, "invalid_request", message) }
 func conflict(code, message string) error { return platform.E(409, code, message) }
+
+// instanceImageQuery deliberately bypasses catalog visibility: existing instances
+// retain their source OS metadata when an image is disabled or retired.
+func instanceImageQuery(db *gorm.DB) *gorm.DB {
+	return db.Table("instances").Joins("LEFT JOIN (SELECT id AS source_image_id, os_name AS image_os_name, os_release AS image_os_release FROM images) AS source_image ON source_image.source_image_id=instances.image_id")
+}
+
 func owned(c *gin.Context, a *platform.App) (platform.Row, error) {
+	return ownedQuery(c, a, platform.DB(c, a).Table("instances"))
+}
+
+func ownedQuery(c *gin.Context, a *platform.App, q *gorm.DB) (platform.Row, error) {
 	id, e := platform.ID(c, "id")
 	if e != nil {
 		return nil, e
 	}
 	db := platform.DB(c, a)
-	r, e := platform.Get(db, "instances", id, false)
+	var r platform.Row
+	e = platform.WrapDB(q.Where("instances.id=?", id).Take(&r).Error)
 	if e != nil {
 		return nil, e
 	}
@@ -114,7 +127,7 @@ func owned(c *gin.Context, a *platform.App) (platform.Row, error) {
 	return r, nil
 }
 func permitted(c *gin.Context, r platform.Row, action string) error {
-	if c.GetBool("admin") || platform.Text(r["product_type"]) != "custom" {
+	if c.GetBool("admin") {
 		return nil
 	}
 	for _, v := range rows(r["allowed_user_actions"]) {
@@ -122,7 +135,7 @@ func permitted(c *gin.Context, r platform.Row, action string) error {
 			return nil
 		}
 	}
-	return platform.E(403, "action_not_allowed", "Administrator has not authorized this custom instance action")
+	return platform.E(403, "action_not_allowed", "Administrator has not authorized this instance action")
 }
 func instanceDTO(a *platform.App, r platform.Row) platform.Row {
 	out := platform.Public(r, "id", "product_type", "billing_mode", "desired_state", "observed_state", "provisioning_state", "observed_at", "revision", "created_at", "updated_at", "node_id", "user_id")
@@ -133,20 +146,19 @@ func instanceDTO(a *platform.App, r platform.Row) platform.Row {
 	if r["instance_plan_id"] != nil {
 		out["plan_id"] = strconv.FormatUint(platform.Uint(r["instance_plan_id"]), 10)
 	}
+	out["plan_snapshot"] = nil
+	if platform.Text(r["product_type"]) == "elastic" {
+		if snapshot := object(r["plan_snapshot"]); len(snapshot) > 0 {
+			out["plan_snapshot"] = snapshot
+		}
+	}
 	out["image_id"] = strconv.FormatUint(platform.Uint(r["image_id"]), 10)
+	out["image_os_name"] = platform.Text(r["image_os_name"])
+	out["image_os_release"] = platform.Text(r["image_os_release"])
 	out["resources"] = Resources{platform.Uint(r["vcpus"]), strconv.FormatUint(platform.Uint(r["memory_bytes"]), 10), strconv.FormatUint(platform.Uint(r["disk_bytes"]), 10)}
 	stale := platform.Stamp(r["observed_at"]).IsZero() || a.Time().Sub(platform.Stamp(r["observed_at"])) > time.Minute
 	out["state_stale"] = stale
 	caps := platform.Row{"start": !stale && platform.Text(r["observed_state"]) == "stopped", "stop": !stale && platform.Text(r["observed_state"]) == "running", "gpu_attach": !stale && platform.Text(r["image_type"]) == "container", "gpu_rebind": !stale && platform.Text(r["image_type"]) == "container", "console": !stale && platform.Text(r["observed_state"]) == "running"}
-	if platform.Text(r["product_type"]) == "custom" {
-		allowed := map[string]bool{}
-		for _, v := range rows(r["allowed_user_actions"]) {
-			allowed[platform.Text(v)] = true
-		}
-		for key, value := range caps {
-			caps[key] = platform.Bool(value) && allowed[key]
-		}
-	}
 	out["capabilities"] = caps
 	return out
 }
@@ -158,7 +170,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 	registerGPU(a, user, admin)
 	for _, g := range []*gin.RouterGroup{user, admin} {
 		g.GET("/instances", platform.Handle(func(c *gin.Context) (any, error) {
-			q := platform.DB(c, a).Table("instances").Select("id,user_id,node_id,logical_name,product_type,billing_mode,image_type,image_id,instance_plan_id,vcpus,memory_bytes,disk_bytes,desired_state,observed_state,provisioning_state,observed_at,allowed_user_actions,incus_config_snapshot,revision,created_at,updated_at").Where("deleted_at IS NULL")
+			q := instanceImageQuery(platform.DB(c, a)).Select("id,user_id,node_id,logical_name,product_type,billing_mode,image_type,image_id,instance_plan_id,plan_snapshot,vcpus,memory_bytes,disk_bytes,desired_state,observed_state,provisioning_state,observed_at,allowed_user_actions,incus_config_snapshot,revision,created_at,updated_at,image_os_name,image_os_release").Where("deleted_at IS NULL")
 			if !c.GetBool("admin") {
 				q = q.Where("user_id=?", platform.Current(c).ID)
 			}
@@ -173,7 +185,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 			return platform.ListMap(c, a, q, []string{"product_type", "observed_state", "owner_user_id", "node_id"}, func(r platform.Row) (platform.Row, error) { return instanceView(c, a, r) })
 		}))
 		g.GET("/instances/:id", platform.Handle(func(c *gin.Context) (any, error) {
-			r, e := owned(c, a)
+			r, e := ownedQuery(c, a, instanceImageQuery(platform.DB(c, a)).Select("instances.*,image_os_name,image_os_release"))
 			if e != nil {
 				return nil, e
 			}
@@ -270,7 +282,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		if e := platform.Decode(c, &in); e != nil {
 			return nil, e
 		}
-		if in.NodeID != "" || len(in.GPU.FixedUUIDs) > 0 || len(in.AllowedUserActions) > 0 || len(in.GPUUserPermissions) > 0 {
+		if len(in.GPU.FixedUUIDs) > 0 || len(in.AllowedUserActions) > 0 || len(in.GPUUserPermissions) > 0 {
 			return nil, bad("Administrator-only configuration")
 		}
 		r, e := createInstance(c.Request.Context(), a, platform.DB(c, a), platform.Current(c).ID, in.Spec, false, in.PolicyVersions)
@@ -331,13 +343,12 @@ func lifecycle(c *gin.Context, a *platform.App, action string) (any, error) {
 		return nil, e
 	}
 	var in struct {
-		Mode           string            `json:"mode"`
-		Confirm        bool              `json:"confirm_data_loss_risk"`
-		ConfirmName    string            `json:"confirm_name"`
-		DeleteData     bool              `json:"delete_data"`
-		ConfirmRestart bool              `json:"confirm_restart"`
-		Resources      Resources         `json:"resources"`
-		PolicyVersions map[string]string `json:"policy_versions"`
+		Mode           string    `json:"mode"`
+		Confirm        bool      `json:"confirm_data_loss_risk"`
+		ConfirmName    string    `json:"confirm_name"`
+		DeleteData     bool      `json:"delete_data"`
+		ConfirmRestart bool      `json:"confirm_restart"`
+		Resources      Resources `json:"resources"`
 	}
 	if e = platform.Decode(c, &in); e != nil {
 		return nil, e
@@ -422,9 +433,9 @@ func lifecycle(c *gin.Context, a *platform.App, action string) (any, error) {
 			return nil, bad("Disk shrinking is prohibited")
 		}
 		if platform.Text(r["product_type"]) == "elastic" {
-			p, e := platform.Get(db, "instance_plans", platform.Uint(r["instance_plan_id"]), false)
-			if e != nil {
-				return nil, e
+			p := object(r["plan_snapshot"])
+			if len(p) == 0 {
+				return nil, conflict("plan_snapshot_missing", "实例套餐快照缺失，请联系管理员修复；不会使用已编辑的套餐替代。")
 			}
 			over := object(p["allowed_overrides"])
 			for key, value := range map[string]uint64{"vcpus": in.Resources.VCPUs, "memory_bytes": mustUint(in.Resources.MemoryBytes), "disk_bytes": mustUint(in.Resources.DiskBytes)} {
@@ -439,9 +450,6 @@ func lifecycle(c *gin.Context, a *platform.App, action string) (any, error) {
 				if step == 0 || value < min || value > max || (value-min)%step != 0 {
 					return nil, bad("Resize exceeds allowed plan range or step")
 				}
-			}
-			if e = validateVersions(c.Request.Context(), a, db, in.PolicyVersions); e != nil {
-				return nil, e
 			}
 		}
 		reserved := in.Resources
@@ -579,8 +587,8 @@ func validateVersions(ctx context.Context, a *platform.App, db *gorm.DB, version
 			return conflict("policy_changed", "Quoted policy is no longer published and effective")
 		}
 	}
-	// Catalog.ValidateElastic separately matches the selected immutable plan's
-	// versions. A new platform default must not invalidate an unchanged quote.
+	// Catalog.ValidateElastic separately matches the quoted plan revision and
+	// policy versions. Changing a platform default alone does not change a quote.
 	return nil
 }
 func lockOwnerAccount(db *gorm.DB, owner uint64) error {
@@ -590,6 +598,9 @@ func lockOwnerAccount(db *gorm.DB, owner uint64) error {
 func instanceView(c *gin.Context, a *platform.App, r platform.Row) (platform.Row, error) {
 	out := instanceDTO(a, r)
 	caps := out["capabilities"].(platform.Row)
+	for key, value := range caps {
+		caps[key] = platform.Bool(value) && permitted(c, r, key) == nil
+	}
 	state := platform.Text(r["observed_state"])
 	ready := platform.Text(r["provisioning_state"]) == "ready" && !platform.Bool(out["state_stale"])
 	caps["resize"] = ready && (state == "running" || state == "stopped") && permitted(c, r, "resize") == nil && (state != "running" || (permitted(c, r, "stop") == nil && permitted(c, r, "start") == nil))

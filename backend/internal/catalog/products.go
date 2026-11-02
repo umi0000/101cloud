@@ -21,17 +21,21 @@ type imageInput struct {
 	Nodes        []ImageNodeInput `json:"nodes"`
 }
 type planInput struct {
-	Code                  string            `json:"code"`
-	Version               string            `json:"version"`
-	Name                  string            `json:"name"`
-	InstanceType          string            `json:"instance_type"`
-	Resources             Resources         `json:"resources"`
-	GPU                   GPURequest        `json:"gpu"`
-	ImageIDs              []string          `json:"image_ids"`
-	NetworkOptionIDs      []string          `json:"network_option_ids"`
-	AllowedOverrides      map[string]any    `json:"allowed_overrides"`
-	PolicyVersions        map[string]string `json:"policy_versions"`
-	InitTemplateVersionID *string           `json:"init_template_version_id"`
+	Code                  string              `json:"code"`
+	Version               string              `json:"version"`
+	Name                  string              `json:"name"`
+	InstanceType          string              `json:"instance_type"`
+	Resources             Resources           `json:"resources"`
+	GPU                   GPURequest          `json:"gpu"`
+	NodeIDs               []string            `json:"node_ids"`
+	GPUPolicy             *planGPUPolicyInput `json:"gpu_policy"`
+	AllowedUserActions    []string            `json:"allowed_user_actions"`
+	GPUUserPermissions    map[string]bool     `json:"gpu_user_permissions"`
+	ImageIDs              []string            `json:"image_ids"`
+	NetworkOptionIDs      []string            `json:"network_option_ids"`
+	AllowedOverrides      map[string]any      `json:"allowed_overrides"`
+	PolicyVersions        map[string]string   `json:"policy_versions"`
+	InitTemplateVersionID *string             `json:"init_template_version_id"`
 }
 type templateInput struct {
 	Code            string         `json:"code"`
@@ -149,22 +153,19 @@ func registerProducts(a *platform.App, user, admin *gin.RouterGroup) {
 		if e := platform.Decode(c, &b); e != nil {
 			return nil, e
 		}
-		if e := platform.ValidateKeys(b, "name", "instance_type", "resources", "gpu", "image_ids", "network_option_ids", "allowed_overrides", "policy_versions", "init_template_version_id"); e != nil {
+		if e := platform.ValidateKeys(b, "code", "version", "name", "instance_type", "resources", "gpu", "node_ids", "gpu_policy", "allowed_user_actions", "gpu_user_permissions", "image_ids", "network_option_ids", "allowed_overrides", "policy_versions", "init_template_version_id"); e != nil {
 			return nil, e
 		}
 		r, e := detail(c, a, "instance_plans")
 		if e != nil {
 			return nil, e
 		}
-		if platform.Text(r["status"]) != "draft" {
-			return nil, conflict("only draft plans can change")
-		}
 		dto, e := planDTO(platform.DB(c, a), r)
 		if e != nil {
 			return nil, e
 		}
 		merged := platform.Row{}
-		for _, k := range []string{"code", "version", "name", "instance_type", "resources", "gpu", "image_ids", "network_option_ids", "allowed_overrides", "policy_versions", "init_template_version_id"} {
+		for _, k := range []string{"code", "version", "name", "instance_type", "resources", "gpu", "node_ids", "gpu_policy", "allowed_user_actions", "gpu_user_permissions", "image_ids", "network_option_ids", "allowed_overrides", "policy_versions", "init_template_version_id"} {
 			merged[k] = dto[k]
 		}
 		for k, v := range b {
@@ -174,7 +175,7 @@ func registerProducts(a *platform.App, user, admin *gin.RouterGroup) {
 		if e = decodeMap(merged, &input); e != nil {
 			return nil, e
 		}
-		row, e := planValues(c, a, input, false)
+		row, e := planValues(c, a, input, platform.Text(r["status"]) == "active")
 		if e != nil {
 			return nil, e
 		}
@@ -188,7 +189,7 @@ func registerProducts(a *platform.App, user, admin *gin.RouterGroup) {
 		}
 		return planDTO(platform.DB(c, a), r)
 	}))
-	admin.POST("/plans/:id/publish", platform.Handle(func(c *gin.Context) (any, error) {
+	admin.POST("/plans/:id/enable", platform.Handle(func(c *gin.Context) (any, error) {
 		if e := requiredBody(c); e != nil {
 			return nil, e
 		}
@@ -196,8 +197,8 @@ func registerProducts(a *platform.App, user, admin *gin.RouterGroup) {
 		if e != nil {
 			return nil, e
 		}
-		if platform.Text(r["status"]) != "draft" {
-			return nil, conflict("only draft plans can publish")
+		if platform.Text(r["status"]) != "disabled" {
+			return nil, conflict("only disabled plans can enable")
 		}
 		dto, e := planDTO(platform.DB(c, a), r)
 		if e != nil {
@@ -205,7 +206,7 @@ func registerProducts(a *platform.App, user, admin *gin.RouterGroup) {
 		}
 		var b planInput
 		fields := platform.Row{}
-		for _, k := range []string{"code", "version", "name", "instance_type", "resources", "gpu", "image_ids", "network_option_ids", "allowed_overrides", "policy_versions", "init_template_version_id"} {
+		for _, k := range []string{"code", "version", "name", "instance_type", "resources", "gpu", "node_ids", "gpu_policy", "allowed_user_actions", "gpu_user_permissions", "image_ids", "network_option_ids", "allowed_overrides", "policy_versions", "init_template_version_id"} {
 			fields[k] = dto[k]
 		}
 		if e = decodeMap(fields, &b); e != nil {
@@ -220,8 +221,18 @@ func registerProducts(a *platform.App, user, admin *gin.RouterGroup) {
 		}
 		return planDTO(platform.DB(c, a), r)
 	}))
-	admin.POST("/plans/:id/retire", platform.Handle(func(c *gin.Context) (any, error) {
-		r, e := retireProduct(c, a, "instance_plans")
+	admin.POST("/plans/:id/disable", platform.Handle(func(c *gin.Context) (any, error) {
+		if e := requiredBody(c); e != nil {
+			return nil, e
+		}
+		r, e := detail(c, a, "instance_plans")
+		if e != nil {
+			return nil, e
+		}
+		if platform.Text(r["status"]) != "active" {
+			return nil, conflict("only active plans can disable")
+		}
+		r, e = platform.Save(c, a, "instance_plans", r, platform.Row{"status": "disabled"})
 		if e != nil {
 			return nil, e
 		}
@@ -418,44 +429,12 @@ func planValues(c *gin.Context, a *platform.App, b planInput, publish bool) (pla
 	if b.GPU.Model != nil && pol["gpu-pricing"] == nil {
 		return nil, invalid("GPU policy required")
 	}
-	if len(b.ImageIDs) == 0 || len(b.NetworkOptionIDs) == 0 {
-		return nil, invalid("plan requires image_ids and network_option_ids")
+	policy, actions, permissions, e := planGPUConfiguration(b, pol)
+	if e != nil {
+		return nil, e
 	}
-	seen := map[string]bool{}
-	for _, s := range b.ImageIDs {
-		if seen[s] {
-			return nil, invalid("duplicate image ID")
-		}
-		seen[s] = true
-		id, e := platform.IDString(s)
-		if e != nil {
-			return nil, e
-		}
-		r, e := platform.Get(platform.DB(c, a), "images", id, true)
-		if e != nil {
-			return nil, e
-		}
-		if platform.Text(r["image_type"]) != b.InstanceType || (b.GPU.Count > 0 && !platform.Bool(r["gpu_ready"])) || (publish && platform.Text(r["status"]) != "active") {
-			return nil, missingReference("compatible image")
-		}
-	}
-	seen = map[string]bool{}
-	for _, s := range b.NetworkOptionIDs {
-		if seen[s] {
-			return nil, invalid("duplicate network option")
-		}
-		seen[s] = true
-		id, e := platform.IDString(s)
-		if e != nil {
-			return nil, e
-		}
-		if publish {
-			if _, e = ValidateNetworkOption(platform.DB(c, a), id, b.InstanceType); e != nil {
-				return nil, e
-			}
-		} else if _, e = platform.Get(platform.DB(c, a), "node_network_bindings", id, true); e != nil {
-			return nil, e
-		}
+	if e = validatePlanPlacement(c, a, b, publish); e != nil {
+		return nil, e
 	}
 	var template any
 	if b.InitTemplateVersionID != nil && *b.InitTemplateVersionID != "" {
@@ -476,13 +455,13 @@ func planValues(c *gin.Context, a *platform.App, b planInput, publish bool) (pla
 	if b.GPU.Model != nil {
 		model = *b.GPU.Model
 	}
-	return platform.Row{"code": b.Code, "version": b.Version, "name": b.Name, "image_type": b.InstanceType, "vcpus": b.Resources.VCPUs, "memory_bytes": mustUnsigned(b.Resources.MemoryBytes), "disk_bytes": mustUnsigned(b.Resources.DiskBytes), "gpu_count": b.GPU.Count, "gpu_model": model, "gpu_access_mode": b.GPU.AccessMode, "gpu_max_hourly_pt": b.GPU.MaxHourlyPT, "pricing_version_id": platform.Uint(pol["pricing"]["source_id"]), "credit_policy_version_id": platform.Uint(pol["credit"]["source_id"]), "idle_policy_version_id": platform.Uint(pol["gpu-idle"]["source_id"]), "init_template_version_id": template, "init_parameters": "{}", "allow_residency": false, "status": "draft", "policy_versions": jsonString(b.PolicyVersions), "allowed_overrides": jsonString(b.AllowedOverrides)}, nil
+	return platform.Row{"code": b.Code, "version": b.Version, "name": b.Name, "image_type": b.InstanceType, "vcpus": b.Resources.VCPUs, "memory_bytes": mustUnsigned(b.Resources.MemoryBytes), "disk_bytes": mustUnsigned(b.Resources.DiskBytes), "gpu_count": b.GPU.Count, "gpu_model": model, "gpu_access_mode": b.GPU.AccessMode, "gpu_max_hourly_pt": policy.Rebalance.MaxHourlyPT, "gpu_policy": jsonString(policy), "allowed_user_actions": jsonString(actions), "gpu_user_permissions": jsonString(permissions), "pricing_version_id": platform.Uint(pol["pricing"]["source_id"]), "credit_policy_version_id": platform.Uint(pol["credit"]["source_id"]), "idle_policy_version_id": platform.Uint(pol["gpu-idle"]["source_id"]), "init_template_version_id": template, "init_parameters": "{}", "allow_residency": false, "status": "disabled", "policy_versions": jsonString(b.PolicyVersions), "allowed_overrides": jsonString(b.AllowedOverrides)}, nil
 }
 func savePlanRelations(db *gorm.DB, id uint64, b planInput) error {
 	for _, v := range []struct {
 		table, col string
 		ids        []string
-	}{{"plan_images", "image_id", b.ImageIDs}, {"plan_network_options", "network_option_id", b.NetworkOptionIDs}} {
+	}{{"plan_nodes", "node_id", b.NodeIDs}, {"plan_images", "image_id", b.ImageIDs}, {"plan_network_options", "network_option_id", b.NetworkOptionIDs}} {
 		if e := db.Table(v.table).Where("plan_id=?", id).Delete(&platform.Row{}).Error; e != nil {
 			return platform.WrapDB(e)
 		}
