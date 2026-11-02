@@ -103,6 +103,9 @@ defer response.Body.Close()
 | `POST /agent/v1/network/ip-probe` | 在指定网卡上探测单个直连 IPv4 的 ARP 冲突，不分配、不预留地址 |
 | `GET /agent/v1/instances/metrics?project=default` | 连续采样的实例CPU/内存与隐私安全GPU归属聚合，含新鲜度和质量 |
 | `GET /agent/v1/instances/metrics/samples` | 有界内存快照增量补采，按Agent启动ID/序号去重，显式报告重启和缺口 |
+| `GET /agent/v1/image-sources` | 固定可信 SimpleStreams 源列表，不接受用户 URL |
+| `GET /agent/v1/image-sources/{source}/images` | 从实际目录发现 OS、发行版、架构、容器/虚拟机及 cloud/default 变体 |
+| `GET /agent/v1/image-sources/{source}/images/{fingerprint}` | 按完整指纹从同一权威目录解析具体镜像 |
 
 GPU 指标由宿主机 `nvidia-smi` 采集。每卡综合负载为 GPU 利用率与显存占用率的等权平均，节点负载为所有卡分数的等权平均；采样失败用 null 和错误说明表示，不作为空闲。它不是历史时间平均，也不保证仍有足够显存。字段和计算示例见使用指南第 5.2 节。
 
@@ -111,6 +114,10 @@ GPU 指标由宿主机 `nvidia-smi` 采集。每卡综合负载为 GPU 利用率
 IP 探测请求为 `{"interface":"ens18","address":"192.168.0.112"}`。结果区分发现占用、未发现冲突和未知；`available: true` 仅表示本次未发现冲突，不保证离线设备、DHCP或其他后端没有保留该地址。后端必须维护地址池和并发预留。仅 Linux 支持真实 ARP 探测，需 `CAP_NET_RAW`；更新部署时也要更新 systemd 单元，允许 `AF_PACKET` 和网卡发现所需的 `AF_NETLINK`。不能只替换二进制而沿用旧的地址族限制。详见使用指南第 5.4 节。
 
 原生 API 的版本与扩展以节点 Incus 为准。请求超时不等于操作失败，后端应保存 operation ID 并核对状态，不能盲目重复创建或释放资源。跨节点迁移仍需后端编排连接地址、认证和失败恢复。
+
+远程镜像发现只使用固定 `images`（`https://images.linuxcontainers.org`）源，通过锁定的 Incus v6.0.5 客户端读取实际 SimpleStreams，包括该源中的 Ubuntu 等实际 OS。目录可按 `os`、`release`、`architecture`、`instance_type`、`cloud_init` 过滤；架构使用 Incus 原生名称（如 `x86_64`、`aarch64`）。每条记录保留实际完整指纹与变体，`size_bytes` 是十进制字符串，只有实际 `cloud` 变体标记 cloud-init，默认变体不冒充 cloud。Canonical Ubuntu Cloud 的旧 LXD 元数据不受 SDK 支持，不列为可选源，不重写格式或指纹。不支持的目录格式返回422、源故障502、超时504，不返回伪造发行版或后备镜像。目录最多缓存2分钟，刷新限30秒/64MiB/32次HTTP请求，不跟随重定向、不使用环境HTTP代理。详见使用指南第5.8节。
+
+下载仍走 `POST /1.0/images?project=...` 原生异步API，使用固定源 URL、`protocol: simplestreams` 与所选完整指纹；后端保存 operation ID 并在完成后用同项目 `GET /1.0/images/{fingerprint}` 核对架构/类型。发现目录不代表节点已有镜像，批量节点各自下载/核验，不会创建或改变实例。Agent 不自动安装 GPU 环境，也不改变已有镜像属性。
 
 ### 容器负载与隐私
 

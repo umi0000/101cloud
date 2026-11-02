@@ -7,7 +7,7 @@ import (
 
 func TestImageIdentityDefaultsWhenCodeAndVersionOmitted(t *testing.T) {
 	fingerprint := "4FAAA23407EC789d992909cbbcd600d34135dd6aa8e43198720eac67fef75268"
-	base := imageInput{InstanceType: "container", Architecture: "x86_64", Fingerprint: fingerprint, Properties: map[string]any{"gpu_ready": false, "os_name": "ubuntu", "os_release": "22.04"}}
+	base := imageInput{InstanceType: "container", SourceType: "local", Nodes: []ImageNodeInput{{NodeID: "1", ProjectName: "default", Architecture: "x86_64", Fingerprint: fingerprint}}, Properties: map[string]any{"gpu_ready": false, "os_name": "ubuntu", "os_release": "22.04"}}
 
 	row, err := imageValues(base, 1)
 	if err != nil {

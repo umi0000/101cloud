@@ -457,6 +457,28 @@ Agent接口时间仍为UTC；后端入库前统一转为UTC+8（+08:00），保�
 
 进程统计只保留数量/峰值，不存原始PID或命令。取不到精细支持类别时保存unknown，不把null硬解释为unsupported或空闲。每个指标独立有效时长，coverage和unknown_count用于前端显示缺测。保留粒度/天数由后端配置；未配置清理会持续增长，不能误以为DDL自带保留任务。删除raw GPU子记录后再删raw实例点，汇总可以采用不同保留期。这里的历史是负载观测，不是pt计费账本。
 
+### 5.8 固定远程镜像源与实际变体发现
+
+所有接口仍需节点 HTTPS/Token 认证；这是节点发起的只读目录发现，不是平台直接抓取用户提供的 URL。
+
+| GET 路径 | 响应 |
+| --- | --- |
+| `/agent/v1/image-sources` | `{"items":[{"id":"images","name":"Incus / Linux Containers","url":"https://images.linuxcontainers.org","protocol":"simplestreams"}]}` |
+| `/agent/v1/image-sources/{source}/images` | `{"items":[RemoteImage,...]}`，空匹配为 `[]` |
+| `/agent/v1/image-sources/{source}/images/{fingerprint}` | 单个 `RemoteImage`，不套 `items`；完整64位十六进制指纹不存在时404 |
+
+`RemoteImage` 字段：`fingerprint`（完整64位）、`os_name`、`os_release`、`architecture`（Incus 原生名称）、`instance_type`（`container` / `virtual-machine`）、`variant`（源实际值，未提供时空字符串）、`cloud_init`（布尔）、`description`、`aliases`（字符串数组）、`size_bytes`（无精度损失的十进制字符串）。Linux Containers 源只有实际 `cloud` 变体标记为支持 cloud-init；`default` 不自动升级为 `cloud`。Ubuntu 等 OS 同样从该源的实际目录发现。Canonical Ubuntu Cloud 的旧 LXD 元数据不受 SDK v6.0.5 支持，因此不列为可选源，`ubuntu` 源 id 返回404；不重写格式、摘要或假称支持该来源下载。
+
+列表查询可选 `os`、`release`、`architecture`、`instance_type`、`cloud_init`，精确匹配实际目录；`cloud_init` 仅接受 `true` / `false`，架构例如 `x86_64` / `aarch64`，不接受 `amd64` / `arm64` 别名。未知参数、重复参数、空值/非法值返回400；源列表及指纹解析不接受查询参数。固定源之外的 id 返回404，没有动态添加源 URL 的接口。
+
+```http
+GET /agent/v1/image-sources/images/images?architecture=aarch64&instance_type=container&cloud_init=true
+```
+
+每次刷新通过已安装的 Incus v6.0.5 客户端读取 SimpleStreams，期限30秒、最多累计64MiB响应与32次请求、最多50000个镜像记录。仅允许所选 HTTPS 源的路径；不跟随重定向、不使用环境代理、不允许调用者替换 URL。按源独立串行刷新，实际成功目录最多缓存2分钟，不在刷新失败时返回过期缓存。底层连接/解析/限额失败返回502 `image_catalog_failed`，超时/取消返回504 `image_catalog_timeout`，无 SDK 支持的镜像或关键元数据缺失返回422 `image_catalog_unsupported`。错误不透出上游响应原文。特别地，SDK v6.0.5 仅识别 `incus.tar.xz` / `incus_combined.tar.gz` 元数据；若某源只提供旧 `lxd.tar.xz` 等格式，明确报告不支持，不重写产品格式或伪造 OS/架构/变体后备条目。
+
+发现与解析无本地 Incus 在线依赖，不代表镜像已下载。后端按节点、项目和实际指纹编排下述原生下载，保留每个节点独立任务；不得因另一节点成功就标记本节点可用。
+
 ## 6. 实例常用接口
 
 以下表格路径均以 `/1.0` 开头；项目参数按需附加。
@@ -542,6 +564,23 @@ If-Match: "实际ETag"
 | GET | `/1.0/instances/{name}/backups/{backup}/export` | 下载备份字节流 |
 
 创建镜像别名的 JSON 为 `{"name":"studio-ubuntu24-cloud","target":"实际镜像fingerprint"}`。远程镜像源、拉取凭据和网络条件按 Incus 原生 API 配置，不是上传 Docker 镜像即可作为系统容器。
+
+固定远程源下载使用已发现的完整指纹与源列表中的 URL。以 `images` 源为例，向 `POST /1.0/images?project=default` 发送（替换占位指纹，不能提交占位值）：
+
+```json
+{
+  "source": {
+    "type": "image",
+    "mode": "pull",
+    "server": "https://images.linuxcontainers.org",
+    "protocol": "simplestreams",
+    "fingerprint": "<从实际目录选中的64位完整指纹>"
+  },
+  "public": false
+}
+```
+
+原生代理原样返回异步 operation 引用，保存项目和 operation ID 后轮询原生操作/进度；最终以同项目 `GET /1.0/images/{fingerprint}` 核对确切指纹、架构与容器/虚拟机类型后才标记该节点镜像就绪。请求中断不证明下载失败，不得盲目重复派发。本地登记仅做该原生 GET 核验，缺失时明确失败而不偷偷联网拉取。镜像下载不创建/停止/修改实例，不修改共享原生镜像属性；GPU-ready 是业务目录的管理员断言，不是自动安装驱动或 CUDA 的承诺。
 
 快照创建 JSON 示例：`{"name":"before-upgrade","stateful":false}`；备份创建：`{"name":"daily","instance_only":true,"optimized_storage":false}`。它们都要等待异步操作完成。`instance_only` 不代表包含所有独立数据卷。
 

@@ -117,6 +117,19 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 	if e != nil {
 		return nil, e
 	}
+	image, e = catalog.ResolveNodeImage(ctx, db, image, platform.Uint(binding["node_id"]), platform.Text(binding["project_name"]))
+	if e != nil {
+		return nil, e
+	}
+	if native != nil {
+		config := object(native["expanded_config"])
+		if len(config) == 0 {
+			config = object(native["config"])
+		}
+		if workerFingerprint(config["volatile.base_image"]) != workerFingerprint(image["fingerprint"]) || platform.Text(native["architecture"]) != platform.Text(image["architecture"]) {
+			return nil, conflict("configuration_conflict", "原生实例镜像指纹或架构与节点镜像配置不匹配，请重新核对导入配置。")
+		}
+	}
 	if spec.InstanceType != "container" && spec.InstanceType != "virtual-machine" {
 		return nil, bad("不支持的实例类型，请使用 container 或 virtual-machine。")
 	}

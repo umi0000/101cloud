@@ -15,6 +15,13 @@ import type {
   GPUPolicyConfig,
   ID,
   Image,
+  ImageInput,
+  ImageNode,
+  ImageNodeInput,
+  ImageNodesAccepted,
+  ImageSource,
+  ImageSourceID,
+  RemoteImage,
   InitTemplate,
   InitTemplateInput,
   Instance,
@@ -335,17 +342,13 @@ export const consoleApi = {
 /* ---------------- 管理端：产品目录 ---------------- */
 
 export const catalogApi = {
-  createImage: (
-    body: {
-      architecture: string;
-      code: string;
-      fingerprint: string;
-      instance_type: Image['instance_type'];
-      properties: { gpu_ready: boolean; os_name: string; os_release: string };
-      version: string;
-    },
-    w: Write,
-  ) => post<Image>('/admin/images', body, w),
+  createImage: (body: ImageInput, w: Write) => post<Image>('/admin/images', body, w),
+  imageSources: () => detail<{ items: ImageSource[] }>('/admin/image-sources'),
+  remoteImages: (nodeId: ID, sourceId: ImageSourceID, q: Query = {}) =>
+    api.get<{ items: RemoteImage[] }>(`/admin/nodes/${nodeId}/remote-images`, { params: clean({ ...q, source_id: sourceId }) }),
+  imageNodes: (id: ID) => detail<{ items: ImageNode[] }>(`/admin/images/${id}/nodes`),
+  prepareImageNodes: (id: ID, nodes: ImageNodeInput[], w: Write) =>
+    post<ImageNodesAccepted>(`/admin/images/${id}/nodes`, { nodes }, w),
   createPlan: (body: PlanInput, w: Write) =>
     post<Plan>('/admin/plans', body, w),
   createTemplate: (body: InitTemplateInput, w: Write) =>

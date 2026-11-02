@@ -237,14 +237,19 @@ curl -f https://cloud.example.com/api/v1/health/ready
 建议顺序：
 
 1. 为价格、GPU价格、额度、GPU空闲、GPU调度、监控六类政策各创建配置档（创建即生效），再完整绑定平台默认配置档。配置档可直接编辑、切换默认或在无引用时删除，没有草稿/发布流程。不提供默认价格或默认业务额度。
-2. 创建镜像和初始化模板（如需）。镜像实际必须满足目标节点的容器/VM、架构和驱动要求。
-3. 从可信渠道导入 Agent endpoint、Token和证书指纹，执行只读探测，确认后启用节点。
+2. 从可信渠道导入 Agent endpoint、Token和证书指纹，执行只读探测，确认后启用节点。
+3. 在产品目录登记镜像和初始化模板（如需）。镜像按节点/项目配置架构、完整指纹、cloud-init和GPU兼容性，支持批量节点：local只验证已有本地镜像，remote通过所选节点发现真实官方目录并异步拉取。跟踪返回的逐节点image.prepare任务，只有ready配置才能用于该节点创建/导入；登记成功不代表下载完成。
 4. 给 GPU 配置价格、共享名额和可用状态。共享名额不等于显存隔离或算力保证。GPU 的 `gpu_price_version_id` 填 gpu-pricing 政策版本 ID（即 `/api/v1/admin/policies/gpu-pricing/versions` 返回的 id）；API 中所有政策版本引用都使用该 ID。
 5. 登记局域网 IP 池和地址（池名称全局唯一），绑定现有 bridge 或适用的 macvlan，验证后启用。没有 NAT 或端口映射。实例所在节点由所选网络绑定决定，直接下发自定义实例时须指定 node_id。
+
+镜像源管理接口为 `GET /api/v1/admin/image-sources`、`GET /api/v1/admin/nodes/{id}/remote-images?source_id=images`；仅固定可信HTTPS源images（Ubuntu OS同样从该真实目录选择，不支持Canonical Cloud专用格式）。`POST /api/v1/admin/images` 接收 `{code?,version?,instance_type,source_type,properties,nodes:[{node_id,project_name,architecture,fingerprint,cloud_init,gpu_ready,source_id?,variant?,properties?}]}`，返回201 Image及`nodes[].task_id`。查看 `GET /api/v1/admin/images/{id}/nodes`，用带If-Match的 `POST /api/v1/admin/images/{id}/nodes` 批量管理配置，后者返回202及`{image_id,tasks}`。选择实例镜像时传 `GET /api/v1/catalog/images?node_id=...&project_name=...`，只列该节点/项目ready配置；project_name可选但须同时指定node_id，省略则为节点默认项目。GPU-ready为人工兼容性断言，不安装驱动。
+
+`20261102_00_node_images.sql` 在95迁移之后建立 `image_nodes`，历史 `init.sql` 保持原始checksum。现有local镜像与节点按default_project_name交叉生成pending配置和verification-only任务，未核验前绝不ready；旧remote记录不推断可信源。迁移不改现有实例冻结指纹/架构、额度或原任务（含unknown任务）。迁移任务参数仅包含字符串image_node_id；新API排队任务同时包含入队时冻结的config（image_id/node_id/project_name/architecture/fingerprint/instance_type/source_type/source_id/cloud_init/gpu_ready/variant），worker操作原生API前还会固化不可变日志。旧local镜像properties.cloud_init显式布尔值保留；仅当该属性缺失时，worker根据原生镜像properties.variant是否为cloud推断cloud-init，GPU兼容性绝不自动推断。派发结果不明须对账，不盲目重复下载；失败不删除已有原生镜像。
+
 6. 发布套餐，创建用户并明确配置配额。新用户配额全部为0，自定义实例还需 max_resident_instances。VM 套餐只提供 CPU；容器套餐可设可选 GPU（gpu.count=0、gpu.model 非空且 allowed_overrides.gpu_count.max≥1），提供 GPU 的套餐必须绑定 gpu-pricing。用户创建弹性实例时始终可以用 gpu.count=0 不选 GPU。
 7. 先受控验证一个实例的创建、登录、停止、磁盘保留、GPU观测和控制台，再开放给成员。
 
-每日额度由后台任务处理，首次发放完成前账户可能尚未就绪。自定义实例的申请和沟通在平台外完成，平台只保留管理员 `POST /admin/custom-instances` 直接下发（请求字段仍为 `approved_config`）及已有实例纳管，不提供申请/审批页面或接口。自定义实例按admin_exempt记录，不受每日额度停机影响，仍受资源及max_resident_instances配额约束。当前OpenAPI包含141个操作。
+每日额度由后台任务处理，首次发放完成前账户可能尚未就绪。自定义实例的申请和沟通在平台外完成，平台只保留管理员 `POST /admin/custom-instances` 直接下发（请求字段仍为 `approved_config`）及已有实例纳管，不提供申请/审批页面或接口。自定义实例按admin_exempt记录，不受每日额度停机影响，仍受资源及max_resident_instances配额约束。当前OpenAPI包含147个操作。
 
 额度耗尽默认600秒后强停且不删盘；真实强停可能丢失未保存内存和在途写入。停机不等于 GPU 使用权已经移除：尚未释放的 GPU 分配仍保留并按持有区间记录。需要释放时走显式 GPU 移除流程。
 
@@ -296,3 +301,5 @@ HTTP监听127.0.0.1:8080，就绪检查、随机管理员登录、真实Agent固
 后续按用户要求直接SSH到服务器、在本机HTTP调用API复测（未做换卡）：登录/CSRF、缺少或陈旧If-Match拒绝、同幂等键返回相同任务及异参409、维护态刷新节点库存、116容器启动、客机exec真实退出状态和文件读取、等待客机网络就绪、单卡在线绑定及nvidia-smi、最新指标入库、空闲在线移除GPU、正常停机均通过。复测快照实例样本556条、GPU样本182条、实例汇总48条，孤立GPU子记录0。测试后保持验收容器Stopped、GPU已释放、节点maintenance及GPU disabled，其他原有实例状态未变。未声称本轮重新执行CUDA负载或多卡均衡。
 
 2026-10-30 契约修正部署：新增 `CLOUD_TRUSTED_PROXIES`（X-Forwarded-For）、`CLOUD_ORIGIN` 支持 http/https（Cookie 名称与 Secure 随协议变化）、密码错误独立返回 `invalid_credentials`、列表与详情字段类型统一、对外政策版本引用统一为 `policy_versions.id`、弹性实例可选择不带 GPU。本地临时 MySQL 8.4 上 `go test -race ./...`（含 MySQL 回归）与 `go vet ./...` 通过，并用真实 HTTP 进程（http Origin、可信代理 127.0.0.1）验证 27 项：HTTP Cookie 名与 Secure、两类 401、改密码失败会话保留、按转发 IP 分桶限流、政策/镜像/地址池/绑定列表字段类型、GPU 定价与额度账户 ID、可选 GPU 套餐发布、报价 0 张/1 张/超范围。服务器仅替换二进制（备份 `/usr/local/bin/101cloud-backend.bak-20261030172121`），`backend.env` 与数据库结构未改；部署后只读核对真实数据：列表字段为对象/数组/布尔，GPU `gpu_price_version_id`、`/catalog/gpu-options` 的 `id`、使用记录与 GPU 分配的版本 ID 均等于对应政策版本 `id`，HTTPS Origin 下仍为 `__Host-` Secure Cookie，错误密码返回 `invalid_credentials`。当前未配置 Nginx，`CLOUD_TRUSTED_PROXIES` 保持为空。
+
+2026-11-02 节点镜像版本已仅部署 `.111`：新增 `20261102_00_node_images.sql`，旧本地镜像通过任务73/74精确原生核验后ready，显式保留旧GPU声明并从真实cloud变体补齐缺失的cloud-init信息。浏览器从节点Agent真实目录登记并下载Alpine3.22/cloud/x86_64（镜像3、任务76），原生完整指纹 `04dbb9362a46ef57716981d224a47577d1dde1ad6c2101d2a517d375e2666992`、19.34 MiB、私有、default项目已核对；旧镜像2另经本地管理任务77只读验证成功。创建选择器按实际网络项目查询就绪镜像，其他项目无配置时为空。实例15/18/19的冻结指纹、架构、规格、状态及未知任务43均保持原状，未触发任何实例生命周期操作或修改真实政策/配额。后端vet、全量race/真实MySQL/TLS回归及前端类型/lint/build通过；多节点差异配置和部分失败在隔离节点协议环境验证，线上仅有一个管理节点。完整数据库、旧后端、前端链接和Agent备份位于 `/var/backups/101cloud/`，分别为 `before-node-images-20261102.sql.gz`、`backend-before-node-images-20261102`、`frontend-before-node-images-20261102.link`、`hostagent-before-node-images-20261102`。前端发布目录与详细验收见 `../frontend/README.md`。

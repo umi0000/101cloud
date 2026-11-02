@@ -125,33 +125,41 @@ function prefill(item: UnmanagedView) {
   form.value = f;
 }
 
+let optionsSeq = 0;
 async function loadOptions(item: UnmanagedView) {
+  const mine = ++optionsSeq;
+  images.value = [];
+  networks.value = [];
+  gpuOptions.value = [];
   loading.value = true;
   try {
     const nodeId = props.node.id;
     // network_option_id 即绑定 id；后端要求绑定所在节点等于纳管节点，按 node_id 过滤。
     const [u, imgs, nets, gpus] = await Promise.all([
       listAll(usersApi.list, { status: 'active' }),
-      listAll(catalogApi.images, { instance_type: item.instance_type }),
+      listAll(catalogApi.images, { instance_type: item.instance_type, node_id: nodeId, project_name: item.project_name }),
       listAll(catalogApi.networkOptions, { instance_type: item.instance_type, node_id: nodeId }),
       item.instance_type === 'container' ? listAll(catalogApi.gpuOptions, { node_id: nodeId }) : Promise.resolve([]),
     ]);
+    if (mine !== optionsSeq) return;
     users.value = u;
     images.value = imgs.filter((i) => i.status === 'active');
-    networks.value = nets;
+    networks.value = nets.filter((n) => n.project_name === item.project_name);
     gpuOptions.value = gpus;
   } catch (error) {
-    errorToast(error);
+    if (mine === optionsSeq) errorToast(error);
   } finally {
-    loading.value = false;
+    if (mine === optionsSeq) loading.value = false;
   }
 }
 
-watch(open, (v) => {
-  if (!v || !props.item) return;
-  prefill(props.item);
-  void loadOptions(props.item);
-});
+watch(() => [open.value, props.node.id, props.item] as const, ([isOpen, , item]) => {
+  ++optionsSeq;
+  images.value = [];
+  if (!isOpen || !item) return;
+  prefill(item);
+  void loadOptions(item);
+}, { immediate: true });
 
 const isContainer = computed(() => props.item?.instance_type === 'container');
 const userOptions = computed(() =>
@@ -159,6 +167,7 @@ const userOptions = computed(() =>
 );
 const imageOptions = computed(() =>
   images.value
+    .filter((i) => i.architecture === props.item?.architecture)
     .filter((i) => form.value.gpu_count === 0 || i.gpu_ready)
     .map((i) => ({
       label: `${i.name || i.code} ${i.version} · ${i.os_name} ${i.os_release} · ${i.architecture}${i.gpu_ready ? ' · GPU' : ''}`,
@@ -166,7 +175,7 @@ const imageOptions = computed(() =>
     })),
 );
 const networkOptions = computed(() =>
-  networks.value.map((n) => ({ label: `直连网络 #${n.id}（${enumLabel('networkMode', n.mode).text}）`, value: n.id })),
+  networks.value.map((n) => ({ label: `直连网络 #${n.id}（${enumLabel('networkMode', n.mode).text} · ${n.project_name}）`, value: n.id })),
 );
 const modelOptions = computed(() =>
   [...new Set(gpuOptions.value.map((g) => g.model))].map((m) => ({ label: m, value: m })),
@@ -226,7 +235,7 @@ async function openConfirm() {
 
 function approvedConfig(item: UnmanagedView): CustomConfig | null {
   const f = form.value;
-  if (!f.image_id || !f.network_option_id) return null;
+  if (!f.image_id || !f.network_option_id || loading.value || !images.value.some((i) => i.id === f.image_id && i.architecture === item.architecture)) return null;
   if (typeof f.vcpus !== 'number' || typeof f.memory_gib !== 'number' || typeof f.disk_gib !== 'number') return null;
   const memory =
     nativeMemoryBytes.value && f.memory_gib === bytesToGib(nativeMemoryBytes.value)
@@ -320,7 +329,8 @@ async function submit() {
                 :loading="loading"
                 option-filter-prop="label"
                 :options="imageOptions"
-                placeholder="可用且类型一致的镜像"
+                not-found-content="本节点、本项目没有已就绪的匹配镜像，请先在产品目录中准备"
+                placeholder="本节点、本项目已就绪且架构一致的镜像"
                 show-search
               />
             </FormItem>

@@ -132,18 +132,30 @@ func validateCustomFields(c *gin.Context, a *platform.App, f customConfigFields,
 		return bad("gpu.model must be null for zero GPUs and a model string otherwise")
 	}
 	db := platform.DB(c, a)
-	if _, e = platform.Get(db, "nodes", node, false); e != nil {
+	nr, e := platform.Get(db, "nodes", node, false)
+	if e != nil {
 		return e
 	}
 	ir, e := platform.Get(db, "images", image, false)
 	if e != nil {
 		return e
 	}
+	binding, e := catalog.ValidateNetworkOption(db, network, f.InstanceType)
+	if e != nil {
+		return e
+	}
+	if platform.Uint(binding["node_id"]) != node {
+		return bad("节点与网络选项不匹配，请重新选择。")
+	}
+	ir, e = catalog.ResolveNodeImage(c.Request.Context(), db, ir, node, platform.Text(binding["project_name"]))
+	if e != nil {
+		return e
+	}
 	if platform.Text(ir["status"]) != "active" || platform.Text(ir["image_type"]) != f.InstanceType || (*g.Count > 0 && !platform.Bool(ir["gpu_ready"])) {
 		return bad("image is not compatible with the requested instance")
 	}
-	if _, e = catalog.ValidateNetworkOption(db, network, f.InstanceType); e != nil {
-		return e
+	if arch := platform.Text(object(nr["resources"])["architecture"]); arch != "" && arch != platform.Text(ir["architecture"]) {
+		return bad("节点架构与镜像不兼容，请选择相同架构的镜像或节点。")
 	}
 	var templateID uint64
 	if f.InitTemplateVersionID != "" {

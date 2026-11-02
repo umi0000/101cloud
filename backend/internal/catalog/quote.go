@@ -187,9 +187,6 @@ func ValidateElastic(ctx context.Context, db *gorm.DB, a *platform.App, s Create
 	if e != nil {
 		return nil, e
 	}
-	if platform.Text(ir["status"]) != "active" || platform.Text(ir["image_type"]) != typ || (s.GPU.Count > 0 && !platform.Bool(ir["gpu_ready"])) {
-		return nil, invalid("镜像未启用、类型不匹配或不支持所申请的 GPU，请重新选择。")
-	}
 	network, e := platform.IDString(s.NetworkOptionID)
 	if e != nil {
 		return nil, e
@@ -203,6 +200,20 @@ func ValidateElastic(ctx context.Context, db *gorm.DB, a *platform.App, s Create
 	nr, e := ValidateNetworkOption(db, network, typ)
 	if e != nil {
 		return nil, e
+	}
+	ir, e = ResolveNodeImage(ctx, db, ir, platform.Uint(nr["node_id"]), platform.Text(nr["project_name"]))
+	if e != nil {
+		return nil, e
+	}
+	if platform.Text(ir["status"]) != "active" || platform.Text(ir["image_type"]) != typ || (s.GPU.Count > 0 && !platform.Bool(ir["gpu_ready"])) {
+		return nil, invalid("镜像未启用、类型不匹配或不支持所申请的 GPU，请重新选择。")
+	}
+	node, e := platform.Get(db, "nodes", platform.Uint(nr["node_id"]), false)
+	if e != nil {
+		return nil, e
+	}
+	if arch := platform.Text(object(node["resources"])["architecture"]); arch != "" && arch != platform.Text(ir["architecture"]) {
+		return nil, invalid("节点架构与镜像不兼容，请选择相同架构的镜像或节点。")
 	}
 	configured := versionMap(plan["policy_versions"])
 	if versions != nil {

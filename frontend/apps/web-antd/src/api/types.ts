@@ -84,6 +84,65 @@ export interface ImageProperties {
   os_release: string;
 }
 
+export type ImageSourceID = 'images' | 'ubuntu';
+export interface ImageSource {
+  available?: boolean;
+  unsupported_reason?: string;
+  id: ImageSourceID;
+  name: string;
+  protocol: 'simplestreams';
+  url: string;
+}
+
+export interface RemoteImage {
+  aliases: string[];
+  architecture: string;
+  cloud_init: boolean;
+  description: string;
+  fingerprint: string;
+  instance_type: InstanceType;
+  os_name: string;
+  os_release: string;
+  size_bytes: Bytes;
+  variant: string;
+}
+
+export interface ImageNodeInput {
+  architecture: string;
+  cloud_init: boolean;
+  fingerprint: string;
+  gpu_ready: boolean;
+  node_id: ID;
+  project_name: string;
+  properties?: Record<string, unknown>;
+  source_id?: ImageSourceID;
+  variant?: string;
+}
+
+export interface ImageNode extends Omit<ImageNodeInput, 'source_id'> {
+  error: null | { code: string; message: string };
+  id: ID;
+  last_verified_at: null | Time;
+  revision: string;
+  source_id: ImageSourceID | null;
+  status: 'downloading' | 'failed' | 'pending' | 'ready' | 'unknown';
+  task_id: ID | null;
+}
+
+export interface ImageInput {
+  code?: string;
+  instance_type: InstanceType;
+  nodes: ImageNodeInput[];
+  properties: ImageProperties;
+  source_type: 'local' | 'remote';
+  version?: string;
+}
+
+export interface ImageNodesAccepted {
+  image_id: ID;
+  tasks: { node_id: ID; project_name: string; task_id: ID }[];
+}
+
 export interface Image {
   architecture: string;
   code: string;
@@ -93,6 +152,9 @@ export interface Image {
   id: ID;
   instance_type: InstanceType;
   name: string;
+  nodes: ImageNode[];
+  cloud_init: boolean;
+  source_type: 'local' | 'remote';
   os_name: string;
   os_release: string;
   properties: ImageProperties;
@@ -223,6 +285,7 @@ export interface NetworkOption {
   id: ID;
   mode: NetworkMode;
   node_id: ID;
+  project_name: string;
 }
 
 /* ---------- nodes ---------- */
@@ -638,6 +701,7 @@ export interface Task {
   node_id: ID | null;
   phase: null | string;
   resource_reservations_released?: boolean;
+  result?: null | Record<string, unknown>;
   revision: string;
   started_at: null | Time;
   status: TaskStatus;

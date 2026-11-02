@@ -622,6 +622,19 @@ func instanceView(c *gin.Context, a *platform.App, r platform.Row) (platform.Row
 func taskDTO(db *gorm.DB, r platform.Row) (platform.Row, error) {
 	out := platform.Public(r, "id", "instance_id", "node_id", "user_id", "status", "phase", "created_at", "started_at", "finished_at", "error_code", "revision")
 	out["type"] = platform.Text(r["task_type"])
+	if platform.Text(r["task_type"]) == "image.prepare" {
+		result := object(r["result_redacted"])
+		safeResult := platform.Row{}
+		for _, key := range []string{"progress", "status", "image_node_id", "fingerprint", "architecture"} {
+			if value, ok := result[key].(string); ok {
+				if len(value) > 512 {
+					value = value[:512]
+				}
+				safeResult[key] = value
+			}
+		}
+		out["result"] = safeResult
+	}
 	var steps []platform.Row
 	if e := db.Table("task_steps").Select("step_key AS name,status,error_code,result_redacted,started_at,finished_at").Where("task_id=?", r["id"]).Order("id").Find(&steps).Error; e != nil {
 		return nil, platform.WrapDB(e)

@@ -119,6 +119,7 @@ export function enumLabel(kind: string, value: null | string | undefined): EnumL
 
 export const TASK_TYPES: Record<string, string> = {
   credit_enforcement_reconcile: '额度事件核对',
+  'image.prepare': '准备节点镜像',
   'instance.create': '创建实例',
   'instance.delete': '删除实例',
   'instance.gpu': 'GPU 操作',

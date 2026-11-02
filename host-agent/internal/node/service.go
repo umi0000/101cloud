@@ -58,6 +58,7 @@ type Service struct {
 	ipProbeSlots     chan struct{}
 	metricsMu        sync.RWMutex
 	metrics          *metricsSampler
+	imageCatalog     *remoteImageCatalog
 	mu               sync.Mutex
 	locks            map[instanceKey]*instanceLock
 }
@@ -87,6 +88,7 @@ func New(socketPath string) (*Service, error) {
 		networkCollector: collectNetwork,
 		ipProber:         probeIPv4,
 		ipProbeSlots:     make(chan struct{}, maxConcurrentIPProbes),
+		imageCatalog:     newRemoteImageCatalog(),
 		locks:            make(map[instanceKey]*instanceLock),
 	}, nil
 }
@@ -116,6 +118,10 @@ func closeIncus(client incus.InstanceServer) {
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
+	if r.URL.Path == "/agent/v1/image-sources" || strings.HasPrefix(r.URL.Path, "/agent/v1/image-sources/") {
+		s.imageSourcesAPI(w, r)
+		return
+	}
 	switch r.URL.Path {
 	case "/agent/v1/instances/metrics":
 		s.metricsAPI(w, r, false)

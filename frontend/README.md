@@ -181,3 +181,11 @@ CLOUD_TRUSTED_PROXIES='127.0.0.1/32,::1/128'
 验证：后端 vet、race 全量真实 MySQL 回归通过（确认/权限、顺序、停止失败不删除、预留/计费快照、竞争准入、部分执行恢复）；前端类型检查、oxlint、生产构建通过。隔离 MySQL 与状态式 TLS 节点协议场景中，经 curl 触发真实任务，确认 stop→resize→start，及强停 stop→delete 后 IP/GPU/用量回收；这是协议场景，不是实际硬件测试。线上仅打开实例 18 的两类确认弹窗及实例 19 的停止态规格弹窗，未确认风险时按钮禁用，运行中有重启/强制关闭提示、精确名称确认保留；未提交任何线上生命周期操作，实例 18 仍运行且规格未改。前端目录 `/srv/101cloud/releases/20261101-running-actions`，完整数据库和旧后端备份在 `/var/backups/101cloud/`，分别为 `before-running-actions-20261101.sql.gz`、`backend-before-running-actions-20261101`。
 
 2026-11-01 修复顶栏偏好设置齿轮点击无反应：自定义触发按钮原先覆盖默认插槽但没有绑定抽屉打开事件，现在通过现有 Preferences.open 暴露方法打开，并添加本地化 aria-label。仅更新 `.111` 前端 `/srv/101cloud/releases/20261101-preferences-open`，旧链接 `/var/backups/101cloud/frontend-before-preferences-open-20261101.link`。类型检查、包含修改组件的 oxlint、生产构建通过；线上真实点击验证抽屉打开、关闭、重新打开及主题即时切换，无运行时错误，验证后恢复浅色并退出登录。既有初始化配置优先于缓存的规则未改：刷新仍恢复配置指定的默认浅色；本次仅修复入口，不声称主题持久化行为改变。
+
+2026-11-02 节点镜像目录已完整部署到 `.111` 前后端及 Host Agent：前端 `/srv/101cloud/releases/20261102-node-images`。登记支持节点已有本地镜像核验、通过节点 Agent 读取真实官方目录并下载远程镜像、批量选节点及逐节点项目/架构/cloud-init/指纹/GPU 兼容性配置；只有原生核验后的 ready 配置可供对应节点/项目创建或纳管。未知下载走原任务对账，模糊派发不重发；GPU 就绪始终是管理员声明，不自动安装驱动。当前支持的源为 `images.linuxcontainers.org`，Ubuntu OS 从其中真实目录选择，不暴露格式不兼容的 Canonical Cloud 源。
+
+线上浏览器实际从 1895 个构件的目录选择 Alpine 3.22、容器、x86_64、cloud-init，通过“选择全部在线节点”批量入口提交，登记返回201，产生镜像3和任务76。Incus 原生证据确认新下载的私有镜像完整指纹 `04dbb9362a46ef57716981d224a47577d1dde1ad6c2101d2a517d375e2666992`，大小19.34 MiB、variant=cloud；任务持久保存操作ID及default项目，原生核验后ready。原有本地镜像1/2经迁移任务73/74就绪，cloud-init由真实cloud变体补齐；又通过浏览器“配置节点”对镜像2完成任务77的本地只读核验（202，无原生下载操作）。修复了旧properties往返管理的兼容问题及就绪后残留的缓存下载进度显示。
+
+实例下发表单实测随节点/网络绑定请求 `images?node_id=1&project_name=default`，仅显示3个已就绪镜像；不存在的另一项目返回空列表。任务页正确显示无关联实例的“准备节点镜像”成功任务，浏览器无运行时错误，验收登录已退出。未提交实例创建、停止、删除或规格调整；实例18/19保持运行，实例15及未知任务43保持原状，所有既有实例的冻结指纹、架构和规格未变，旧原生镜像保留。
+
+验证通过：后端及Host Agent `go vet ./...`、全量 `go test -race ./...`（后端启用真实MySQL/TLS回归，覆盖新装/升级保留、项目隔离、多节点差异配置与部分失败、模糊派发不重放和对账、创建/报价/纳管消费者）；前端类型检查、oxlint和生产构建；OpenAPI JSON及244处内部引用校验（147个操作）。线上只有一个管理节点，多节点和异常场景在隔离MySQL及两个独立固定证书TLS节点中验证，不声称进行了多台物理服务器下载。升级前完整数据库 `/var/backups/101cloud/before-node-images-20261102.sql.gz`（已校验gzip完整性）、旧后端 `backend-before-node-images-20261102`、旧前端链接 `frontend-before-node-images-20261102.link`，以及旧Agent `hostagent-before-node-images-20261102` 均在同目录；历史init.sql校验和不变，新增迁移 `20261102_00_node_images.sql` 已应用。

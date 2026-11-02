@@ -2692,6 +2692,8 @@
         ],
         "description": "Administrator required. ",
         "parameters": [
+          {"in":"query","name":"node_id","schema":{"type":"string"},"description":"Only ready configurations on this node and its applicable project; returns effective node metadata."},
+          {"in":"query","name":"project_name","schema":{"type":"string"},"description":"Optional project override; requires node_id. Defaults to the node default project."},
           {
             "in": "query",
             "name": "limit",
@@ -2723,7 +2725,7 @@
                         "items": {
                           "type": "array",
                           "items": {
-                            "type": "object"
+                            "$ref": "#/components/schemas/Image"
                           }
                         },
                         "next_cursor": {
@@ -2789,14 +2791,14 @@
         ],
         "responses": {
           "201": {
-            "description": "Success",
+            "description": "Logical image registered with nodes and their task_id; native preparation remains asynchronous.",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
+                      "$ref": "#/components/schemas/Image"
                     },
                     "request_id": {
                       "type": "string"
@@ -2827,6 +2829,17 @@
         }
       }
     },
+    "/admin/image-sources": {
+      "get":{"operationId":"get_admin_image_sources","tags":["admin"],"description":"Administrator only. Fixed trusted images.linuxcontainers.org HTTPS source; no arbitrary URL. Ubuntu OS is discovered from this actual catalog, not Canonical Cloud transport.","responses":{"200":{"description":"Trusted sources","content":{"application/json":{"schema":{"type":"object","properties":{"data":{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string","enum":["images"]},"name":{"type":"string"},"url":{"type":"string","format":"uri"},"protocol":{"type":"string","const":"simplestreams"}}}}}},"request_id":{"type":"string"}}}}}},"default":{"$ref":"#/components/responses/ApiError"}}}
+    },
+    "/admin/nodes/{id}/remote-images": {
+      "get":{"operationId":"get_admin_nodes_id_remote_images","tags":["admin"],"description":"Administrator only. Actual remote catalog obtained through the selected node Agent; selection is verified again on registration.","parameters":[{"in":"path","name":"id","required":true,"schema":{"type":"string"}},{"in":"query","name":"source_id","required":true,"schema":{"type":"string","enum":["images"]}},{"in":"query","name":"os","schema":{"type":"string"}},{"in":"query","name":"release","schema":{"type":"string"}},{"in":"query","name":"architecture","schema":{"type":"string"}},{"in":"query","name":"instance_type","schema":{"type":"string","enum":["container","virtual-machine"]}},{"in":"query","name":"cloud_init","schema":{"type":"boolean"}}],"responses":{"200":{"description":"Remote catalog","content":{"application/json":{"schema":{"type":"object","properties":{"data":{"type":"object","properties":{"items":{"type":"array","items":{"$ref":"#/components/schemas/RemoteImage"}}}},"request_id":{"type":"string"}}}}}},"default":{"$ref":"#/components/responses/ApiError"}}}
+    },
+    "/admin/images/{id}/nodes": {
+      "parameters":[{"in":"path","name":"id","required":true,"schema":{"type":"string"}}],
+      "get":{"operationId":"get_admin_images_id_nodes","tags":["admin"],"responses":{"200":{"description":"Node preparation states","content":{"application/json":{"schema":{"type":"object","properties":{"data":{"type":"object","properties":{"items":{"type":"array","items":{"$ref":"#/components/schemas/ImageNode"}}}},"request_id":{"type":"string"}}}}}},"default":{"$ref":"#/components/responses/ApiError"}}},
+      "post":{"operationId":"post_admin_images_id_nodes","tags":["admin"],"description":"Add/update node configurations in a batch. Reject active downloads. Unknown dispatched work requires reconciliation, never blind redispatch. No native image deletion.","parameters":[{"in":"header","name":"If-Match","required":true,"schema":{"type":"string"}},{"in":"header","name":"X-CSRF-Token","required":true,"schema":{"type":"string"}},{"in":"header","name":"Idempotency-Key","required":true,"schema":{"type":"string"}}],"requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","properties":{"nodes":{"type":"array","minItems":1,"items":{"$ref":"#/components/schemas/ImageNodeInput"}}},"required":["nodes"],"additionalProperties":false}}}},"responses":{"202":{"description":"Node preparation tasks accepted","content":{"application/json":{"schema":{"type":"object","properties":{"data":{"$ref":"#/components/schemas/ImagePreparationAccepted"},"request_id":{"type":"string"}}}}}},"default":{"$ref":"#/components/responses/ApiError"}}}
+    },
     "/admin/images/{id}": {
       "get": {
         "operationId": "get_admin_images_id",
@@ -2854,7 +2867,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
+                      "$ref": "#/components/schemas/Image"
                     },
                     "request_id": {
                       "type": "string"
@@ -5592,8 +5605,10 @@
         "tags": [
           "catalog"
         ],
-        "description": "",
+        "description": "With node_id, only ready configurations in the node default project are returned and effective node architecture/fingerprint/GPU/cloud-init metadata replaces global legacy values. Creation never lazily pulls remote images.",
         "parameters": [
+          {"in":"query","name":"node_id","schema":{"type":"string"}},
+          {"in":"query","name":"project_name","schema":{"type":"string"},"description":"Optional project override; requires node_id. Defaults to the node default project."},
           {
             "in": "query",
             "name": "limit",
@@ -5639,7 +5654,7 @@
                         "items": {
                           "type": "array",
                           "items": {
-                            "type": "object"
+                            "$ref": "#/components/schemas/Image"
                           }
                         },
                         "next_cursor": {
@@ -5770,7 +5785,7 @@
         "tags": [
           "catalog"
         ],
-        "description": "Items: id (network option ID), node_id, mode, created_at. node_id narrows options to one node's verified bindings.",
+        "description": "Items: id (network option ID), node_id, project_name, mode, created_at. node_id narrows options to one node's verified bindings. Use the option project_name with node_id when listing ready images.",
         "parameters": [
           {
             "in": "query",
@@ -5818,7 +5833,9 @@
                         "items": {
                           "type": "array",
                           "items": {
-                            "type": "object"
+                            "type": "object",
+                            "properties": {"id":{"type":"string"},"node_id":{"type":"string"},"project_name":{"type":"string"},"mode":{"type":"string"},"created_at":{"type":"string","format":"date-time"}},
+                            "required": ["id","node_id","project_name","mode","created_at"]
                           }
                         },
                         "next_cursor": {
@@ -12057,6 +12074,18 @@
             "type": "boolean",
             "description": "True only after atomic, proven pre-dispatch creation reservation cancellation. False is not evidence that a guest exists."
           },
+          "result": {
+            "type": "object",
+            "description": "Optional, image.prepare only. Public-safe string projection of task progress, never the raw native metadata/result object. Non-instance tasks have instance_id null; use the normal task reconcile endpoint for unknown preparation outcomes, which remain unknown without native evidence.",
+            "properties": {
+              "progress": {"type":"string","maxLength":512},
+              "status": {"type":"string","maxLength":512},
+              "image_node_id": {"type":"string","maxLength":512},
+              "fingerprint": {"type":"string","maxLength":512},
+              "architecture": {"type":"string","maxLength":512}
+            },
+            "additionalProperties": false
+          },
           "steps": {
             "type": "array",
             "items": {
@@ -13319,13 +13348,8 @@
               "virtual-machine"
             ]
           },
-          "architecture": {
-            "type": "string"
-          },
-          "fingerprint": {
-            "type": "string",
-            "pattern": "^[a-fA-F0-9]{64}$"
-          },
+          "source_type": {"type":"string","enum":["local","remote"]},
+          "nodes": {"type":"array","minItems":1,"items":{"$ref":"#/components/schemas/ImageNodeInput"}},
           "properties": {
             "type": "object",
             "properties": {
@@ -13349,11 +13373,71 @@
         },
         "required": [
           "instance_type",
-          "architecture",
-          "fingerprint",
+          "source_type",
+          "nodes",
           "properties"
         ],
         "additionalProperties": false
+      },
+      "ImageNodeInput": {
+        "type":"object",
+        "properties": {
+          "node_id":{"type":"string","pattern":"^[1-9][0-9]*$"},
+          "project_name":{"type":"string","minLength":1},
+          "architecture":{"type":"string","minLength":1},
+          "fingerprint":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"},
+          "cloud_init":{"type":"boolean"},
+          "gpu_ready":{"type":"boolean","description":"Manual compatibility assertion; never installs GPU drivers."},
+          "source_id":{"type":"string","enum":["images"],"description":"Required for remote entries; forbidden for local entries."},
+          "variant":{"type":"string"},
+          "properties":{"type":"object"}
+        },
+        "required":["node_id","project_name","architecture","fingerprint","cloud_init","gpu_ready"],
+        "additionalProperties":false
+      },
+      "ImageNode": {
+        "type":"object",
+        "description":"Per-node effective configuration. IDs and revision are decimal strings; fingerprint is a full SHA-256 hex digest.",
+        "properties": {
+          "id":{"type":"string"}, "image_id":{"type":"string"}, "node_id":{"type":"string"},
+          "project_name":{"type":"string"}, "architecture":{"type":"string"}, "fingerprint":{"type":"string"},
+          "cloud_init":{"type":"boolean"}, "gpu_ready":{"type":"boolean"},
+          "source_id":{"type":["string","null"],"enum":["images",null]},
+          "variant":{"type":"string"}, "properties":{"type":"object"},
+          "status":{"type":"string","enum":["pending","downloading","ready","failed","unknown"]},
+          "task_id":{"type":["string","null"]}, "last_verified_at":{"type":["string","null"],"format":"date-time"},
+          "error":{"type":["object","null"],"description":"Public-safe structured error; no raw native output or credentials."},
+          "revision":{"type":"string"}, "created_at":{"type":"string","format":"date-time"}, "updated_at":{"type":"string","format":"date-time"}
+        }
+      },
+      "Image": {
+        "type":"object",
+        "description":"Logical image. With node_id, architecture/fingerprint/gpu_ready/cloud_init/properties are resolved from a ready node configuration, never legacy global fallback.",
+        "properties": {
+          "id":{"type":"string"}, "code":{"type":"string"}, "version":{"type":"string"}, "name":{"type":"string"},
+          "instance_type":{"type":"string","enum":["container","virtual-machine"]},
+          "architecture":{"type":"string"}, "fingerprint":{"type":"string"}, "gpu_ready":{"type":"boolean"}, "cloud_init":{"type":"boolean"},
+          "os_name":{"type":"string"}, "os_release":{"type":"string"}, "properties":{"type":"object"},
+          "status":{"type":"string"}, "revision":{"type":"string"},
+          "nodes":{"type":"array","items":{"$ref":"#/components/schemas/ImageNode"}},
+          "created_at":{"type":"string","format":"date-time"}, "updated_at":{"type":"string","format":"date-time"}
+        }
+      },
+      "RemoteImage": {
+        "type":"object",
+        "properties": {
+          "fingerprint":{"type":"string","pattern":"^[a-fA-F0-9]{64}$"},
+          "os_name":{"type":"string"}, "os_release":{"type":"string"}, "architecture":{"type":"string"},
+          "instance_type":{"type":"string","enum":["container","virtual-machine"]}, "variant":{"type":"string"},
+          "cloud_init":{"type":"boolean"}, "description":{"type":"string"},
+          "aliases":{"type":"array","items":{"type":"string"}}, "size_bytes":{"type":"string"}
+        },
+        "required":["fingerprint","os_name","os_release","architecture","instance_type","variant","cloud_init","description","aliases","size_bytes"]
+      },
+      "ImagePreparationAccepted": {
+        "type":"object",
+        "properties": {"image_id":{"type":"string"},"tasks":{"type":"array","items":{"type":"object","properties":{"node_id":{"type":"string"},"project_name":{"type":"string"},"task_id":{"type":"string"}},"required":["node_id","project_name","task_id"]}}},
+        "required":["image_id","tasks"]
       },
       "TemplateCreate": {
         "type": "object",

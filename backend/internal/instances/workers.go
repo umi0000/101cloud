@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"101cloud/backend/internal/billing"
+	"101cloud/backend/internal/catalog"
 	"101cloud/backend/internal/platform"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -530,18 +531,7 @@ func workerCreateBody(ctx context.Context, a *platform.App, r platform.Row) (pla
 	if fingerprint == "" {
 		return nil, platform.E(409, "configuration_conflict", "实例缺少已固定的镜像指纹，请管理员重新核对镜像配置。")
 	}
-	image, err := platform.Get(a.DB.WithContext(ctx), "images", platform.Uint(r["image_id"]), false)
-	if err != nil {
-		return nil, err
-	}
 	source := platform.Row{"type": "image", "fingerprint": fingerprint}
-	if platform.Text(image["source_type"]) == "remote" {
-		source["server"] = platform.Text(image["source_url"])
-		source["protocol"] = platform.Text(image["source_protocol"])
-		if platform.Text(image["source_project"]) != "" {
-			source["project"] = platform.Text(image["source_project"])
-		}
-	}
 	return platform.Row{"name": platform.Text(r["incus_name"]), "type": platform.Text(r["image_type"]), "architecture": platform.Text(r["architecture"]), "profiles": []string{}, "config": cfg, "devices": platform.Row{"root": platform.Row{"type": "disk", "path": "/", "pool": platform.Text(r["storage_pool"]), "size": platform.Text(r["disk_bytes"])}, "eth0": nic}, "source": source}, nil
 }
 func runCreate(ctx context.Context, a *platform.App, j platform.Job) error {
@@ -1813,6 +1803,11 @@ func runReconcile(ctx context.Context, a *platform.App, j platform.Job) error {
 		err = a.ReconcileJob(ctx, original)
 	}
 	if err != nil {
+		// Image preparation owns its dispatch uncertainty classification and marks
+		// known native failures under the source/wrapper lease fence.
+		if original.Type == "image.prepare" {
+			return err
+		}
 		return platform.Unknown(err)
 	}
 	err = a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
@@ -1878,6 +1873,10 @@ func workerImportNetwork(ctx context.Context, a *platform.App, nodeID uint64, sp
 		return err
 	}
 	image, err := platform.Get(a.DB.WithContext(ctx), "images", imageID, false)
+	if err != nil {
+		return err
+	}
+	image, err = catalog.ResolveNodeImage(ctx, a.DB.WithContext(ctx), image, nodeID, project)
 	if err != nil {
 		return err
 	}

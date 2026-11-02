@@ -1,7 +1,6 @@
 package catalog
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -18,6 +17,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 	registerProducts(a, user, admin)
 	registerNodes(a, admin)
 	registerNetworks(a, user, admin)
+	registerImages(a, admin)
 	user.POST("/quotes", platform.Handle(func(c *gin.Context) (any, error) {
 		var s CreateElasticSpec
 		if err := platform.Decode(c, &s); err != nil {
@@ -100,10 +100,11 @@ func listDTO(c *gin.Context, a *platform.App, q *gorm.DB, filters []string, dto 
 	return platform.ListMap(c, a, q, filters, func(r platform.Row) (platform.Row, error) { return dto(r), nil })
 }
 func imageDTO(r platform.Row) platform.Row {
-	p := platform.Public(r, "id", "code", "version", "name", "architecture", "os_name", "os_release", "status", "revision", "created_at", "updated_at")
+	p := platform.Public(r, "id", "code", "version", "name", "source_type", "architecture", "os_name", "os_release", "status", "revision", "created_at", "updated_at")
 	p["gpu_ready"] = platform.Bool(r["gpu_ready"])
+	p["cloud_init"] = platform.Bool(r["cloud_init"])
 	p["instance_type"] = platform.Text(r["image_type"])
-	p["fingerprint"] = hex.EncodeToString([]byte(platform.Text(r["fingerprint"])))
+	p["fingerprint"] = imageFingerprint(r["fingerprint"])
 	p["properties"] = jsonValue(r["properties"])
 	return p
 }

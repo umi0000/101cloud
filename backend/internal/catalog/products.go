@@ -13,12 +13,12 @@ import (
 )
 
 type imageInput struct {
-	Code         string         `json:"code"`
-	Version      string         `json:"version"`
-	InstanceType string         `json:"instance_type"`
-	Architecture string         `json:"architecture"`
-	Fingerprint  string         `json:"fingerprint"`
-	Properties   map[string]any `json:"properties"`
+	Code         string           `json:"code"`
+	Version      string           `json:"version"`
+	InstanceType string           `json:"instance_type"`
+	SourceType   string           `json:"source_type"`
+	Properties   map[string]any   `json:"properties"`
+	Nodes        []ImageNodeInput `json:"nodes"`
 }
 type planInput struct {
 	Code                  string            `json:"code"`
@@ -74,28 +74,13 @@ func registerProducts(a *platform.App, user, admin *gin.RouterGroup) {
 		return listProducts(c, a, platform.DB(c, a).Table("(?) AS options", inner), []string{"node_id"})
 	}))
 	admin.GET("/images", platform.Handle(func(c *gin.Context) (any, error) { return imageList(c, a, true) }))
-	admin.POST("/images", platform.Handle(func(c *gin.Context) (any, error) {
-		var b imageInput
-		if e := platform.Decode(c, &b); e != nil {
-			return nil, e
-		}
-		row, e := imageValues(b, platform.Current(c).ID)
-		if e != nil {
-			return nil, e
-		}
-		r, e := insert(c, a, "images", row)
-		if e != nil {
-			return nil, e
-		}
-		platform.Reply(c, 201, imageDTO(r))
-		return nil, nil
-	}))
+	admin.POST("/images", platform.Handle(func(c *gin.Context) (any, error) { return imageCreate(c, a) }))
 	admin.GET("/images/:id", platform.Handle(func(c *gin.Context) (any, error) {
 		r, e := detail(c, a, "images")
 		if e != nil {
 			return nil, e
 		}
-		return imageDTO(r), nil
+		return imageWithNodes(platform.DB(c, a), r)
 	}))
 	admin.PATCH("/images/:id", platform.Handle(func(c *gin.Context) (any, error) {
 		var b struct {
@@ -126,7 +111,7 @@ func registerProducts(a *platform.App, user, admin *gin.RouterGroup) {
 		if e != nil {
 			return nil, e
 		}
-		return imageDTO(r), nil
+		return imageWithNodes(platform.DB(c, a), r)
 	}))
 	admin.GET("/plans", platform.Handle(func(c *gin.Context) (any, error) { return planList(c, a, true) }))
 	admin.POST("/plans", platform.Handle(func(c *gin.Context) (any, error) {
@@ -345,22 +330,6 @@ func decodeMap(v any, dst any) error {
 	}
 	return nil
 }
-func imageList(c *gin.Context, a *platform.App, admin bool) (any, error) {
-	q := platform.DB(c, a).Table("images")
-	if !admin {
-		q = q.Where("images.status='active'")
-	}
-	if s := c.Query("instance_type"); s != "" {
-		if !enum(s, "container", "virtual-machine") {
-			return nil, invalid("invalid instance_type")
-		}
-		q = q.Where("images.image_type=?", s)
-	}
-	if s := c.Query("architecture"); s != "" {
-		q = q.Where("images.architecture=?", s)
-	}
-	return listDTO(c, a, q, []string{"instance_type", "architecture"}, imageDTO)
-}
 func planList(c *gin.Context, a *platform.App, admin bool) (any, error) {
 	db := platform.DB(c, a)
 	q := db.Table("instance_plans")
@@ -382,30 +351,33 @@ func validateImageProperties(p map[string]any) error {
 	return secretFree(p)
 }
 func imageValues(b imageInput, actor uint64) (platform.Row, error) {
-	fp, e := hex.DecodeString(b.Fingerprint)
-	if e != nil || len(fp) != 32 {
-		return nil, invalid("image fingerprint must be SHA-256 hex")
+	if len(b.Nodes) == 0 {
+		return nil, invalid("nodes must contain at least one target")
 	}
-	// Code and version are optional labels; defaults keep (code, version) unique per fingerprint.
+	first := b.Nodes[0]
+	fp, e := hex.DecodeString(first.Fingerprint)
+	if e != nil || len(fp) != 32 {
+		return nil, invalid("image fingerprint must be full SHA-256 hex")
+	}
 	defaultIdentity := b.Code == ""
 	if b.Code == "" {
-		b.Code = strings.ToLower(b.Fingerprint[:12])
+		b.Code = strings.ToLower(first.Fingerprint[:12])
 	}
 	if b.Version == "" {
 		b.Version = "1"
 	}
-	if !codeValid(b.Code) || !codeValid(b.Version) || !enum(b.InstanceType, "container", "virtual-machine") || !textValid(b.Architecture, 32) {
-		return nil, invalid("invalid image identity/type/architecture")
+	if !codeValid(b.Code) || !codeValid(b.Version) || !enum(b.InstanceType, "container", "virtual-machine") || !textValid(first.Architecture, 32) || !enum(b.SourceType, "local", "remote") {
+		return nil, invalid("invalid image identity/type/source/architecture")
 	}
 	if e = validateImageProperties(b.Properties); e != nil {
 		return nil, e
 	}
-	gpu, ok := b.Properties["gpu_ready"].(bool)
-	if !ok {
-		return nil, invalid("properties.gpu_ready must be explicitly specified")
+	if v, exists := b.Properties["gpu_ready"]; exists {
+		if _, ok := v.(bool); !ok {
+			return nil, invalid("properties.gpu_ready must be a boolean")
+		}
 	}
-	osName := platform.Text(b.Properties["os_name"])
-	osRelease := platform.Text(b.Properties["os_release"])
+	osName, osRelease := platform.Text(b.Properties["os_name"]), platform.Text(b.Properties["os_release"])
 	if !textValid(osName, 64) || !textValid(osRelease, 64) {
 		return nil, invalid("properties.os_name and os_release required")
 	}
@@ -413,7 +385,15 @@ func imageValues(b imageInput, actor uint64) (platform.Row, error) {
 	if label := osName + " " + osRelease + " (" + b.Code + ")"; defaultIdentity && utf8.RuneCountInString(label) <= 128 {
 		name = label
 	}
-	return platform.Row{"code": b.Code, "version": b.Version, "name": name, "source_type": "local", "fingerprint": fp, "architecture": b.Architecture, "image_type": b.InstanceType, "gpu_ready": gpu, "os_name": osName, "os_release": osRelease, "properties": jsonString(b.Properties), "status": "active", "created_by_user_id": actor}, nil
+	r := platform.Row{"code": b.Code, "version": b.Version, "name": name, "source_type": b.SourceType, "fingerprint": fp, "architecture": first.Architecture, "image_type": b.InstanceType, "gpu_ready": first.GPUReady, "os_name": osName, "os_release": osRelease, "properties": jsonString(b.Properties), "status": "active", "created_by_user_id": actor}
+	if b.SourceType == "remote" {
+		sourceURL, ok := imageSourceURL(first.SourceID)
+		if !ok {
+			return nil, invalid("remote image source_id is required")
+		}
+		r["source_url"], r["source_protocol"] = sourceURL, "simplestreams"
+	}
+	return r, nil
 }
 func planValues(c *gin.Context, a *platform.App, b planInput, publish bool) (platform.Row, error) {
 	if !codeValid(b.Code) || !codeValid(b.Version) || !textValid(b.Name, 128) || !enum(b.InstanceType, "container", "virtual-machine") {

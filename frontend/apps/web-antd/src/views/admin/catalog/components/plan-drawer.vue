@@ -4,6 +4,7 @@ import type { CatalogRefs } from '../refs';
 import type {
   AccessMode,
   AllowedOverrides,
+  Image,
   InstanceType,
   OverrideKey,
   Plan,
@@ -201,13 +202,23 @@ watch(hasModel, (v) => {
   }
 });
 
+function readyImageNodes(image: Image) {
+  const bindings = props.refs.bindings.value.filter((b) => form.value.network_option_ids.includes(b.id));
+  return image.nodes.filter((n) => n.status === 'ready' && (bindings.length === 0 || bindings.some((b) => b.node_id === n.node_id && b.project_name === n.project_name)));
+}
+
+function imageNodeLabel(image: Image) {
+  const ready = readyImageNodes(image);
+  return ready.length ? ready.map((n) => `${props.refs.nodeName(n.node_id)}/${n.project_name} · ${n.architecture}${n.gpu_ready ? ' · GPU' : ''}`).join('；') : '所选网络节点暂无就绪配置';
+}
+
 const imageOptions = computed(() =>
   props.refs.images.value
     .filter((i) => i.instance_type === form.value.instance_type)
     .filter((i) => i.status === 'active' || form.value.image_ids.includes(i.id))
     .map((i) => ({
-      disabled: form.value.gpu_count > 0 && !i.gpu_ready,
-      label: `${i.name} · ${i.os_name} ${i.os_release} · ${i.architecture}${i.gpu_ready ? ' · GPU 就绪' : ''}${i.status === 'active' ? '' : ' · 未启用'}`,
+      disabled: readyImageNodes(i).length === 0 || (form.value.gpu_count > 0 && !readyImageNodes(i).some((n) => n.gpu_ready)),
+      label: `${i.name} · ${i.os_name} ${i.os_release} · ${imageNodeLabel(i)}${i.status === 'active' ? '' : ' · 未启用'}`,
       value: i.id,
     })),
 );
@@ -306,7 +317,8 @@ const problems = computed(() => {
   for (const id of f.image_ids) {
     const img = props.refs.images.value.find((i) => i.id === id);
     if (img && img.instance_type !== f.instance_type) out.push(`镜像 ${img.name} 类型与套餐不一致`);
-    if (img && f.gpu_count > 0 && !img.gpu_ready) out.push(`默认带 GPU 的套餐只能选 GPU 就绪镜像（${img.name}）`);
+    if (img && readyImageNodes(img).length === 0) out.push(`镜像 ${img.name} 在所选网络节点尚无就绪配置`);
+    if (img && f.gpu_count > 0 && !readyImageNodes(img).some((n) => n.gpu_ready)) out.push(`默认带 GPU 的套餐需要所选网络节点的 GPU 就绪镜像（${img.name}）`);
   }
   if (f.network_option_ids.length === 0) out.push('至少选择一个网络');
   for (const kind of REQUIRED_POLICIES) {
@@ -496,7 +508,7 @@ async function save() {
       <FormItem
         label="镜像"
         required
-        extra="类型须与套餐一致；默认带 GPU 的套餐只能选 GPU 就绪镜像。GPU 可选的套餐允许混选，用户带卡时后端要求所选镜像 GPU 就绪"
+        extra="按所选网络的节点和项目展示就绪架构；默认带 GPU 时须有对应节点的 GPU 就绪配置。不同节点可以使用不同架构。"
       >
         <Select v-model:value="form.image_ids" mode="multiple" :options="imageOptions" placeholder="选择镜像" />
       </FormItem>

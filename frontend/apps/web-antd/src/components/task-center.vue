@@ -38,6 +38,10 @@ const tasks = useTaskStore();
           <TimeText :value="t.task.created_at" />
         </template>
       </div>
+      <div v-if="t.task?.type === 'image.prepare'" class="mt-2 text-xs">
+        {{ t.label }}<span v-if="t.task.node_id" class="ml-2">节点 #{{ t.task.node_id }}</span>
+        <div v-if="typeof t.task.result?.progress === 'string'" class="mt-1 font-mono">{{ t.task.result.progress }}</div>
+      </div>
       <div v-if="t.task?.status === 'unknown'" class="mt-2 text-xs text-orange-500">
         结果待核对，不会自动重新发起操作。可在"管理 / 任务"中请求核对。
       </div>

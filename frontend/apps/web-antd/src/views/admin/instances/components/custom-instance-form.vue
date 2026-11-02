@@ -93,17 +93,19 @@ const gpuOptions = shallowRef<GPUOption[]>([]);
 const nodes = shallowRef<Node[]>([]);
 const nodeGPUs = shallowRef<NodeGPU[]>([]);
 const loading = ref(false);
+const imagesLoading = ref(false);
+const imageProject = computed(() => form.network_option_id
+  ? networks.value.find((n) => n.id === form.network_option_id)?.project_name
+  : nodes.value.find((n) => n.id === form.node_id)?.defaults.project_name);
 
 onMounted(async () => {
   loading.value = true;
   try {
-    const [n, i, t] = await Promise.all([
+    const [n, t] = await Promise.all([
       listAll(nodesApi.list),
-      listAll(catalogApi.images),
       listAll(catalogApi.templates),
     ]);
     nodes.value = n;
-    images.value = i.filter((x) => x.status === 'active');
     templates.value = t.filter((x) => x.status === 'active');
   } catch (error) {
     errorToast(error);
@@ -111,6 +113,30 @@ onMounted(async () => {
     loading.value = false;
   }
 });
+
+let imageSeq = 0;
+watch(
+  () => [form.node_id, form.instance_type, imageProject.value] as const,
+  async ([node, instanceType, projectName], previous) => {
+    const mine = ++imageSeq;
+    images.value = [];
+    if (previous && (previous[0] !== node || previous[1] !== instanceType || (previous[2] !== undefined && previous[2] !== projectName))) form.image_id = undefined;
+    imagesLoading.value = false;
+    if (!node || !projectName) return;
+    imagesLoading.value = true;
+    try {
+      const available = await listAll(catalogApi.images, { instance_type: instanceType, node_id: node, project_name: projectName });
+      if (mine !== imageSeq) return;
+      images.value = available.filter((i) => i.status === 'active');
+      if (form.image_id && !images.value.some((i) => i.id === form.image_id)) form.image_id = undefined;
+    } catch (error) {
+      if (mine === imageSeq) errorToast(error);
+    } finally {
+      if (mine === imageSeq) imagesLoading.value = false;
+    }
+  },
+  { immediate: true },
+);
 
 /* ---------- 节点 → GPU 选项、节点 GPU 列表（fixed_uuids）、网络 ---------- */
 
@@ -143,8 +169,8 @@ watch(
   () => [form.node_id, form.instance_type] as const,
   async ([node, type]) => {
     const mine = ++netSeq;
+    networks.value = [];
     if (!node) {
-      networks.value = [];
       form.network_option_id = undefined;
       return;
     }
@@ -185,13 +211,13 @@ const imageOptions = computed(() =>
     .filter((i) => i.instance_type === form.instance_type)
     .map((i) => ({
       disabled: form.gpu_count > 0 && !i.gpu_ready,
-      label: `${i.name}（${i.os_name} ${i.os_release}${i.gpu_ready ? '，支持 GPU' : ''}）`,
+      label: `${i.name}（${i.os_name} ${i.os_release} · ${i.architecture}${i.gpu_ready ? '，支持 GPU' : ''}）`,
       value: i.id,
     })),
 );
 
 const networkOptions = computed(() =>
-  networks.value.map((n) => ({ label: `直连网络 #${n.id}（${enumLabel('networkMode', n.mode).text}）`, value: n.id })),
+  networks.value.map((n) => ({ label: `直连网络 #${n.id}（${enumLabel('networkMode', n.mode).text} · ${n.project_name}）`, value: n.id })),
 );
 
 /** 只有「启用」且未离线的节点可选；其余标注状态并禁用。 */
@@ -288,6 +314,7 @@ const problems = computed(() => {
   const out: string[] = [];
   if (!form.node_id) out.push('请选择节点');
   if (!form.image_id) out.push('请选择镜像');
+  else if (imagesLoading.value || !images.value.some((i) => i.id === form.image_id)) out.push('所选节点的镜像尚未就绪，请重新选择');
   else if (form.gpu_count > 0 && images.value.some((i) => i.id === form.image_id && !i.gpu_ready)) {
     out.push('所选镜像不支持 GPU');
   }
@@ -371,8 +398,10 @@ watch(value, (v) => emit('update:value', v), { immediate: true });
         <FormItem label="镜像" required>
           <Select
             v-model:value="form.image_id"
-            :loading="loading"
+            :loading="imagesLoading"
             :options="imageOptions"
+            :disabled="!form.node_id"
+            :not-found-content="form.node_id ? '该节点暂无就绪镜像，请在产品目录中准备镜像' : '请先选择节点'"
             placeholder="选择镜像"
             show-search
             option-filter-prop="label"

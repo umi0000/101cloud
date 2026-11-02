@@ -35,6 +35,7 @@ export const TaskSchema = z.object({
   node_id: z.string().nullable(),
   phase: z.string().nullable(),
   resource_reservations_released: z.boolean().optional(),
+  result: z.record(z.unknown()).nullable().optional(),
   revision: z.string(),
   started_at: z.string().nullable(),
   status: TaskStatusSchema,

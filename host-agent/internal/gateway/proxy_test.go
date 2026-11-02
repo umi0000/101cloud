@@ -271,3 +271,50 @@ func TestProxyAllowsEscapedSlashInImageAlias(t *testing.T) {
 		t.Fatalf("valid image alias inaccessible: status=%d body=%s", response.StatusCode, body)
 	}
 }
+
+func TestProxyPreservesPinnedImagePullAndVerification(t *testing.T) {
+	fingerprint := strings.Repeat("a", 64)
+	payload := `{"source":{"type":"image","mode":"pull","server":"https://images.linuxcontainers.org","protocol":"simplestreams","fingerprint":"` + fingerprint + `"},"public":false}`
+	operation := `{"type":"async","status_code":100,"operation":"/1.0/operations/image-download","metadata":{"id":"image-download","status":"Running"}}`
+	public, _ := unixGateway(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.RawQuery != "project=images-project" {
+			t.Errorf("lost project scope: %s", r.URL.String())
+			http.Error(w, "project missing", 400)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/1.0/images":
+			body, err := io.ReadAll(r.Body)
+			if err != nil || string(body) != payload {
+				t.Errorf("altered pinned pull: %s error=%v", body, err)
+				http.Error(w, "invalid pull", 400)
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(w, operation)
+		case r.Method == http.MethodGet && r.URL.Path == "/1.0/images/"+fingerprint:
+			_, _ = io.WriteString(w, `{"type":"sync","status_code":200,"metadata":{"fingerprint":"`+fingerprint+`","architecture":"x86_64","type":"container"}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	response, err := public.Client().Post(public.URL+"/1.0/images?project=images-project", "application/json", strings.NewReader(payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil || response.StatusCode != http.StatusAccepted || string(body) != operation {
+		t.Fatalf("pull operation lost: status=%d body=%s error=%v", response.StatusCode, body, err)
+	}
+	response, err = public.Client().Get(public.URL + "/1.0/images/" + fingerprint + "?project=images-project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err = io.ReadAll(response.Body)
+	if err != nil || response.StatusCode != http.StatusOK || !strings.Contains(string(body), `"fingerprint":"`+fingerprint+`"`) {
+		t.Fatalf("exact image verification unavailable: status=%d body=%s error=%v", response.StatusCode, body, err)
+	}
+}

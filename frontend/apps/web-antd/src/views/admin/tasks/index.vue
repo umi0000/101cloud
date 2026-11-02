@@ -149,6 +149,10 @@ onMounted(() => list.load());
           <DescriptionsItem label="类型">{{ TASK_TYPES[detail.data.value.type] ?? detail.data.value.type }}</DescriptionsItem>
           <DescriptionsItem label="状态"><StatusTag kind="task" :value="detail.data.value.status" /></DescriptionsItem>
           <DescriptionsItem label="阶段"><span class="font-mono">{{ detail.data.value.phase || '—' }}</span></DescriptionsItem>
+          <DescriptionsItem v-if="detail.data.value.type === 'image.prepare'" label="节点镜像进度">
+            <span v-if="detail.data.value.node_id">节点 #{{ detail.data.value.node_id }}</span>
+            <div v-if="typeof detail.data.value.result?.progress === 'string'" class="font-mono">{{ detail.data.value.result.progress }}</div>
+          </DescriptionsItem>
           <DescriptionsItem label="下一步">
             {{ TASK_NEXT_ACTIONS[detail.data.value.next_action] ?? (detail.data.value.next_action ? '请查看任务状态与处理建议' : '—') }}
             <details v-if="detail.data.value.next_action" class="text-muted-foreground mt-1 text-xs">

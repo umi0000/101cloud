@@ -67,7 +67,7 @@ func registerNetworks(a *platform.App, user, admin *gin.RouterGroup) {
 		if typ != "container" && typ != "virtual-machine" {
 			return nil, networkError("请指定有效的 instance_type：container 或 virtual-machine。")
 		}
-		q := platform.DB(c, a).Table("node_network_bindings b").Select("b.id,b.node_id,b.mode,b.created_at").Joins("JOIN network_pools p ON p.id=b.network_pool_id").Where("p.status='active' AND b.status='active' AND b.validation_status='verified'")
+		q := platform.DB(c, a).Table("node_network_bindings b").Select("b.id,b.node_id,b.mode,b.project_name,b.created_at").Joins("JOIN network_pools p ON p.id=b.network_pool_id").Where("p.status='active' AND b.status='active' AND b.validation_status='verified'")
 		if s := c.Query("node_id"); s != "" {
 			node, e := platform.IDString(s)
 			if e != nil {
