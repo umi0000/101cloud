@@ -24,9 +24,8 @@ export const overridesPreferences = defineOverridesPreferences({
     enable: false,
   },
   logo: {
-    // 暂无 Logo，只显示文字品牌
     enable: true,
-    source: '',
+    source: '/brill-logo.png',
   },
   shortcutKeys: {
     globalLockScreen: false,
