@@ -18,6 +18,7 @@ export const overridesPreferences = defineOverridesPreferences({
     name: import.meta.env.VITE_APP_TITLE,
     timezone: 'Asia/Shanghai',
     watermark: false,
+    layout: 'header-sidebar-nav',
   },
   copyright: {
     enable: false,
@@ -31,13 +32,16 @@ export const overridesPreferences = defineOverridesPreferences({
     globalLockScreen: false,
   },
   tabbar: {
+    enable: false,
     persist: false,
   },
   theme: {
-    mode: 'light',
+    mode: 'auto',
     semiDarkHeader: false,
     semiDarkSidebar: false,
     semiDarkSidebarSub: false,
+    builtinType: 'pink',
+    colorPrimary: 'hsl(347 77% 60%)',
   },
   widget: {
     globalSearch: false,
@@ -45,5 +49,6 @@ export const overridesPreferences = defineOverridesPreferences({
     lockScreen: false,
     notification: false,
     timezone: false,
+    fullscreen: false,
   },
 });
