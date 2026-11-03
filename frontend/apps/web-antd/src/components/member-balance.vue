@@ -102,18 +102,31 @@ onBeforeUnmount(() => {
         </div>
         <dl class="m-0 space-y-2">
           <div class="flex items-start justify-between gap-4">
-            <dt class="text-muted-foreground shrink-0">可用额度</dt>
+            <dt class="text-muted-foreground shrink-0">可用额度（净额）</dt>
             <dd class="m-0 min-w-0 break-all text-right font-mono font-medium">{{ formatPt(account?.available_pt) }} Pt</dd>
           </div>
           <div class="flex items-start justify-between gap-4">
-            <dt class="text-muted-foreground shrink-0">剩余额度</dt>
+            <dt class="text-muted-foreground shrink-0">剩余额度（净额）</dt>
             <dd class="m-0 min-w-0 break-all text-right font-mono">{{ formatPt(account?.remaining_pt) }} Pt</dd>
           </div>
           <div class="flex items-start justify-between gap-4">
             <dt class="text-muted-foreground shrink-0">已预留额度</dt>
             <dd class="m-0 min-w-0 break-all text-right font-mono">{{ formatPt(account?.reserved_pt) }} Pt</dd>
           </div>
+          <div class="flex items-start justify-between gap-4">
+            <dt class="text-muted-foreground shrink-0">未偿欠款（总额）</dt>
+            <dd class="m-0 min-w-0 break-all text-right font-mono">{{ formatPt(account?.outstanding_debt_pt) }} Pt</dd>
+          </div>
         </dl>
+        <p class="text-muted-foreground m-0 text-xs">剩余与可用已扣除欠款；可用还扣除预留，请勿再次扣除未偿欠款。欠款未还清时净余额可能为负数，无待处理任务不代表欠款已还清。</p>
+        <Alert
+          v-if="account?.settlement_pending"
+          description="已入账额度正在抵扣历史欠费，不代表偿债已完成；未偿欠款总额可能暂未下降。净余额已反映入账金额，可刷新查看最新进展。"
+          message="历史欠费正在后台分批抵扣"
+          role="status"
+          show-icon
+          type="info"
+        />
         <Alert v-if="feedback" show-icon type="error" message="额度更新失败">
           <template #description>
             <p class="mb-1">{{ account ? '当前保留上次成功获取的额度。' : '暂时无法获取额度，请刷新重试。' }}</p>
@@ -141,7 +154,7 @@ onBeforeUnmount(() => {
     <Button
       type="text"
       :aria-expanded="open"
-      :aria-label="`可用额度 ${formatPt(account?.available_pt)} Pt，点击查看额度详情${feedback ? '，更新失败' : ''}${enforcementMessage ? '，存在额度停机提示' : ''}`"
+      :aria-label="`可用额度 ${formatPt(account?.available_pt)} Pt，点击查看额度详情${account?.settlement_pending ? '，历史欠费正在后台分批抵扣' : ''}${feedback ? '，更新失败' : ''}${enforcementMessage ? '，存在额度停机提示' : ''}`"
     >
       <span class="inline-flex min-w-0 items-center gap-1.5">
         <span class="text-muted-foreground hidden sm:inline">可用额度</span>

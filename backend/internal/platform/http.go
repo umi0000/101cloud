@@ -292,16 +292,26 @@ func Public(r Row, fields ...string) Row {
 	v := Row{}
 	if len(fields) == 0 {
 		for k, x := range r {
+			if privateLoginField(k) {
+				continue
+			}
 			v[k] = publicValue(k, x)
 		}
 		return v
 	}
 	for _, k := range fields {
+		if privateLoginField(k) {
+			continue
+		}
 		if x, ok := r[k]; ok {
 			v[k] = publicValue(k, x)
 		}
 	}
 	return v
+}
+
+func privateLoginField(key string) bool {
+	return key == "login_config_ciphertext" || key == "root_password" || key == "password_hash"
 }
 func publicValue(k string, x any) any {
 	if x == nil {

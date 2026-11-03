@@ -50,14 +50,14 @@ const runtime = computed(() => usableQuote.value && store.account && !accountBlo
 const canRefreshQuote = computed(() => !!order.value && !!identity.value && !store.locked && !store.quoteLoading && !store.needsEdit);
 const primaryDisabled = computed(() => {
   if (!identity.value || !order.value || store.submitting) return true;
-  if (store.pendingIntent) return false;
+  if (store.hasPendingIntent) return false;
   if (store.needsEdit) return store.locked;
   if (quoteExpired.value || !quote.value || store.quoteError) return !canRefreshQuote.value;
   return !usableQuote.value || !!accountBlock.value || store.locked;
 });
 const primaryLabel = computed(() => {
   if (store.submitting) return '正在提交创建';
-  if (store.pendingIntent) return '使用同一请求重试';
+  if (store.hasPendingIntent) return '使用同一请求重试';
   if (store.needsEdit) return '返回修改配置';
   if (quoteExpired.value) return '报价已过期，更新报价';
   if (!quote.value || store.quoteError) return '更新报价';
@@ -105,12 +105,12 @@ async function refreshAccount() {
 
 async function confirmOrder() {
   if (primaryDisabled.value) return;
-  if (store.needsEdit && !store.pendingIntent) {
+  if (store.needsEdit && !store.hasPendingIntent) {
     editConfiguration();
     return;
   }
   // 原请求结果不确定时，重试必须交给 store 复用同一请求，不能先刷新报价。
-  if (!store.pendingIntent && (quoteExpired.value || !quote.value || store.quoteError)) {
+  if (!store.hasPendingIntent && (quoteExpired.value || !quote.value || store.quoteError)) {
     await store.refreshQuote();
     return;
   }
@@ -150,7 +150,7 @@ onBeforeUnmount(() => {
         <Tag color="blue" class="m-0">第二步 · 确认后创建</Tag>
       </div>
       <Alert v-if="store.notice" class="mb-4" :message="store.notice" :description="store.needsEdit ? '当前配置不能继续创建，请返回修改并获取最新报价。' : '请核对最新费用与预留额度后再次确认，本次更新不会自动提交创建。'" show-icon type="warning" role="alert" />
-      <Alert v-if="store.pendingIntent && !store.submitting" class="mb-4" message="创建结果尚未确定，请勿重复创建" description="配置已锁定。请使用最终按钮，以相同幂等键和相同配置重试原请求；不要刷新页面或另开页面再次创建。" show-icon type="warning" />
+      <Alert v-if="store.hasPendingIntent && !store.submitting" class="mb-4" message="创建结果尚未确定，请勿重复创建" description="配置与登录凭据已锁定。请使用最终按钮，以相同幂等键和相同请求重试；不要刷新页面或另开页面再次创建。" show-icon type="warning" />
       <Alert v-if="store.submitError" class="mb-4" message="创建请求未完成" show-icon type="error">
         <template #description><ErrorFeedback :feedback="store.submitError" /></template>
       </Alert>
@@ -162,6 +162,9 @@ onBeforeUnmount(() => {
               <div><dt>实例名称</dt><dd class="font-semibold">{{ order.spec.name }}</dd></div>
               <div><dt>套餐</dt><dd>{{ order.plan.name }}</dd></div>
               <div><dt>系统镜像</dt><dd class="flex items-start gap-3"><OsIcon :name="order.image.os_name" class="shrink-0 text-[28px]" /><span><strong class="block">{{ order.image.os_name || 'Linux' }} {{ order.image.os_release }}</strong><span class="text-muted-foreground block text-xs">{{ order.image.name }} · {{ order.image.architecture }}</span></span></dd></div>
+              <div><dt>登录用户</dt><dd>root</dd></div>
+              <div><dt>登录方式</dt><dd><span v-if="store.loginSummary?.passwordSet">root 密码已设置（不展示）</span><span v-else>SSH 公钥</span><span class="text-muted-foreground mt-1 block text-xs">由 cloud-init 下发；不会自动安装 OpenSSH。</span></dd></div>
+              <div v-if="store.loginSummary?.sshKeys.length"><dt>SSH 公钥</dt><dd><ul class="m-0 list-none space-y-2 p-0"><li v-for="key in store.loginSummary.sshKeys" :key="key.fingerprint"><span class="block text-xs">{{ key.type }}</span><span class="font-mono text-xs">{{ key.fingerprint }}</span></li></ul><span class="text-muted-foreground mt-1 block text-xs">仅展示类型与 SHA-256 指纹，不展示公钥原文；仅公钥模式禁用 SSH 密码认证。</span></dd></div>
               <div><dt>CPU</dt><dd>{{ order.spec.resources.vcpus }} vCPU</dd></div>
               <div><dt>内存</dt><dd>{{ formatBytes(order.spec.resources.memory_bytes) }}</dd></div>
               <div><dt>磁盘</dt><dd>{{ formatBytes(order.spec.resources.disk_bytes) }}</dd></div>
@@ -197,7 +200,7 @@ onBeforeUnmount(() => {
                 <p class="mb-1 font-medium" :class="{ 'text-destructive': quoteExpired }">{{ quoteExpired ? '报价已过期' : `报价剩余 ${quoteRemaining}` }}</p>
                 <p class="text-muted-foreground mb-0 text-xs">有效至 {{ formatTime(quote.expires_at) }}</p>
               </div>
-              <Alert v-if="quoteExpired && !store.pendingIntent" message="旧报价不能提交创建" description="请点击“更新报价”，核对最新报价后再次确认。更新报价不会创建实例。" show-icon type="warning" />
+              <Alert v-if="quoteExpired && !store.hasPendingIntent" message="旧报价不能提交创建" description="请点击“更新报价”，核对最新报价后再次确认。更新报价不会创建实例。" show-icon type="warning" />
               <Alert v-if="blockingReasons.length || (quote && !quote.admissible)" message="当前配置暂不能创建" show-icon type="warning">
                 <template #description><ul class="mb-0 pl-4"><li v-for="reason in blockingReasons" :key="reason">{{ reason }}</li><li v-if="!blockingReasons.length">服务端暂不允许创建，请更新报价或联系管理员。</li></ul></template>
               </Alert>
@@ -205,7 +208,7 @@ onBeforeUnmount(() => {
                 <div class="price-row"><dt class="text-muted-foreground">当前可用额度</dt><dd>{{ formatPt(store.account?.available_pt) }} Pt</dd></div>
                 <div class="price-row"><dt class="text-muted-foreground">首窗口预留</dt><dd>{{ formatPt(quote?.initial_window_pt) }} Pt</dd></div>
               </dl>
-              <p class="text-muted-foreground mb-0 text-xs">首窗口预留来自服务端报价；可用额度已扣除现有预留，估时不再重复扣除。</p>
+              <p class="text-muted-foreground mb-0 text-xs">首窗口预留来自服务端报价；可用额度已扣除现有预留及欠款，估时不再重复扣除。</p>
               <div class="border-border border-t pt-4">
                 <div class="mb-2 flex items-center justify-between gap-3"><span class="font-medium">预计可用时长</span><Button size="small" :disabled="store.locked || store.needsEdit" :loading="store.accountLoading" @click="refreshAccount">刷新额度</Button></div>
                 <p class="mb-2 text-xl font-semibold">{{ runtime }}</p>

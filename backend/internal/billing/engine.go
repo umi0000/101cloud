@@ -15,6 +15,8 @@ import (
 
 // Every entry point runs in the caller's SQL transaction. Account -> sessions ->
 // reservations -> buckets is the financial lock order; no agent I/O occurs here.
+const settlementChunkSize = 32
+
 func AdmitInstance(ctx context.Context, db *gorm.DB, instance row, action string) error {
 	if platform.Text(instance["billing_mode"]) == "admin_exempt" {
 		return nil
@@ -41,6 +43,10 @@ func AdmitInstance(ctx context.Context, db *gorm.DB, instance row, action string
 	if e != nil {
 		return e
 	}
+	debt, e := outstandingDebt(db, platform.Uint(ac["id"]))
+	if e != nil {
+		return e
+	}
 	rate := row{"config_snapshot": jsonValue(row{"vcpus": instance["vcpus"], "memory_bytes": sid(instance["memory_bytes"]), "disk_bytes": sid(instance["disk_bytes"])}), "cpu_hourly_pt": instance["cpu_hourly_pt"], "memory_gib_hourly_pt": instance["memory_gib_hourly_pt"], "disk_gib_hourly_pt": "0", "gpu_hourly_pt": "0"}
 	if platform.Text(p["storage_charge_mode"]) != "free" {
 		rate["disk_gib_hourly_pt"] = instance["disk_gib_hourly_pt"]
@@ -60,7 +66,7 @@ func AdmitInstance(ctx context.Context, db *gorm.DB, instance row, action string
 	if e = db.Table("credit_reservations r").Select("COALESCE(SUM(r.reserved_pt-r.settled_pt-r.released_pt),0) held").Joins("JOIN usage_sessions s ON s.id=r.session_id").Where("s.instance_id = ? AND r.status = 'held'", instance["id"]).Scan(&owned).Error; e != nil {
 		return e
 	}
-	if left.Sub(held).Add(dec(owned.Held)).LessThan(required) {
+	if left.Sub(held).Sub(debt).Add(dec(owned.Held)).LessThan(required) {
 		return conflict("credit_exhausted", "credit does not cover the next billing window")
 	}
 	return nil
@@ -322,7 +328,11 @@ func reserveWindow(db *gorm.DB, ac, p, s row, t time.Time, strict bool) error {
 	if !need.IsPositive() {
 		return nil
 	}
-	bs, e := buckets(db, platform.Uint(ac["id"]), t)
+	q := db
+	if !strict {
+		q = db.Limit(settlementChunkSize)
+	}
+	bs, e := buckets(q, platform.Uint(ac["id"]), t)
 	if e != nil {
 		return e
 	}
@@ -330,9 +340,15 @@ func reserveWindow(db *gorm.DB, ac, p, s row, t time.Time, strict bool) error {
 	for _, b := range bs {
 		total = total.Add(dec(b["remaining_pt"]).Sub(dec(b["reserved_pt"])))
 	}
+	debt, e := outstandingDebt(db, platform.Uint(ac["id"]))
+	if e != nil {
+		return e
+	}
+	total = decimal.Max(decimal.Zero, total.Sub(debt))
 	if strict && total.LessThan(need) {
 		return conflict("credit_exhausted", "credit cannot cover the requested resource window")
 	}
+	need = decimal.Min(need, total)
 	end := t.Add(time.Duration(platform.Uint(p["billing_window_seconds"])) * time.Second)
 	key := "session:" + sid(s["id"]) + ":" + strconv.FormatInt(t.UnixMicro(), 10)
 	for _, b := range bs {
@@ -355,47 +371,162 @@ func reserveWindow(db *gorm.DB, ac, p, s row, t time.Time, strict bool) error {
 	return nil
 }
 func releaseReservations(db *gorm.DB, s row, t time.Time) error {
-	rs, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id"), "credit_reservations", "session_id = ? AND status = 'held'", s["id"])
+	// A deferred chunk must not release the old owner's funds for new usage,
+	// especially once the underlying bucket has expired.
+	var unpaid int64
+	if e := db.Clauses(clause.Locking{Strength: "UPDATE"}).Table("usage_charges").Where("session_id=? AND status='insufficient'", s["id"]).Count(&unpaid).Error; e != nil {
+		return e
+	}
+	if unpaid > 0 {
+		return nil
+	}
+	rs, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id").Limit(settlementChunkSize), "credit_reservations", "session_id = ? AND status = 'held'", s["id"])
 	if e != nil {
 		return e
 	}
 	for _, r := range rs {
-		v := dec(r["reserved_pt"]).Sub(dec(r["settled_pt"])).Sub(dec(r["released_pt"]))
-		b, e := platform.Get(db, "credit_buckets", platform.Uint(r["bucket_id"]), true)
-		if e != nil {
-			return e
-		}
-		if e = mutateBucket(db, b, "release:"+sid(r["id"]), "release", decimal.Zero, v.Neg(), row{"reservation_id": r["id"]}); e != nil {
-			return e
-		}
-		if e = db.Table("credit_reservations").Where("id = ?", r["id"]).Updates(row{"released_pt": money(dec(r["released_pt"]).Add(v)), "status": "released", "closed_at": t, "revision": gorm.Expr("revision + 1")}).Error; e != nil {
+		if e = releaseReservation(db, r, t); e != nil {
 			return e
 		}
 	}
 	return nil
 }
+
+func releaseReservation(db *gorm.DB, r row, t time.Time) error {
+	v := dec(r["reserved_pt"]).Sub(dec(r["settled_pt"])).Sub(dec(r["released_pt"]))
+	b, e := platform.Get(db, "credit_buckets", platform.Uint(r["bucket_id"]), true)
+	if e != nil {
+		return e
+	}
+	if e = mutateBucket(db, b, "release:"+sid(r["id"]), "release", decimal.Zero, v.Neg(), row{"reservation_id": r["id"]}); e != nil {
+		return e
+	}
+	return db.Table("credit_reservations").Where("id = ?", r["id"]).Updates(row{"released_pt": money(dec(r["released_pt"]).Add(v)), "status": "released", "closed_at": t, "revision": gorm.Expr("revision+1")}).Error
+}
+
+func releaseEndedReservations(db *gorm.DB, ac row, t time.Time) error {
+	rs, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("r.id").Limit(settlementChunkSize), "credit_reservations r", "r.account_id=? AND r.status='held' AND EXISTS (SELECT 1 FROM usage_sessions s WHERE s.id=r.session_id AND s.status='ended') AND NOT EXISTS (SELECT 1 FROM usage_charges c WHERE c.session_id=r.session_id AND c.status='insufficient')", ac["id"])
+	if e != nil {
+		return e
+	}
+	for _, r := range rs {
+		if e = releaseReservation(db, r, t); e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+// chargeFunds is confined to one account-locked transaction. It caches locked
+// payment sources so a debt backlog does not repeat the same SELECTs per charge.
+type chargeFunds struct {
+	available    []row
+	buckets      map[uint64]row
+	reservations map[uint64][]row
+	free         decimal.Decimal
+	held         decimal.Decimal
+}
+
+func loadChargeFunds(db *gorm.DB, ac row, t time.Time, sessionID uint64) (*chargeFunds, error) {
+	return loadChargeFundsForSessions(db, ac, t, []uint64{sessionID})
+}
+
+func loadChargeFundsForSessions(db *gorm.DB, ac row, t time.Time, sessionIDs []uint64) (*chargeFunds, error) {
+	q := db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id").Limit(settlementChunkSize)
+	if len(sessionIDs) > 0 && sessionIDs[0] != 0 {
+		q = q.Where("session_id IN ?", sessionIDs)
+	}
+	rs, e := rows(q, "credit_reservations", "account_id = ? AND status = 'held' AND reserved_pt>settled_pt+released_pt", ac["id"])
+	if e != nil {
+		return nil, e
+	}
+	bs, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("expires_at IS NULL, expires_at, id").Limit(settlementChunkSize), "credit_buckets", "account_id = ? AND valid_from <= ? AND (expires_at IS NULL OR expires_at > ?) AND remaining_pt > reserved_pt", ac["id"], t, t)
+	if e != nil {
+		return nil, e
+	}
+	funds := &chargeFunds{available: bs}
+	for _, b := range bs {
+		funds.free = funds.free.Add(dec(b["remaining_pt"]).Sub(dec(b["reserved_pt"])))
+	}
+	if len(rs) > 0 {
+		funds.buckets = make(map[uint64]row, len(bs))
+		funds.reservations = make(map[uint64][]row)
+		for _, b := range bs {
+			funds.buckets[platform.Uint(b["id"])] = b
+		}
+	}
+	for _, r := range rs {
+		value := dec(r["reserved_pt"]).Sub(dec(r["settled_pt"])).Sub(dec(r["released_pt"]))
+		if !value.IsPositive() {
+			continue
+		}
+		bid := platform.Uint(r["bucket_id"])
+		if funds.buckets[bid] == nil {
+			b, err := platform.Get(db, "credit_buckets", bid, true)
+			if err != nil {
+				return nil, err
+			}
+			funds.buckets[bid] = b
+		}
+		sid := platform.Uint(r["session_id"])
+		funds.reservations[sid] = append(funds.reservations[sid], r)
+		funds.held = funds.held.Add(value)
+	}
+	return funds, nil
+}
+
+func (f *chargeFunds) canPay(sessionID uint64) bool {
+	if f.free.IsPositive() {
+		return true
+	}
+	for _, r := range f.reservations[sessionID] {
+		if dec(r["reserved_pt"]).GreaterThan(dec(r["settled_pt"]).Add(dec(r["released_pt"]))) {
+			return true
+		}
+	}
+	return false
+}
+
 func payCharge(db *gorm.DB, ac, s, charge row, t time.Time) error {
+	if !dec(charge["expected_pt"]).GreaterThan(dec(charge["settled_pt"])) {
+		return nil
+	}
+	funds, e := loadChargeFunds(db, ac, t, platform.Uint(s["id"]))
+	if e != nil {
+		return e
+	}
+	// Only funds exceeding older debt are available to a new interval. Held
+	// sources stay exclusive to their owner and its oldest unpaid interval.
+	var prior struct{ Amount string }
+	if e = db.Clauses(clause.Locking{Strength: "UPDATE"}).Table("usage_charges").Select("COALESCE(SUM(expected_pt-settled_pt),0) amount").Where("account_id=? AND status='insufficient' AND id<?", ac["id"], charge["id"]).Scan(&prior).Error; e != nil {
+		return e
+	}
+	funds.free = decimal.Max(decimal.Zero, funds.free.Sub(dec(prior.Amount)))
+	var ownedDebt int64
+	if e = db.Clauses(clause.Locking{Strength: "UPDATE"}).Table("usage_charges").Where("session_id=? AND status='insufficient' AND id<?", s["id"], charge["id"]).Count(&ownedDebt).Error; e != nil {
+		return e
+	}
+	if ownedDebt > 0 {
+		delete(funds.reservations, platform.Uint(s["id"]))
+	}
+	return funds.pay(db, ac, s, charge, t)
+}
+
+func (f *chargeFunds) pay(db *gorm.DB, ac, s, charge row, t time.Time) error {
 	paid := dec(charge["settled_pt"])
 	previousPaid := paid
 	need := dec(charge["expected_pt"]).Sub(paid)
 	if !need.IsPositive() {
 		return nil
 	}
-	// Held funds remain payable across bucket expiry, but only by their owning session.
-	rs, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id"), "credit_reservations", "session_id = ? AND status = 'held'", s["id"])
-	if e != nil {
-		return e
-	}
-	for _, r := range rs {
+	// Held funds survive expiry and remain exclusive to the owning session.
+	for _, r := range f.reservations[platform.Uint(s["id"])] {
 		v := decimal.Min(need, dec(r["reserved_pt"]).Sub(dec(r["settled_pt"])).Sub(dec(r["released_pt"])))
 		if !v.IsPositive() {
 			continue
 		}
-		b, e := platform.Get(db, "credit_buckets", platform.Uint(r["bucket_id"]), true)
-		if e != nil {
-			return e
-		}
-		if e = mutateBucket(db, b, "settle:"+sid(charge["id"])+":reservation:"+sid(r["id"]), "settle", v.Neg(), v.Neg(), row{"charge_id": charge["id"], "reservation_id": r["id"]}); e != nil {
+		b := f.buckets[platform.Uint(r["bucket_id"])]
+		if e := mutateBucket(db, b, "settle:"+sid(charge["id"])+":reservation:"+sid(r["id"]), "settle", v.Neg(), v.Neg(), row{"charge_id": charge["id"], "reservation_id": r["id"]}); e != nil {
 			return e
 		}
 		settled := dec(r["settled_pt"]).Add(v)
@@ -404,24 +535,22 @@ func payCharge(db *gorm.DB, ac, s, charge row, t time.Time) error {
 			changes["status"] = "settled"
 			changes["closed_at"] = t
 		}
-		if e = db.Table("credit_reservations").Where("id = ?", r["id"]).Updates(changes).Error; e != nil {
+		if e := db.Table("credit_reservations").Where("id = ?", r["id"]).Updates(changes).Error; e != nil {
 			return e
 		}
+		r["settled_pt"] = money(settled)
+		f.held = f.held.Sub(v)
 		need = need.Sub(v)
 		paid = paid.Add(v)
 		if need.IsZero() {
 			break
 		}
 	}
-	bs, e := buckets(db, platform.Uint(ac["id"]), t)
-	if e != nil {
-		return e
-	}
-	for _, b := range bs {
+	for _, b := range f.available {
 		if need.IsZero() {
 			break
 		}
-		v := decimal.Min(need, dec(b["remaining_pt"]).Sub(dec(b["reserved_pt"])))
+		v := decimal.Min(need, decimal.Min(f.free, dec(b["remaining_pt"]).Sub(dec(b["reserved_pt"]))))
 		if !v.IsPositive() {
 			continue
 		}
@@ -432,6 +561,7 @@ func payCharge(db *gorm.DB, ac, s, charge row, t time.Time) error {
 		if e = mutateBucket(db, b, "settle:"+sid(charge["id"])+":"+key, "settle", v.Neg(), decimal.Zero, row{"charge_id": charge["id"]}); e != nil {
 			return e
 		}
+		f.free = f.free.Sub(v)
 		need = need.Sub(v)
 		paid = paid.Add(v)
 	}
@@ -441,13 +571,15 @@ func payCharge(db *gorm.DB, ac, s, charge row, t time.Time) error {
 		status = "insufficient"
 		settledAt = nil
 	}
-	// Retrying an unpaid debt without funds must not create a new row version.
 	if paid.Equal(previousPaid) && platform.Text(charge["status"]) == status && settledAt == nil && charge["settled_at"] == nil {
 		return nil
 	}
 	charge["settled_pt"] = money(paid)
 	charge["status"] = status
-	return db.Table("usage_charges").Where("id = ?", charge["id"]).Updates(row{"settled_pt": money(paid), "status": status, "settled_at": settledAt, "revision": gorm.Expr("revision + 1")}).Error
+	if e := db.Table("usage_charges").Where("id = ?", charge["id"]).Updates(row{"settled_pt": money(paid), "status": status, "settled_at": settledAt, "revision": gorm.Expr("revision + 1")}).Error; e != nil {
+		return e
+	}
+	return refreshSettlementPending(db, platform.Uint(ac["id"]), t)
 }
 func settleSession(db *gorm.DB, ac, p, s row, t time.Time) error {
 	from := stamp(s["last_settled_at"])
@@ -576,7 +708,9 @@ func dailyGrants(ctx context.Context, a *platform.App) error {
 			} else {
 				start = start.In(last.Location()).AddDate(0, 0, 1)
 			}
-			for cycle := start; !cycle.After(last); cycle = cycle.AddDate(0, 0, 1) {
+			cycles := 0
+			for cycle := start; !cycle.After(last) && cycles < settlementChunkSize; cycle = cycle.AddDate(0, 0, 1) {
+				cycles++
 				date := cycle.Format("2006-01-02")
 				var n int64
 				if e = db.Table("credit_daily_grants").Where("account_id = ? AND business_date = ?", ac["id"], date).Count(&n).Error; e != nil {
@@ -598,7 +732,7 @@ func dailyGrants(ctx context.Context, a *platform.App) error {
 					return e
 				}
 			}
-			return restore(db, ac, now())
+			return nil
 		}); e != nil {
 			return e
 		}
@@ -606,7 +740,7 @@ func dailyGrants(ctx context.Context, a *platform.App) error {
 	return nil
 }
 func expireBuckets(db *gorm.DB, ac row, t time.Time) error {
-	bs, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id"), "credit_buckets", "account_id = ? AND expires_at <= ? AND remaining_pt > reserved_pt", ac["id"], t)
+	bs, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id").Limit(settlementChunkSize), "credit_buckets", "account_id = ? AND expires_at <= ? AND remaining_pt > reserved_pt", ac["id"], t)
 	if e != nil {
 		return e
 	}
@@ -628,71 +762,118 @@ func settleAll(ctx context.Context, a *platform.App) error {
 		return e
 	}
 	for _, id := range ids {
-		if e := a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
-			ac, e := platform.Get(db, "credit_accounts", id, true)
-			if e != nil {
+		var sessions []uint64
+		if e := a.DB.WithContext(ctx).Table("usage_sessions").Where("account_id=? AND status='active'", id).Order("id").Pluck("id", &sessions).Error; e != nil {
+			return e
+		}
+		// Commit each live interval independently. Neither thousands of active
+		// sessions nor historical charges extend one account-lock transaction.
+		for _, sessionID := range sessions {
+			if e := a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+				ac, err := platform.Get(db, "credit_accounts", id, true)
+				if err != nil {
+					return err
+				}
+				p, err := accountPolicy(db, ac)
+				if err != nil {
+					return err
+				}
+				s, err := platform.Get(db, "usage_sessions", sessionID, true)
+				if err != nil {
+					return err
+				}
+				if platform.Text(s["status"]) != "active" {
+					return nil
+				}
+				t := now()
+				if err = settleSession(db, ac, p, s, t); err != nil {
+					return err
+				}
+				return reserveWindow(db, ac, p, s, t, false)
+			}); e != nil {
 				return e
 			}
-			p, e := accountPolicy(db, ac)
-			if e != nil {
-				return e
+		}
+		if e := a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+			ac, err := platform.Get(db, "credit_accounts", id, true)
+			if err != nil {
+				return err
+			}
+			p, err := accountPolicy(db, ac)
+			if err != nil {
+				return err
 			}
 			t := now()
-			ss, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id"), "usage_sessions", "account_id = ? AND status = 'active'", id)
-			if e != nil {
-				return e
+			if err = expireBuckets(db, ac, t); err != nil {
+				return err
 			}
-			for _, s := range ss {
-				if e = settleSession(db, ac, p, s, t); e != nil {
-					return e
-				}
+			if err = releaseEndedReservations(db, ac, t); err != nil {
+				return err
 			}
-			if e = expireBuckets(db, ac, t); e != nil {
-				return e
+			if err = restore(db, ac, t); err != nil {
+				return err
 			}
-			if e = restore(db, ac, t); e != nil {
-				return e
-			}
-			if e = detectExhaustion(db, ac, p, t); e != nil {
-				return e
-			}
-			for _, s := range ss {
-				if e = reserveWindow(db, ac, p, s, t, false); e != nil {
-					return e
-				}
-			}
-			return nil
+			return detectExhaustion(db, ac, p, t)
 		}); e != nil {
 			return e
 		}
 	}
 	return nil
 }
+
+// Every restore caller, including enforcement gates, pays only one chunk.
 func restore(db *gorm.DB, ac row, t time.Time) error {
-	// The caller holds the account lock. Use a current read rather than an older
-	// transaction snapshot, including held funds after bucket expiry.
-	var payable struct{ ID uint64 }
-	if e := db.Clauses(clause.Locking{Strength: "UPDATE"}).Table("credit_buckets").Select("id").Where("account_id = ? AND (reserved_pt > 0 OR (remaining_pt > reserved_pt AND valid_from <= ? AND (expires_at IS NULL OR expires_at > ?)))", ac["id"], t, t).Limit(1).Find(&payable).Error; e != nil {
-		return e
-	}
-	if payable.ID == 0 {
-		return nil
-	}
-	// Pay previously accrued grace debt first; explicitly deferred offline intervals
-	// stay pending until an administrator can establish their actual ownership time.
-	charges, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id"), "usage_charges", "account_id = ? AND status = 'insufficient'", ac["id"])
+	charges, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("c.id").Limit(settlementChunkSize), "usage_charges c", "c.account_id=? AND c.status='insufficient' AND "+payableChargeSQL, ac["id"], t, t)
 	if e != nil {
 		return e
 	}
-	for _, c := range charges {
-		s, e := platform.Get(db, "usage_sessions", platform.Uint(c["session_id"]), true)
-		if e != nil {
-			return e
+	if len(charges) > 0 {
+		ids := make([]uint64, 0, len(charges))
+		for _, c := range charges {
+			ids = append(ids, platform.Uint(c["session_id"]))
 		}
-		if e = payCharge(db, ac, s, c, t); e != nil {
+		funds, err := loadChargeFundsForSessions(db, ac, t, ids)
+		if err != nil {
+			return err
+		}
+		for _, c := range charges {
+			if !funds.canPay(platform.Uint(c["session_id"])) {
+				continue
+			}
+			if err = funds.pay(db, ac, row{"id": c["session_id"]}, c, t); err != nil {
+				return err
+			}
+		}
+	}
+	if e = releaseEndedReservations(db, ac, t); e != nil {
+		return e
+	}
+	if e = refreshSettlementPending(db, platform.Uint(ac["id"]), t); e != nil {
+		return e
+	}
+	return restoreEnforcement(db, ac, t)
+}
+
+func settlePending(ctx context.Context, a *platform.App) error {
+	var ids []uint64
+	if e := a.DB.WithContext(ctx).Table("credit_accounts").Where("settlement_pending = TRUE AND status <> 'closed'").Order("id").Pluck("id", &ids).Error; e != nil {
+		return e
+	}
+	for _, id := range ids {
+		if e := a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+			ac, err := platform.Get(db, "credit_accounts", id, true)
+			if err != nil {
+				return err
+			}
+			return restore(db, ac, now())
+		}); e != nil {
 			return e
 		}
 	}
+	return nil
+}
+
+func restoreEnforcement(db *gorm.DB, ac row, t time.Time) error {
 	var event row
 	er := db.Table("credit_enforcements").Clauses(clause.Locking{Strength: "UPDATE"}).Where("account_id = ? AND status IN ('grace','stopping','unknown')", ac["id"]).Take(&event).Error
 	if er == gorm.ErrRecordNotFound {
@@ -702,7 +883,7 @@ func restore(db *gorm.DB, ac row, t time.Time) error {
 		return er
 	}
 	var p row
-	if e = json.Unmarshal([]byte(platform.Text(event["policy_snapshot"])), &p); e != nil {
+	if e := json.Unmarshal([]byte(platform.Text(event["policy_snapshot"])), &p); e != nil {
 		return e
 	}
 	if platform.Text(p["restore_action"]) != "cancel_pending_stop" {
@@ -712,14 +893,12 @@ func restore(db *gorm.DB, ac row, t time.Time) error {
 	if e != nil {
 		return e
 	}
-	if !left.IsPositive() {
-		return nil
-	}
-	var debt int64
-	if e = db.Table("usage_charges").Where("account_id = ? AND status = 'insufficient'", ac["id"]).Count(&debt).Error; e != nil {
+	debt, e := outstandingDebt(db, platform.Uint(ac["id"]))
+	if e != nil {
 		return e
 	}
-	if debt > 0 {
+	left = left.Sub(debt)
+	if !left.IsPositive() {
 		return nil
 	}
 	sessions, e := rows(db, "usage_sessions", "account_id = ? AND status = 'active' AND billing_mode = 'credit'", ac["id"])

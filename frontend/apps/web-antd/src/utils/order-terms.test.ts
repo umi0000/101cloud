@@ -76,6 +76,8 @@ describe('confirmed order economics', () => {
     expect(quoteFitsAvailableCredit(quote(), '1.500000')).toBe(true);
     expect(quoteFitsAvailableCredit(quote(), '1.499999')).toBe(false);
     expect(quoteFitsAvailableCredit(quote({ initial_window_pt: '0' }), '0')).toBe(true);
+    expect(quoteFitsAvailableCredit(quote(), '-0.000001')).toBe(false);
+    expect(quoteFitsAvailableCredit(quote({ initial_window_pt: '0' }), '-0.000001')).toBe(false);
     expect(quoteFitsAvailableCredit(quote({ initial_window_pt: undefined }), '100')).toBe(false);
     expect(quoteFitsAvailableCredit(quote({ initial_window_pt: '9007199254740993.000001' }), '9007199254740993.000000')).toBe(false);
   });

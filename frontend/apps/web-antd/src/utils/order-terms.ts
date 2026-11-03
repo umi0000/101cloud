@@ -26,7 +26,7 @@ export function quoteHasValidAmounts(quote: ElasticQuote): boolean {
     && (quote.initial_window_pt === undefined || amount(quote.initial_window_pt) !== null);
 }
 
-/** The displayed balance already excludes reservations; compare it once to the new window. */
+/** The displayed net balance already excludes debt and reservations; compare it once to the new window. */
 export function quoteFitsAvailableCredit(quote: ElasticQuote, availablePt: string): boolean {
   const available = amount(availablePt);
   const required = quote.initial_window_pt === undefined ? null : amount(quote.initial_window_pt);

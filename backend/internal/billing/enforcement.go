@@ -30,6 +30,11 @@ func detectExhaustion(db *gorm.DB, ac, p row, t time.Time) error {
 	if e != nil {
 		return e
 	}
+	owed, e := outstandingDebt(db, platform.Uint(ac["id"]))
+	if e != nil {
+		return e
+	}
+	left = left.Sub(owed)
 	if left.IsPositive() {
 		return nil
 	}
@@ -124,7 +129,7 @@ func CheckCreditStop(ctx context.Context, db *gorm.DB, instanceID, eventID uint6
 	if e != nil {
 		return false, e
 	}
-	if e = restore(db, ac, now()); e != nil {
+	if e = restoreEnforcement(db, ac, now()); e != nil {
 		return false, e
 	}
 	event, e = platform.Get(db, "credit_enforcements", eventID, true)
@@ -150,6 +155,11 @@ func CheckCreditStop(ctx context.Context, db *gorm.DB, instanceID, eventID uint6
 		if e != nil {
 			return false, e
 		}
+		owed, e := outstandingDebt(db, platform.Uint(ac["id"]))
+		if e != nil {
+			return false, e
+		}
+		left = left.Sub(owed)
 		var replacements int64
 		if e = db.Table("credit_enforcements").Where("account_id = ? AND id <> ? AND status IN ('grace','stopping','unknown')", ac["id"], eventID).Count(&replacements).Error; e != nil {
 			return false, e
@@ -326,6 +336,27 @@ func enforceAll(ctx context.Context, a *platform.App) error {
 	return nil
 }
 func advanceEvent(ctx context.Context, a *platform.App, id uint64) error {
+	var members []uint64
+	if e := a.DB.WithContext(ctx).Table("credit_enforcement_instances").Where("enforcement_id=?", id).Order("instance_id").Pluck("instance_id", &members).Error; e != nil {
+		return e
+	}
+	unknown := false
+	if len(members) == 0 {
+		return advanceEventChunk(ctx, a, id, 0, 0, &unknown)
+	}
+	for start := 0; start < len(members); start += settlementChunkSize {
+		end := start + settlementChunkSize
+		if end > len(members) {
+			end = len(members)
+		}
+		if e := advanceEventChunk(ctx, a, id, members[start], members[end-1], &unknown); e != nil {
+			return e
+		}
+	}
+	return nil
+}
+
+func advanceEventChunk(ctx context.Context, a *platform.App, id, first, last uint64, passUnknown *bool) error {
 	return a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
 		event, e := platform.Get(db, "credit_enforcements", id, false)
 		if e != nil {
@@ -335,7 +366,7 @@ func advanceEvent(ctx context.Context, a *platform.App, id uint64) error {
 		if e != nil {
 			return e
 		}
-		if e = restore(db, ac, now()); e != nil {
+		if e = restoreEnforcement(db, ac, now()); e != nil {
 			return e
 		}
 		event, e = platform.Get(db, "credit_enforcements", id, true)
@@ -345,12 +376,12 @@ func advanceEvent(ctx context.Context, a *platform.App, id uint64) error {
 		if !in(platform.Text(event["status"]), "grace", "stopping", "unknown") {
 			return nil
 		}
-		items, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("instance_id"), "credit_enforcement_instances", "enforcement_id = ?", id)
+		items, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("instance_id").Limit(settlementChunkSize), "credit_enforcement_instances", "enforcement_id = ? AND instance_id >= ? AND instance_id <= ?", id, first, last)
 		if e != nil {
 			return e
 		}
 		allStopped := true
-		unknown := false
+		unknown := *passUnknown
 		t := now()
 		for _, item := range items {
 			i, e := platform.Get(db, "instances", platform.Uint(item["instance_id"]), true)
@@ -419,6 +450,12 @@ func advanceEvent(ctx context.Context, a *platform.App, id uint64) error {
 				return e
 			}
 		}
+		// A page cannot complete the event while another page has live members.
+		var remaining int64
+		if e = db.Table("credit_enforcement_instances").Where("enforcement_id=? AND status<>'stopped'", id).Count(&remaining).Error; e != nil {
+			return e
+		}
+		allStopped = allStopped && remaining == 0
 		status := "grace"
 		if allStopped {
 			status = "completed"
@@ -432,6 +469,7 @@ func advanceEvent(ctx context.Context, a *platform.App, id uint64) error {
 				return e
 			}
 		}
+		*passUnknown = unknown
 		return nil
 	})
 }

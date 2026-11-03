@@ -1,5 +1,6 @@
 import type {
   CreateElasticSpec,
+  CreateLogin,
   CreditAccount,
   ElasticQuote,
   ElasticQuoteSpec,
@@ -12,15 +13,19 @@ import type {
 } from '#/api/types';
 import type { ErrorText } from '#/locales/errors';
 
+import type { LoginDraft, LoginSummary } from '#/utils/instance-login';
+
 import { computed, ref, shallowRef, watch } from 'vue';
 
 import { useAccessStore } from '@vben/stores';
 
-import { defineStore } from 'pinia';
+import { defineStore, getActivePinia } from 'pinia';
+import type { Pinia } from 'pinia';
 
 import { memberApi } from '#/api/backend';
 import { ApiError, newIdempotencyKey } from '#/api/request';
 import { describeError } from '#/locales/errors';
+import { emptyLoginDraft, imageSupportsLogin, validateLoginDraft } from '#/utils/instance-login';
 import { creationResultUncertain } from '#/utils/order-intent';
 import { quoteFitsAvailableCredit, quoteHasValidAmounts, sameOrderTerms } from '#/utils/order-terms';
 
@@ -38,7 +43,7 @@ export interface CreationFormDraft {
 }
 
 export interface InstanceOrderSelection {
-  spec: CreateElasticSpec;
+  spec: Omit<CreateElasticSpec, 'login'>;
   plan: Plan;
   image: Image;
   network: NetworkOption;
@@ -50,6 +55,32 @@ type CreateBody = CreateElasticSpec & { policy_versions: PolicyVersions };
 interface PendingIntent {
   body: CreateBody;
   key: string;
+}
+
+interface LoginDraftAccess {
+  read: () => LoginDraft;
+  save: (draft: LoginDraft) => void;
+}
+
+// This registry contains closures, never reactive Pinia state or persisted snapshots.
+const loginDrafts = new WeakMap<Pinia, LoginDraftAccess>();
+
+export function useInstanceLoginDraft(): LoginDraftAccess {
+  const pinia = getActivePinia();
+  if (!pinia) throw new Error('实例登录草稿需要活动会话');
+  useInstanceOrderStore(pinia);
+  const access = loginDrafts.get(pinia);
+  if (!access) throw new Error('实例登录草稿不可用');
+  return access;
+}
+
+function quoteSpec(spec: CreateElasticSpec): ElasticQuoteSpec {
+  // Explicit allowlist protects quote bodies and public order state from login.
+  return {
+    gpu: { ...spec.gpu }, image_id: spec.image_id, init_parameters: spec.init_parameters,
+    network_option_id: spec.network_option_id, plan_id: spec.plan_id,
+    plan_revision: spec.plan_revision, resources: { ...spec.resources },
+  };
 }
 
 // API DTOs are JSON values. Copy before freezing so callers retain their editable objects.
@@ -86,8 +117,26 @@ export const useInstanceOrderStore = defineStore('instance-order', () => {
   const quoteLoading = ref(false);
   const accountLoading = ref(false);
   const submitting = ref(false);
-  const pendingIntent = shallowRef<PendingIntent | null>(null);
-  const locked = computed(() => submitting.value || pendingIntent.value !== null);
+  const hasPendingIntent = ref(false);
+  const loginSummary = shallowRef<LoginSummary | null>(null);
+  const locked = computed(() => submitting.value || hasPendingIntent.value);
+  let pendingIntent: PendingIntent | null = null;
+  let loginDraft = emptyLoginDraft();
+  let preparedLogin: CreateLogin | null = null;
+  const pinia = getActivePinia();
+  if (!pinia) throw new Error('实例订单需要活动会话');
+  loginDrafts.set(pinia, {
+    read: () => identity.value ? { ...loginDraft } : emptyLoginDraft(),
+    save: (value) => {
+      if (!identity.value || locked.value) return;
+      loginDraft = {
+        mode: value.mode,
+        rootPassword: value.mode === 'password' ? value.rootPassword : '',
+        rootPasswordConfirmation: value.mode === 'password' ? value.rootPasswordConfirmation : '',
+        sshPublicKeys: value.mode === 'ssh-key' ? value.sshPublicKeys : '',
+      };
+    },
+  });
   let generation = 0;
   let accountSequence = 0;
   let quoteSequence = 0;
@@ -112,7 +161,11 @@ export const useInstanceOrderStore = defineStore('instance-order', () => {
     quoteLoading.value = false;
     accountLoading.value = false;
     submitting.value = false;
-    pendingIntent.value = null;
+    pendingIntent = null;
+    hasPendingIntent.value = false;
+    loginDraft = emptyLoginDraft();
+    preparedLogin = null;
+    loginSummary.value = null;
   }
 
   // Preserve an uncertain intent during same-user reauthentication; a different
@@ -121,14 +174,28 @@ export const useInstanceOrderStore = defineStore('instance-order', () => {
 
   function saveForm(value: CreationFormDraft) {
     if (!identity.value || locked.value) return;
-    form.value = { ...value, resources: { ...value.resources } };
+    form.value = {
+      planId: value.planId, networkId: value.networkId, imageId: value.imageId,
+      name: value.name, resources: { ...value.resources }, gpuCount: value.gpuCount, gpuCap: value.gpuCap,
+    };
   }
 
-  function prepare(value: InstanceOrderSelection): boolean {
+  async function prepare(value: InstanceOrderSelection): Promise<boolean> {
     if (!identity.value || locked.value) return false;
+    const token = generation;
+    const savedDraft = { ...loginDraft };
+    const validated = await validateLoginDraft(savedDraft);
+    if (!current(token) || !identity.value || locked.value) return false;
+    if (validated.error || !validated.login || !validated.summary || !imageSupportsLogin(value.image, value.network)) return false;
     const savedForm = form.value;
-    const selection = snapshot(value);
+    const selection = snapshot({
+      plan: value.plan, image: value.image, network: value.network, quote: value.quote, account: value.account,
+      spec: { ...quoteSpec(value.spec), name: value.spec.name },
+    });
     $reset();
+    loginDraft = savedDraft;
+    preparedLogin = snapshot(validated.login);
+    loginSummary.value = snapshot(validated.summary);
     form.value = savedForm;
     order.value = selection;
     quote.value = selection.quote;
@@ -155,10 +222,6 @@ export const useInstanceOrderStore = defineStore('instance-order', () => {
     }
   }
 
-  function quoteSpec(spec: CreateElasticSpec): ElasticQuoteSpec {
-    const { name: _name, ...configuration } = spec;
-    return configuration;
-  }
 
   async function refreshAccount(): Promise<void> {
     if (!identity.value || !order.value || submitting.value) return;
@@ -201,10 +264,11 @@ export const useInstanceOrderStore = defineStore('instance-order', () => {
     if (!identity.value || submitting.value || !order.value) return null;
     const token = generation;
     const selection = order.value;
-    let intent = pendingIntent.value;
+    let intent = pendingIntent;
     const retrying = intent !== null;
     if (!intent) {
       if (needsEdit.value || quoteLoading.value || accountLoading.value) return null;
+      if (!imageSupportsLogin(selection.image, selection.network) || !loginSummary.value) return null;
       const name = selection.spec.name.trim();
       if (!name || Array.from(name).length > 128) {
         submitError.value = {
@@ -235,6 +299,8 @@ export const useInstanceOrderStore = defineStore('instance-order', () => {
       if (!intent) {
         const confirmedQuote = quote.value;
         if (!confirmedQuote) return null;
+        const login = preparedLogin;
+        if (!identity.value || !login) return null;
         quoteLoading.value = true;
         accountLoading.value = true;
         // Invalidate refreshes started before this final confirmation.
@@ -262,7 +328,7 @@ export const useInstanceOrderStore = defineStore('instance-order', () => {
         if (quoted.status !== 'fulfilled' || credited.status !== 'fulfilled') return null;
         const checkedQuote = quote.value;
         if (!checkedQuote) return null;
-        if (needsEdit.value || !sameOrderTerms(confirmedQuote, checkedQuote)
+        if (!identity.value || needsEdit.value || !sameOrderTerms(confirmedQuote, checkedQuote)
           || quoteError.value || !checkedQuote.admissible || !(Date.parse(checkedQuote.expires_at) > Date.now())
           || !account.value || account.value.status !== 'active'
           || !quoteFitsAvailableCredit(checkedQuote, account.value.available_pt)
@@ -271,12 +337,14 @@ export const useInstanceOrderStore = defineStore('instance-order', () => {
           body: {
             ...selection.spec,
             name: selection.spec.name.trim(),
+            login,
             plan_revision: checkedQuote.plan_revision,
             policy_versions: checkedQuote.policy_versions,
           },
           key: newIdempotencyKey(),
         });
-        pendingIntent.value = intent;
+        pendingIntent = intent;
+        hasPendingIntent.value = true;
         notice.value = '';
       }
 
@@ -288,10 +356,14 @@ export const useInstanceOrderStore = defineStore('instance-order', () => {
       return response.data;
     } catch (error) {
       if (!current(token)) return null;
-      submitError.value = describeError(error);
+      // Never expose echoed credential input from a transport/server error in state.
+      submitError.value = error instanceof ApiError
+        ? describeError(new ApiError(error.status, { code: error.code, details: null, message: '' }, error.requestId, error.retryAfter))
+        : { code: 'network_error', details: [], requestId: '', stage: '', text: '创建请求未完成，请使用原请求重试。' };
       const uncertain = creationResultUncertain(error instanceof ApiError ? error.status : undefined, retrying);
       if (!uncertain) {
-        pendingIntent.value = null;
+        pendingIntent = null;
+        hasPendingIntent.value = false;
         quote.value = null;
         if (changedConfiguration(error)) requireEdit();
       }
@@ -312,11 +384,12 @@ export const useInstanceOrderStore = defineStore('instance-order', () => {
     accountError,
     accountLoading,
     form,
+    hasPendingIntent,
+    loginSummary,
     locked,
     needsEdit,
     notice,
     order,
-    pendingIntent,
     prepare,
     quote,
     quoteError,

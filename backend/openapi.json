@@ -2978,7 +2978,7 @@
                         "items": {
                           "type": "array",
                           "items": {
-                            "type": "object"
+                            "$ref": "#/components/schemas/CreditAccount"
                           }
                         },
                         "next_cursor": {
@@ -3044,7 +3044,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
+                      "$ref": "#/components/schemas/CreditAccount"
                     },
                     "request_id": {
                       "type": "string"
@@ -3127,7 +3127,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "type": "object"
+                      "$ref": "#/components/schemas/CreditAccount"
                     },
                     "request_id": {
                       "type": "string"
@@ -5720,7 +5720,7 @@
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
+                      "$ref": "#/components/schemas/CreditAccount"
                     },
                     "request_id": {
                       "type": "string"
@@ -6321,7 +6321,7 @@
         "tags": [
           "instances"
         ],
-        "description": "",
+        "description": "Create with optional login credentials, only for the exact selected node/project image with cloud_init=true (otherwise 409 image_login_unsupported). login is accepted only here, never in quotes. Passwords are hashed with salted SHA-512 crypt and MasterKey-encrypted before persistence; neither credentials nor hashes appear in DTOs, tasks, audit or ordinary snapshots. An uncertain response must be retried with the identical original body and Idempotency-Key. Login cloud-init completion is awaited once independently of administrator templates; no SSH software is installed automatically.",
         "parameters": [
           {
             "in": "header",
@@ -9510,7 +9510,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Administrator required. ",
+        "description": "Administrator required. Commits the signed adjustment and synchronous historical-debt repayment atomically before returning 201. Positive grants repay historical debt first. remaining_pt and available_pt subtract outstanding_debt_pt, so balances can be negative while debt remains; reserved_pt is unchanged and subtracted once for available_pt. Same-key replay returns the original committed result without granting twice.",
         "parameters": [
           {
             "in": "path",
@@ -9551,14 +9551,14 @@
         ],
         "responses": {
           "201": {
-            "description": "Success",
+            "description": "Committed adjustment and fresh account balances after historical-debt repayment",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "properties": {
                     "data": {
-                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
+                      "$ref": "#/components/schemas/CreditAdjustmentResult"
                     },
                     "request_id": {
                       "type": "string"
@@ -11262,6 +11262,46 @@
       }
     },
     "schemas": {
+      "CreditAccount": {
+        "type": "object",
+        "description": "Public account balance. Exact six-fractional-digit strings: remaining_pt = internal remaining - outstanding_debt_pt; available_pt = remaining_pt - reserved_pt. Negative balances represent debt and are not clamped. settlement_pending is true when durable background settlement has currently payable historical debt; it does not claim the debt is already cleared. Short-expiry unreserved grants may expire before a worker consumes them; held reservation ownership survives expiry.",
+        "properties": {
+          "id": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+          "user_id": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+          "revision": {"type": "string", "pattern": "^[0-9]+$"},
+          "status": {"type": "string"},
+          "remaining_pt": {"type": "string", "pattern": "^-?[0-9]+\\.[0-9]{6}$"},
+          "reserved_pt": {"type": "string", "pattern": "^[0-9]+\\.[0-9]{6}$"},
+          "available_pt": {"type": "string", "pattern": "^-?[0-9]+\\.[0-9]{6}$"},
+          "outstanding_debt_pt": {"type": "string", "pattern": "^[0-9]+\\.[0-9]{6}$"},
+          "next_grant_at": {"type": "string", "format": "date-time"},
+          "server_time": {"type": "string", "format": "date-time"},
+          "settlement_pending": {"type": "boolean", "description": "Durable background settlement is pending; false does not change ledger history."},
+          "policy_version_id": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+          "enforcement": {"type": ["object", "null"]}
+        },
+        "required": ["id", "user_id", "revision", "status", "settlement_pending", "remaining_pt", "reserved_pt", "available_pt", "outstanding_debt_pt", "next_grant_at", "server_time", "policy_version_id", "enforcement"],
+        "additionalProperties": false
+      },
+      "CreditAdjustmentResult": {
+        "type": "object",
+        "description": "Committed adjustment snapshot. Positive grants commit only the bucket and grant ledger synchronously; settled_debt_pt is always 0.000000 in this response. A durable worker settles historical debt in bounded chunks and settlement_pending reports whether currently payable work remains. Short-expiry unreserved credit may expire before processing; held reservations retain ownership through expiry. Point amounts are exact six-fractional-digit decimal strings; remaining_pt and available_pt may be negative. Idempotent replay returns this original snapshot rather than current balances.",
+        "properties": {
+          "account_id": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+          "amount_pt": {"type": "string", "pattern": "^-?[0-9]+\\.[0-9]{6}$", "description": "Signed adjustment amount; nonzero."},
+          "bucket_id": {"type": ["string", "null"], "pattern": "^[1-9][0-9]*$", "description": "New bucket ID for a positive grant; null for a negative adjustment."},
+          "expires_at": {"type": ["string", "null"], "format": "date-time", "description": "Positive grant expiry, or null for no expiry and for negative adjustments."},
+          "settled_debt_pt": {"type": "string", "pattern": "^[0-9]+\\.[0-9]{6}$"},
+          "settlement_pending": {"type": "boolean", "description": "Historical settlement is durably queued or currently payable."},
+          "outstanding_debt_pt": {"type": "string", "pattern": "^[0-9]+\\.[0-9]{6}$"},
+          "remaining_pt": {"type": "string", "pattern": "^-?[0-9]+\\.[0-9]{6}$"},
+          "reserved_pt": {"type": "string", "pattern": "^[0-9]+\\.[0-9]{6}$"},
+          "available_pt": {"type": "string", "pattern": "^-?[0-9]+\\.[0-9]{6}$"},
+          "revision": {"type": "string", "pattern": "^[0-9]+$", "description": "Account revision after committed adjustment and durable scheduling."}
+        },
+        "required": ["account_id", "amount_pt", "bucket_id", "expires_at", "settled_debt_pt", "settlement_pending", "outstanding_debt_pt", "remaining_pt", "reserved_pt", "available_pt", "revision"],
+        "additionalProperties": false
+      },
       "ResizeLimitsResponse": {
         "type": "object",
         "required": ["data", "request_id"],
@@ -11504,6 +11544,9 @@
           "init_parameters": {
             "type": "object"
           },
+          "login": {
+            "$ref": "#/components/schemas/InstanceLogin"
+          },
           "policy_versions": {
             "$ref": "#/components/schemas/PolicyVersions"
           }
@@ -11520,6 +11563,32 @@
           "policy_versions"
         ],
         "additionalProperties": false
+      },
+      "InstanceLogin": {
+        "type": "object",
+        "description": "Write-only first-boot root login configuration. Omit for legacy behavior. Supply a nonempty password, at least one valid public key, or both. Only final POST /instances accepts this object. Public keys are parsed, canonicalized, deduplicated and stripped of comments; private keys, authorized_keys options and scripts are rejected. Never store login in browser persistence or send it to quotes.",
+        "writeOnly": true,
+        "additionalProperties": false,
+        "properties": {
+          "root_password": {
+            "type": "string",
+            "writeOnly": true,
+            "maxLength": 128,
+            "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$",
+            "description": "Nonempty values require 8–128 Unicode characters without control characters. Preserved verbatim, including leading/trailing spaces; never trimmed. An empty value supplies no password.",
+            "anyOf": [{"const": ""}, {"minLength": 8}]
+          },
+          "ssh_public_keys": {
+            "type": "array",
+            "maxItems": 10,
+            "items": {"type": "string", "minLength": 1, "maxLength": 8192},
+            "description": "Up to 10 single-line OpenSSH public keys, each at most 8192 UTF-8 bytes. Ed25519, RSA at least 2048 bits, ECDSA nistp256/384/521 only. No CR/LF, control characters, private keys, authorized_keys options or scripts. Key comments are discarded. Key-only root uses an unusable password, not a locked account; SSH password authentication is disabled."
+          }
+        },
+        "anyOf": [
+          {"required": ["root_password"], "properties": {"root_password": {"minLength": 8}}},
+          {"required": ["ssh_public_keys"], "properties": {"ssh_public_keys": {"minItems": 1}}}
+        ]
       },
       "CustomConfig": {
         "type": "object",

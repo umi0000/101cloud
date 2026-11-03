@@ -610,6 +610,15 @@ func quoteUserEligibility(ctx context.Context, db *gorm.DB, a *platform.App, use
 		if e != nil {
 			return e
 		}
+		var debt struct{ Amount string }
+		if e = db.Table("usage_charges").Select("COALESCE(SUM(expected_pt-settled_pt),0) amount").Where("account_id=? AND status='insufficient'", accounts[0]["id"]).Scan(&debt).Error; e != nil {
+			return platform.WrapDB(e)
+		}
+		owed, e := decimal.NewFromString(debt.Amount)
+		if e != nil {
+			return e
+		}
+		balance = balance.Sub(owed)
 		if balance.LessThan(required) {
 			reasons = append(reasons, "insufficient_credit")
 		}

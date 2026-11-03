@@ -20,7 +20,7 @@ func debtRetryFixture(t *testing.T) (*gorm.DB, row, time.Time) {
 	// Connection-local tables retain exact decimal and timestamp semantics without
 	// manufacturing unrelated instance/node fixtures. The account stays locked.
 	for table, definition := range map[string]string{
-		"credit_accounts":     "id BIGINT PRIMARY KEY,user_id BIGINT,version BIGINT DEFAULT 0,revision BIGINT DEFAULT 1",
+		"credit_accounts":     "id BIGINT PRIMARY KEY,user_id BIGINT,version BIGINT DEFAULT 0,revision BIGINT DEFAULT 1,settlement_pending BOOLEAN NOT NULL DEFAULT FALSE",
 		"credit_buckets":      "id BIGINT AUTO_INCREMENT PRIMARY KEY,account_id BIGINT,source_type VARCHAR(24),business_key VARBINARY(191),granted_pt DECIMAL(20,6),remaining_pt DECIMAL(20,6),reserved_pt DECIMAL(20,6),valid_from DATETIME(6),expires_at DATETIME(6),version BIGINT DEFAULT 0,revision BIGINT DEFAULT 1,CHECK(remaining_pt>=reserved_pt AND reserved_pt>=0)",
 		"usage_sessions":      "id BIGINT PRIMARY KEY,account_id BIGINT,status VARCHAR(24),billing_mode VARCHAR(24)",
 		"usage_charges":       "id BIGINT PRIMARY KEY,account_id BIGINT,session_id BIGINT,expected_pt DECIMAL(20,6),settled_pt DECIMAL(20,6),status VARCHAR(24),settled_at DATETIME(6),revision BIGINT DEFAULT 1,updated_at DATETIME(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),CHECK(expected_pt>=settled_pt AND settled_pt>=0)",

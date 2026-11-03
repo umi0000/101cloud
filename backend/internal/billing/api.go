@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 func randomKey() (string, error) {
@@ -112,7 +113,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		if e = db.Table("redemption_codes").Where("id = ?", code["id"]).Updates(row{"used_count": gorm.Expr("used_count + 1"), "revision": gorm.Expr("revision + 1")}).Error; e != nil {
 			return nil, e
 		}
-		if e = restore(db, ac, t); e != nil {
+		if e = refreshSettlementPending(db, platform.Uint(ac["id"]), t); e != nil {
 			return nil, e
 		}
 		platform.Reply(c, 201, public(record))
@@ -296,15 +297,30 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 			}
 			expiry = &t
 		}
-		var result row
+		var bucketID any
 		if value.IsPositive() {
-			result, e = grant(db, ac, "admin", key, value, now(), expiry, platform.Current(c).ID)
+			var bucket row
+			bucket, e = grant(db, ac, "admin", key, value, now(), expiry, platform.Current(c).ID)
+			if e == nil {
+				bucketID = sid(bucket["id"])
+			}
 		} else {
 			bs, x := buckets(db, id, now())
 			if x != nil {
 				return nil, x
 			}
 			need := value.Neg()
+			left, held, err := balances(db, id)
+			if err != nil {
+				return nil, err
+			}
+			debt, err := outstandingDebt(db, id)
+			if err != nil {
+				return nil, err
+			}
+			if left.Sub(held).Sub(debt).LessThan(need) {
+				return nil, conflict("credit_exhausted", "adjustment would consume credit owed to historical debt or reservations")
+			}
 			for _, bucket := range bs {
 				v := decimal.Min(need, dec(bucket["remaining_pt"]).Sub(dec(bucket["reserved_pt"])))
 				if v.IsPositive() {
@@ -317,7 +333,6 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 			if need.IsPositive() {
 				return nil, conflict("credit_exhausted", "adjustment would consume reserved credit or make a bucket negative")
 			}
-			result = row{"account_id": sid(ac["id"]), "amount_pt": money(value)}
 		}
 		if e != nil {
 			return nil, e
@@ -325,10 +340,24 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		if e = platform.Audit(c.Request.Context(), db, platform.Current(c).ID, 0, 0, "credit.adjustment", row{"account_id": sid(ac["id"]), "amount_pt": money(value)}); e != nil {
 			return nil, e
 		}
-		if e = restore(db, ac, now()); e != nil {
+		debtAfter, e := outstandingDebt(db, id)
+		if e != nil {
 			return nil, e
 		}
-		platform.Reply(c, 201, public(result))
+		left, held, e := balances(db, id)
+		if e != nil {
+			return nil, e
+		}
+		fresh, e := platform.Get(db, "credit_accounts", id, false)
+		if e != nil {
+			return nil, e
+		}
+		var expiresAt any
+		if value.IsPositive() && expiry != nil {
+			expiresAt = expiry.In(zone).Format(time.RFC3339Nano)
+		}
+		platform.SetETag(c, fresh)
+		platform.Reply(c, 201, row{"account_id": sid(id), "amount_pt": money(value), "bucket_id": bucketID, "expires_at": expiresAt, "settled_debt_pt": "0.000000", "settlement_pending": platform.Bool(fresh["settlement_pending"]), "outstanding_debt_pt": money(debtAfter), "remaining_pt": money(left.Sub(debtAfter)), "reserved_pt": money(held), "available_pt": money(left.Sub(held).Sub(debtAfter)), "revision": sid(fresh["revision"])})
 		return nil, nil
 	}))
 	registerFinancialList(a, admin, "/credit-ledger", "credit_ledger", true)
@@ -407,6 +436,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 	registerEnforcements(a, admin)
 	a.AddPoller("credit-daily-grants", time.Minute, func(ctx context.Context, a *platform.App) error { return dailyGrants(ctx, a) })
 	a.AddPoller("credit-settlement", 5*time.Second, func(ctx context.Context, a *platform.App) error { return settleAll(ctx, a) })
+	a.AddPoller("credit-debt-settlement", time.Second, func(ctx context.Context, a *platform.App) error { return settlePending(ctx, a) })
 	a.AddPoller("credit-enforcement", time.Second, func(ctx context.Context, a *platform.App) error { return enforceAll(ctx, a) })
 	a.RegisterJob("credit_enforcement_reconcile", func(ctx context.Context, a *platform.App, j platform.Job) error {
 		var p struct {
@@ -527,6 +557,10 @@ func accountDTO(db *gorm.DB, ac row) (row, error) {
 	if e != nil {
 		return nil, e
 	}
+	debt, e := outstandingDebt(db, platform.Uint(ac["id"]))
+	if e != nil {
+		return nil, e
+	}
 	p, e := accountPolicy(db, ac)
 	if e != nil {
 		return nil, e
@@ -547,5 +581,11 @@ func accountDTO(db *gorm.DB, ac row) (row, error) {
 	} else if err != gorm.ErrRecordNotFound {
 		return nil, err
 	}
-	return row{"id": sid(ac["id"]), "user_id": sid(ac["user_id"]), "revision": sid(ac["revision"]), "status": ac["status"], "remaining_pt": money(left), "reserved_pt": money(held), "available_pt": money(left.Sub(held)), "next_grant_at": next.In(zone).Format(time.RFC3339Nano), "server_time": now().Format(time.RFC3339Nano), "policy_version_id": sid(p["policy_version_id"]), "enforcement": enforcement}, nil
+	return row{"id": sid(ac["id"]), "user_id": sid(ac["user_id"]), "revision": sid(ac["revision"]), "status": ac["status"], "settlement_pending": platform.Bool(ac["settlement_pending"]), "remaining_pt": money(left.Sub(debt)), "reserved_pt": money(held), "available_pt": money(left.Sub(held).Sub(debt)), "outstanding_debt_pt": money(debt), "next_grant_at": next.In(zone).Format(time.RFC3339Nano), "server_time": now().Format(time.RFC3339Nano), "policy_version_id": sid(p["policy_version_id"]), "enforcement": enforcement}, nil
+}
+
+func outstandingDebt(db *gorm.DB, accountID uint64) (decimal.Decimal, error) {
+	var amount string
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Table("usage_charges").Select("COALESCE(SUM(expected_pt-settled_pt),0)").Where("account_id=? AND status='insufficient'", accountID).Scan(&amount).Error
+	return dec(amount), err
 }

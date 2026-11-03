@@ -55,6 +55,7 @@ onMounted(() => list.load());
         <template v-else-if="column.key === 'status'"><StatusTag kind="accountStatus" :value="record.status" /></template>
         <template v-else-if="column.key === 'available'">
           <span class="font-mono">{{ formatPt(record.available_pt) }}</span>
+          <div v-if="record.settlement_pending" class="text-muted-foreground text-xs">后台抵扣中</div>
         </template>
         <template v-else-if="column.key === 'reserved'">
           <span class="font-mono">{{ formatPt(record.reserved_pt) }}</span>

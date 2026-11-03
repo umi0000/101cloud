@@ -46,17 +46,29 @@ onMounted(load);
       <template #action><Button :loading="loading" size="small" @click="load">刷新</Button></template>
     </Alert>
     <template v-else-if="account">
+      <Alert
+        v-if="account.settlement_pending"
+        class="mb-3"
+        description="额度已入账，历史欠费正在后台分批抵扣，未偿欠款总额可能暂未下降。净余额已反映入账金额，请刷新查看最新进展，不要重复发放。"
+        message="后台欠费抵扣处理中"
+        role="status"
+        show-icon
+        type="info"
+      />
       <Descriptions bordered :column="1" size="small">
         <DescriptionsItem label="账户 ID"><span class="font-mono">{{ account.id }}</span></DescriptionsItem>
         <DescriptionsItem label="状态"><StatusTag kind="accountStatus" :value="account.status" /></DescriptionsItem>
-        <DescriptionsItem label="可用额度">
+        <DescriptionsItem label="可用额度（净额）">
           <span class="font-mono">{{ formatPt(account.available_pt) }} pt</span>
         </DescriptionsItem>
-        <DescriptionsItem label="剩余额度">
+        <DescriptionsItem label="剩余额度（净额）">
           <span class="font-mono">{{ formatPt(account.remaining_pt) }} pt</span>
         </DescriptionsItem>
         <DescriptionsItem label="已预留">
           <span class="font-mono">{{ formatPt(account.reserved_pt) }} pt</span>
+        </DescriptionsItem>
+        <DescriptionsItem label="未偿欠款（总额）">
+          <span class="font-mono">{{ formatPt(account.outstanding_debt_pt) }} pt</span>
         </DescriptionsItem>
         <DescriptionsItem label="额度政策版本">
           <span class="font-mono">#{{ account.policy_version_id }}</span>
@@ -71,6 +83,7 @@ onMounted(load);
           </Space>
         </DescriptionsItem>
       </Descriptions>
+      <p class="text-muted-foreground mt-3 text-xs">剩余与可用已扣除欠款，可用还扣除预留；欠款未还清时可能为负数。未偿欠款总额不应从净余额中再次扣除，无待处理任务不代表欠款已还清。</p>
       <Space class="mt-3">
         <Button :loading="loading" @click="load">刷新</Button>
         <RouterLink to="/admin/finance">到“财务与额度”调整额度或切换政策</RouterLink>

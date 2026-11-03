@@ -16,12 +16,12 @@ import (
 )
 
 func createInstance(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64, spec Spec, custom bool, versions map[string]string) (platform.Row, error) {
-	return admitCreate(ctx, a, db, owner, spec, custom, versions, nil)
+	return admitCreate(ctx, a, db, owner, spec, custom, versions, nil, nil)
 }
 func reserveImported(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64, spec Spec, native platform.Row) (platform.Row, error) {
-	return admitCreate(ctx, a, db, owner, spec, true, nil, native)
+	return admitCreate(ctx, a, db, owner, spec, true, nil, native, nil)
 }
-func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64, spec Spec, custom bool, versions map[string]string, native platform.Row) (platform.Row, error) {
+func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64, spec Spec, custom bool, versions map[string]string, native platform.Row, login *LoginRequest) (platform.Row, error) {
 	if e := lockOwnerAccount(db, owner); e != nil {
 		return nil, e
 	}
@@ -125,6 +125,9 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 	image, e = catalog.ResolveNodeImage(ctx, db, image, platform.Uint(binding["node_id"]), platform.Text(binding["project_name"]))
 	if e != nil {
 		return nil, e
+	}
+	if login != nil && !platform.Bool(image["cloud_init"]) {
+		return nil, conflict("image_login_unsupported", "所选节点镜像未标记为支持 cloud-init，无法下发登录凭据；请选择支持 cloud-init 的镜像。")
 	}
 	if native != nil {
 		config := object(native["expanded_config"])
@@ -241,6 +244,14 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 	}
 	if e = billing.AdmitInstance(ctx, db, r, "create"); e != nil {
 		return nil, e
+	}
+	if login != nil {
+		sealed, err := sealLogin(a, login)
+		if err != nil {
+			return nil, err
+		}
+		// Omit the new field entirely for legacy requests without login.
+		r["login_config_ciphertext"] = sealed
 	}
 	if e = db.Table("instances").Create(&r).Error; e != nil {
 		return nil, platform.WrapDB(e)

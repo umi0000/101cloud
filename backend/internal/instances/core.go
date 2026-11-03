@@ -278,6 +278,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		var in struct {
 			Spec
 			PolicyVersions map[string]string `json:"policy_versions"`
+			Login          *LoginRequest     `json:"login,omitempty"`
 		}
 		if e := platform.Decode(c, &in); e != nil {
 			return nil, e
@@ -285,7 +286,11 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		if len(in.GPU.FixedUUIDs) > 0 || len(in.AllowedUserActions) > 0 || len(in.GPUUserPermissions) > 0 {
 			return nil, bad("Administrator-only configuration")
 		}
-		r, e := createInstance(c.Request.Context(), a, platform.DB(c, a), platform.Current(c).ID, in.Spec, false, in.PolicyVersions)
+		login, e := normalizeLogin(in.Login)
+		if e != nil {
+			return nil, e
+		}
+		r, e := admitCreate(c.Request.Context(), a, platform.DB(c, a), platform.Current(c).ID, in.Spec, false, in.PolicyVersions, nil, login)
 		if e != nil {
 			return nil, e
 		}

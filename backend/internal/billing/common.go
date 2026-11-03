@@ -142,7 +142,7 @@ func balances(db *gorm.DB, aid uint64) (decimal.Decimal, decimal.Decimal, error)
 		Remaining string
 		Reserved  string
 	}
-	e := db.Table("credit_buckets").Select("COALESCE(SUM(CASE WHEN valid_from <= ? AND (expires_at IS NULL OR expires_at > ?) THEN remaining_pt ELSE reserved_pt END),0) remaining, COALESCE(SUM(reserved_pt),0) reserved", now(), now()).Where("account_id = ?", aid).Scan(&s).Error
+	e := db.Clauses(clause.Locking{Strength: "UPDATE"}).Table("credit_buckets").Select("COALESCE(SUM(CASE WHEN valid_from <= ? AND (expires_at IS NULL OR expires_at > ?) THEN remaining_pt ELSE reserved_pt END),0) remaining, COALESCE(SUM(reserved_pt),0) reserved", now(), now()).Where("account_id = ?", aid).Scan(&s).Error
 	return dec(s.Remaining), dec(s.Reserved), e
 }
 func grant(db *gorm.DB, a row, source, key string, value decimal.Decimal, start time.Time, expiry *time.Time, actor uint64) (row, error) {
@@ -173,7 +173,29 @@ func grantLedger(db *gorm.DB, b row, key string, actor uint64, links row) error 
 			return e
 		}
 	}
-	return db.Table("credit_accounts").Where("id = ?", b["account_id"]).Updates(row{"version": gorm.Expr("version + 1"), "revision": gorm.Expr("revision + 1")}).Error
+	if e := db.Table("credit_accounts").Where("id = ?", b["account_id"]).Updates(row{"version": gorm.Expr("version + 1"), "revision": gorm.Expr("revision + 1")}).Error; e != nil {
+		return e
+	}
+	return refreshSettlementPending(db, platform.Uint(b["account_id"]), now())
+}
+
+// The caller holds the account lock. A pending marker means at least one old
+// charge has a currently eligible source; expired unreserved/future funds do not
+// enqueue work. Held funds remain exclusive to their original session.
+func settlementPayable(db *gorm.DB, accountID uint64, t time.Time) (bool, error) {
+	var charge struct{ ID uint64 }
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Table("usage_charges c").Select("c.id").Where("c.account_id = ? AND c.status = 'insufficient' AND "+payableChargeSQL, accountID, t, t).Limit(1).Find(&charge).Error
+	return charge.ID != 0, err
+}
+
+const payableChargeSQL = `(EXISTS (SELECT 1 FROM credit_buckets b WHERE b.account_id=c.account_id AND b.remaining_pt>b.reserved_pt AND b.valid_from<=? AND (b.expires_at IS NULL OR b.expires_at>?)) OR EXISTS (SELECT 1 FROM credit_reservations r WHERE r.account_id=c.account_id AND r.session_id=c.session_id AND r.status='held' AND r.reserved_pt>r.settled_pt+r.released_pt))`
+
+func refreshSettlementPending(db *gorm.DB, accountID uint64, t time.Time) error {
+	pending, e := settlementPayable(db, accountID, t)
+	if e != nil {
+		return e
+	}
+	return db.Table("credit_accounts").Where("id = ? AND settlement_pending <> ?", accountID, pending).Updates(row{"settlement_pending": pending, "revision": gorm.Expr("revision+1")}).Error
 }
 func parseTime(s string) (time.Time, error) {
 	t, e := time.Parse(time.RFC3339Nano, s)

@@ -234,11 +234,18 @@ export interface Plan {
   version: string;
 }
 
+/** 仅用于最终创建请求；不得放入报价、普通配置快照或持久化状态。 */
+export interface CreateLogin {
+  root_password?: string;
+  ssh_public_keys?: string[];
+}
+
 /** 普通用户弹性实例：节点由网络选项确定，报价及创建绑定套餐 revision。 */
 export interface CreateElasticSpec {
   gpu: GPURequest;
   image_id: ID;
   init_parameters: Record<string, unknown>;
+  login?: CreateLogin;
   name: string;
   network_option_id: ID;
   plan_id: ID;
@@ -246,8 +253,8 @@ export interface CreateElasticSpec {
   resources: Resources;
 }
 
-/** 报价仅依赖配置，不要求也不提交实例显示名称。 */
-export type ElasticQuoteSpec = Omit<CreateElasticSpec, 'name'>;
+/** 报价仅依赖资源配置，不提交名称或登录凭据。 */
+export type ElasticQuoteSpec = Omit<CreateElasticSpec, 'login' | 'name'>;
 
 export interface ElasticQuote {
   admissible: boolean;
@@ -849,13 +856,29 @@ export interface CreditAccount {
   enforcement: CreditEnforcement | null;
   id: ID;
   next_grant_at: Time;
+  outstanding_debt_pt: Pt;
   policy_version_id: ID;
   remaining_pt: Pt;
   reserved_pt: Pt;
   revision: string;
   server_time: Time;
+  settlement_pending: boolean;
   status: 'active' | 'closed' | 'frozen';
   user_id: ID;
+}
+
+export interface CreditAdjustmentResult {
+  account_id: ID;
+  amount_pt: Pt;
+  available_pt: Pt;
+  bucket_id: ID | null;
+  expires_at: null | Time;
+  outstanding_debt_pt: Pt;
+  remaining_pt: Pt;
+  reserved_pt: Pt;
+  revision: string;
+  settled_debt_pt: Pt;
+  settlement_pending: boolean;
 }
 
 export interface LedgerEntry {

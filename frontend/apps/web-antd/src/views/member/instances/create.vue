@@ -4,6 +4,7 @@ import type { ApiResult } from '#/api/request';
 import type { CreditAccount, ElasticQuote, ElasticQuoteSpec, Image, NetworkOption, Page as CursorPage, Plan, Resources } from '#/api/types';
 import type { ErrorText } from '#/locales/errors';
 import type { CreationFormDraft } from '#/store/instance-order';
+import type { LoginDraft } from '#/utils/instance-login';
 
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 import { useRouter } from 'vue-router';
@@ -11,7 +12,7 @@ import { useRouter } from 'vue-router';
 import { Page } from '@vben/common-ui';
 import { useAccessStore } from '@vben/stores';
 
-import { Alert, Button, Card, Empty, Input, InputNumber, Select, Skeleton, Tag } from 'ant-design-vue';
+import { Alert, Button, Card, Empty, Input, InputNumber, InputPassword, Radio, RadioGroup, Select, Skeleton, Tag, Textarea } from 'ant-design-vue';
 
 import { listAll, memberApi } from '#/api/backend';
 import { ApiError, newIdempotencyKey } from '#/api/request';
@@ -20,9 +21,10 @@ import OsIcon from '#/components/os-icon.vue';
 import { usePolling } from '#/composables/api';
 import { describeError } from '#/locales/errors';
 import { useAuthStore } from '#/store';
-import { useInstanceOrderStore } from '#/store/instance-order';
+import { useInstanceLoginDraft, useInstanceOrderStore } from '#/store/instance-order';
 import { creationResourceError, formatEstimatedRuntime } from '#/utils/creation-math';
 import { formatBytes, formatPt, formatTime, ptToMicros } from '#/utils/format';
+import { emptyLoginDraft, imageSupportsLogin, validateLoginDraft } from '#/utils/instance-login';
 
 import ResourceConfigurator from './components/resource-configurator.vue';
 
@@ -30,6 +32,13 @@ const router = useRouter();
 const auth = useAuthStore();
 const access = useAccessStore();
 const orders = useInstanceOrderStore();
+const loginMemory = useInstanceLoginDraft();
+// Credentials stay separate from resource/name form snapshots and URL state.
+const loginDraft = ref<LoginDraft>(loginMemory.read());
+const loginError = ref('请设置登录凭据。');
+const loginValidating = ref(false);
+const preparingOrder = ref(false);
+let loginSequence = 0;
 const identity = computed(() => auth.me?.user.role === 'user' && !access.loginExpired ? auth.me.user.id : null);
 const plans = shallowRef<Plan[]>([]);
 const networks = shallowRef<NetworkOption[]>([]);
@@ -81,6 +90,8 @@ const availableImages = computed(() => {
   return plan ? images.value.filter((item) => item.status === 'active' && item.instance_type === 'container' && plan.image_ids.includes(item.id)) : [];
 });
 const selectedImage = computed(() => availableImages.value.find((item) => item.id === imageId.value && (!gpuCount.value || item.gpu_ready)) ?? null);
+const loginImageError = computed(() => selectedImage.value && selectedNetwork.value && !imageSupportsLogin(selectedImage.value, selectedNetwork.value)
+  ? '此节点、项目下的所选镜像不支持 cloud-init，无法下发登录凭据。请更换支持 cloud-init 的镜像；资源报价仍可查看。' : '');
 const nameError = computed(() => {
   if (!name.value.trim()) return '请填写实例名称';
   return Array.from(name.value.trim()).length > 128 ? '实例名称不能超过 128 个字符' : '';
@@ -144,9 +155,9 @@ const matchedQuote = computed(() => quote.value?.fingerprint === fingerprint.val
 const quoteExpired = computed(() => !!matchedQuote.value && !(Date.parse(matchedQuote.value.expires_at) > now.value));
 const usableQuote = computed(() => matchedQuote.value && !quoteExpired.value && matchedQuote.value.admissible ? matchedQuote.value : null);
 const runtime = computed(() => !accountBlock.value && account.value && usableQuote.value ? formatEstimatedRuntime(account.value.available_pt, usableQuote.value.price_details.total_hourly_pt) : '暂不可估算');
-const canCreate = computed(() => !!usableQuote.value && !nameError.value && !accountBlock.value && !quoteLoading.value && !locked.value);
+const canCreate = computed(() => !!usableQuote.value && !nameError.value && !loginError.value && !loginImageError.value && !loginValidating.value && !preparingOrder.value && !accountBlock.value && !quoteLoading.value && !locked.value);
 const canRefreshQuote = computed(() => !!spec.value && !quoteLoading.value && !locked.value);
-const primaryDisabled = computed(() => locked.value || (quoteExpired.value ? !canRefreshQuote.value : !canCreate.value));
+const primaryDisabled = computed(() => preparingOrder.value || locked.value || (quoteExpired.value ? !canRefreshQuote.value : !canCreate.value));
 const primaryLabel = computed(() => quoteExpired.value ? '报价已过期，重新报价' : '创建实例');
 const priceRows = computed(() => {
   const price = matchedQuote.value?.price_details;
@@ -354,15 +365,42 @@ async function proceedToOrder() {
     gpuCount: gpuCount.value,
     gpuCap: gpuCap.value,
   });
-  if (orders.prepare({
-    spec: { ...spec.value, name: name.value.trim() },
-    plan: selectedPlan.value,
-    image: selectedImage.value,
-    network: selectedNetwork.value,
-    quote: current,
-    account: account.value,
-  })) await router.push('/instances/create/confirm');
+  preparingOrder.value = true;
+  const token = session;
+  try {
+    const prepared = await orders.prepare({
+      spec: { ...spec.value, name: name.value.trim() },
+      plan: selectedPlan.value,
+      image: selectedImage.value,
+      network: selectedNetwork.value,
+      quote: current,
+      account: account.value,
+    });
+    if (prepared && isCurrent(token)) await router.push('/instances/create/confirm');
+  } finally {
+    if (isCurrent(token)) preparingOrder.value = false;
+  }
 }
+
+watch(() => loginDraft.value.mode, () => {
+  // Discard the inactive mode rather than retaining an invisible password.
+  if (loginDraft.value.mode === 'ssh-key') {
+    loginDraft.value.rootPassword = '';
+    loginDraft.value.rootPasswordConfirmation = '';
+  } else {
+    loginDraft.value.sshPublicKeys = '';
+  }
+}, { flush: 'sync' });
+watch(loginDraft, async (value) => {
+  if (disposed) return;
+  loginMemory.save(value);
+  const sequence = ++loginSequence;
+  loginValidating.value = true;
+  const result = await validateLoginDraft({ ...value });
+  if (disposed || sequence !== loginSequence) return;
+  loginError.value = result.error;
+  loginValidating.value = false;
+}, { deep: true, immediate: true, flush: 'sync' });
 
 watch(selectedPlan, (plan) => {
   resources.value = plan ? { ...plan.resources } : { disk_bytes: '0', memory_bytes: '0', vcpus: 0 };
@@ -400,6 +438,8 @@ watch(identity, () => {
   networkId.value = undefined;
   imageId.value = undefined;
   name.value = '';
+  loginDraft.value = identity.value ? loginMemory.read() : emptyLoginDraft();
+  preparingOrder.value = false;
   account.value = null;
   accountError.value = null;
   accountLoading.value = false;
@@ -411,6 +451,8 @@ usePolling(refreshAccount, () => 30_000);
 onBeforeUnmount(() => {
   disposed = true;
   ++session;
+  ++loginSequence;
+  loginDraft.value = emptyLoginDraft();
   invalidateQuote();
   window.clearInterval(clock);
 });
@@ -493,7 +535,30 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <label class="field-label"><span>实例名称</span><Input v-model:value="name" :disabled="locked" :maxlength="128" placeholder="为此容器起一个便于识别的名称" aria-label="实例名称" /><span v-if="name && nameError" class="text-destructive text-xs">{{ nameError }}</span><span class="text-muted-foreground text-xs">创建时必填，1–128 个字符；不影响报价与时长估算。</span></label>
-            <Alert v-if="selectedPlan?.init_template_version_id" message="此套餐使用管理员预设的初始化模板" description="创建时使用预设模板，初始参数为 {}。此页面不设置 SSH、口令或自定义脚本。" show-icon type="info" />
+            <Alert v-if="selectedPlan?.init_template_version_id" message="此套餐使用管理员预设的初始化模板" description="创建时使用预设模板，初始参数为 {}；登录凭据由 cloud-init 单独下发，不自动安装 OpenSSH 或绑定额外模板。" show-icon type="info" />
+          </div>
+        </Card>
+
+        <Card title="root 登录方式" size="small">
+          <div class="space-y-4">
+            <RadioGroup v-model:value="loginDraft.mode" :disabled="locked || preparingOrder" aria-label="root 登录方式" class="flex flex-wrap gap-2">
+              <Radio value="ssh-key">SSH 公钥（推荐）</Radio>
+              <Radio value="password">root 密码</Radio>
+            </RadioGroup>
+            <template v-if="loginDraft.mode === 'ssh-key'">
+              <label class="field-label" for="creation-ssh-keys"><span>SSH 公钥</span></label>
+              <Textarea id="creation-ssh-keys" v-model:value="loginDraft.sshPublicKeys" :disabled="locked || preparingOrder" :auto-size="{ minRows: 4, maxRows: 10 }" class="font-mono text-xs" autocomplete="off" spellcheck="false" aria-describedby="creation-ssh-help creation-login-error" placeholder="ssh-ed25519 AAAA..." />
+              <p id="creation-ssh-help" class="text-muted-foreground mb-0 text-xs leading-relaxed">每行一条，最多 10 条、每条不超过 8192 字节。支持 ed25519、RSA（至少 2048 位）、ECDSA nistp256/384/521。仅上传公钥，禁止私钥、authorized_keys 选项或脚本。请妥善保存对应私钥；仅公钥模式会禁用 SSH 密码认证。</p>
+            </template>
+            <template v-else>
+              <label class="field-label"><span>root 密码</span><InputPassword v-model:value="loginDraft.rootPassword" :disabled="locked || preparingOrder" autocomplete="new-password" aria-label="root 密码" aria-describedby="creation-password-help creation-login-error" /></label>
+              <label class="field-label"><span>确认 root 密码</span><InputPassword v-model:value="loginDraft.rootPasswordConfirmation" :disabled="locked || preparingOrder" autocomplete="new-password" aria-label="确认 root 密码" aria-describedby="creation-login-error" /></label>
+              <p id="creation-password-help" class="text-muted-foreground mb-0 text-xs">8–128 个 Unicode 字符，不能包含控制字符；空格会原样保留。请使用独立强密码，勿复用平台登录密码。</p>
+            </template>
+            <p v-if="loginValidating" class="text-muted-foreground mb-0 text-xs" role="status">正在校验登录凭据…</p>
+            <p v-else-if="loginError" id="creation-login-error" class="text-destructive mb-0 text-xs" role="alert">{{ loginError }}</p>
+            <Alert v-if="loginImageError" :message="loginImageError" show-icon type="warning" />
+            <p class="text-muted-foreground mb-0 text-xs leading-relaxed">凭据只在当前账号会话内存中保留，仅最终确认创建时发送，不参与报价；刷新页面会清空。镜像必须支持 cloud-init，SSH 服务仍由管理员初始化脚本安装。</p>
           </div>
         </Card>
 
@@ -501,7 +566,7 @@ onBeforeUnmount(() => {
           <template #extra><Button size="small" :disabled="!canRefreshQuote" :loading="quoteLoading" @click="requestQuote">重新报价</Button></template>
           <div aria-live="polite" :aria-busy="quoteLoading" class="space-y-4">
             <p v-if="quoteLoading" class="text-muted-foreground mb-0 text-sm">正在获取最新报价，旧报价已失效…</p>
-            <p v-else-if="!matchedQuote && !quoteError" class="text-muted-foreground mb-0 text-sm">{{ spec ? '配置已更新，等待实时服务端报价…' : '请完整选择套餐、资源、网络和镜像后获取报价，无需先填写名称。' }}</p>
+            <p v-else-if="!matchedQuote && !quoteError" class="text-muted-foreground mb-0 text-sm">{{ spec ? '配置已更新，等待实时服务端报价…' : '请完整选择套餐、资源、网络和镜像后获取报价，无需先填写名称或登录凭据。' }}</p>
             <ErrorFeedback v-if="quoteError" :feedback="quoteError" />
             <dl class="m-0 space-y-2">
               <div v-for="row in priceRows" :key="row.label" class="price-row"><dt class="text-muted-foreground">{{ row.label }}</dt><dd>{{ formatPt(row.value) }} Pt/小时</dd></div>
@@ -517,7 +582,7 @@ onBeforeUnmount(() => {
               <p class="text-muted-foreground mb-2 text-sm">当前可用额度：<span class="font-mono">{{ formatPt(account?.available_pt) }} Pt</span></p>
               <ErrorFeedback v-if="accountError" :feedback="accountError" />
               <Alert v-else-if="accountBlock" :message="accountBlock" show-icon type="warning" />
-              <p class="text-muted-foreground mb-0 mt-2 text-xs leading-relaxed">仅按此实例的当前报价与可用余额静态估算；可用余额已扣除预留，不再重复扣除。不包含其他实例消耗、未来额度发放或额度到期，也不保证连续运行。零费率不表示无限时长。</p>
+              <p class="text-muted-foreground mb-0 mt-2 text-xs leading-relaxed">仅按此实例的当前报价与可用余额静态估算；可用余额已扣除预留及欠款，不再重复扣除。不包含其他实例消耗、未来额度发放或额度到期，也不保证连续运行。零费率不表示无限时长。</p>
             </div>
             <div class="desktop-submit"><Button type="primary" block size="large" :disabled="primaryDisabled" @click="proceedToOrder">{{ primaryLabel }}</Button><p class="text-muted-foreground mb-0 mt-2 text-center text-xs">下一步核对配置与费用，不会立即创建</p></div>
           </div>

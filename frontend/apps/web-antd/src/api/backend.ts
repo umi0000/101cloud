@@ -7,6 +7,7 @@ import type {
   ConsoleKind,
   ConsoleSession,
   CreditAccount,
+  CreditAdjustmentResult,
   CreditEnforcement,
   CreateElasticSpec,
   ElasticQuote,
@@ -452,7 +453,7 @@ export const financeApi = {
     body: { amount_pt: string; expires_at: null | string },
     w: Write,
   ) =>
-    post<Record<string, unknown>>(
+    post<CreditAdjustmentResult>(
       `/admin/credit-accounts/${id}/adjustments`,
       body,
       w,

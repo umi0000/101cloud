@@ -22,7 +22,9 @@ Instance DTO暴露plan_snapshot（custom为null）。resize仅接受resources及
 
 `20261102_10_plan_configuration.sql`在节点镜像迁移之后新增plan_nodes及套餐三个JSON配置列；节点从已有网络关联去重回填，不移动实例。旧套餐关闭GPU策略，容器保留旧完整动作/六项true编辑权限，VM只保留非GPU动作/空权限。既有elastic实例只修复对应SQL NULL或JSON null字段为旧兼容默认；保留已存策略（含已启用设置）、显式空数组/映射和其他非null值，不从当前套餐重新复制，GPU策略缺失时使用原实例价格上限。历史init.sql/旧迁移不改动，按前向迁移顺序升级。此处仅说明代码与迁移契约，不表示本次套餐配置扩展已部署或验证。
 
-计费欠费恢复在账户锁内先以当前读检查可支付资金：有效且未预留的额度，或仍被会话持有的预留（包括已过期桶）。没有资金时不扫描/逐条锁定历史欠费；充值、每日额度和已有预留仍通过原结算路径补扣。`payCharge` 对金额、状态和结算时间均未变化的欠费重试不执行 UPDATE，不递增 revision/updated_at；首次 pending→insufficient、部分付款和付清仍持久化。保留原计费精度、五秒调度、保留磁盘收费及零金额审计行为。
+计费欠费恢复由持久化的 `credit_accounts.settlement_pending` 标记驱动，使用账户锁按批次处理；每个事务最多32笔欠费和有界资金来源，提交后释放锁，进程重启后从数据库继续。管理员发放、兑换和每日额度只入账并安排补扣，不在请求内等待全部历史欠费。已有预留（包括已过期桶）只支付其所属会话；未预留额度必须在实际后台抵扣时有效，不会延长过期时间。极短有效期的额度可能在补扣前过期，请勿将“已安排”视为保证偿债。没有可支付资金时停止安排；`settlement_pending=false` 不代表欠款已还清。
+
+管理员额度调整返回真实已提交的 `CreditAdjustmentResult`：发放/扣减金额、额度桶ID/过期时间、提交时未偿欠款、净余额、预留、revision及 `settlement_pending`。发放请求不补扣历史账单，因此 `settled_debt_pt` 为0；后台完成后通过账户详情查看当前欠款，不能把提交快照当实时状态。账户及调整结果统一按 `remaining_pt = 内部剩余额度 - outstanding_debt_pt`、`available_pt = 内部剩余额度 - reserved_pt - outstanding_debt_pt` 返回固定6位精确金额；部分发放立即使负余额趋近0，不重复扣除欠款或预留。历史欠款需要的资金在后端准入、报价、预留、后续使用扣款和负数调整中保护，不能趁后台未完成重复消费；幂等重放仍返回原入账快照，刷新失败不能重新发放。
 
 ## 1. 部署前准备
 
@@ -263,6 +265,22 @@ curl -f https://cloud.example.com/api/v1/health/ready
 6. 显式选择套餐node_ids，配置这些节点内网络和节点/项目镜像，设置GPU初始策略、用户动作与权限后启用。多个套餐可同时启用，任意时候可编辑或独立停用；active保存完整验证就绪性，既有实例冻结配置不变。创建用户并明确配额，新用户配额全部为0，自定义实例还需max_resident_instances。VM仅CPU；可选GPU容器提供型号及正数gpu_count范围并绑定gpu-pricing。用户可count=0，但价格上限仍受套餐约束。
 7. 先受控验证一个实例的创建、登录、停止、磁盘保留、GPU观测和控制台，再开放给成员。
 
+客机 SSH 初始化脚本见项目根目录 [`init-openssh.sh`](../init-openssh.sh)。支持 Ubuntu/Debian（`openssh-server`）和 Arch Linux（`openssh`），以 root 执行；管理员可将脚本登记为 `cloud_init` 阶段模板并绑定套餐，先等待 cloud-init 再安装和配置 SSH。后端不自动安装 OpenSSH、不自动登记/绑定模板、不改防火墙。脚本不设置 root 密码：读取后端 cloud-init 写入的 `/etc/101cloud/ssh-login-mode`（root:root、0600），`password` 模式允许已有非空 root 密码，`ssh-key` 模式禁止 SSH 密码并允许 root 公钥；两者显式开启公钥认证。无标记保留原密码模式默认值，非法标记拒绝执行。默认确保 IPv4 TCP 22 监听；原有 Allow/Deny、来源 Match 和 PAM 策略保留，仍需在目标镜像验收登录。不要把明文密码写进模板或初始化参数。
+
+脚本支持 systemd，以及 Debian/Ubuntu 的 SysV；Ubuntu 存在 `ssh.socket` 时切换为 SSH 服务直接监听。改动前备份到 `/etc/ssh/101cloud-backup.*/sshd_config`，用 `sshd -t` 和 root 上下文的 `sshd -T` 检查配置；生效后失败会尝试恢复配置并重启服务，但不会卸载软件包或还原所有服务启用状态。重复执行不会叠加平台配置块。需能访问软件源；Arch 使用现有同步数据库执行 `pacman -S --needed`，不单独刷新数据库或隐式全系统升级。
+
+### 实例首次登录凭据（仅创建时）
+
+普通用户最终 `POST /api/v1/instances` 可增加 `login:{root_password?:string,ssh_public_keys?:string[]}`，可同时提供两种方式，推荐公钥。省略 `login` 完全保持旧行为；提供对象时至少一种非空。密码原样保留（不 trim），8–128 个 Unicode 字符，禁止控制字符。公钥最多 10 条，每条至多 8192 UTF-8 字节，服务端真实解析单行 OpenSSH 格式：Ed25519、RSA≥2048、ECDSA nistp256/384/521；拒绝私钥、authorized_keys 选项、控制字符和多行脚本，规范化后去重并丢弃注释。报价 `/quotes` 不接受 `login`。
+
+只有所选节点/项目的 ready 镜像配置 `cloud_init=true` 才能携带 `login`，否则 409 `image_login_unsupported`；不回退逻辑镜像的全局属性。管理员须确认镜像支持 `cloud-init.user-data`（旧式只支持 `user.user-data` 的镜像不适用），且 VM 已提供可工作的 incus-agent。后端不会偷偷装软件或补挂 cloud-init 盘。密码使用成熟 `go-crypt/sha512` 库生成随机盐 SHA-512 crypt，再连同规范化公钥经既有 MasterKey 的 AES-GCM 加密，仅落 `instances.login_config_ciphertext`。新增前向迁移 `20261103_00_instance_login.sql` 同时加入 `login_initialized_at`；历史实例两列为 NULL，不改历史 init.sql、不改实例状态或 revision。升级先停服备份数据库与主密钥，再按既有 migrate 流程执行；本变更本身不表示已部署线上。
+
+worker 仅在内存解密，原生创建前设置带 `#cloud-config` 前缀的 JSON/YAML `cloud-init.user-data`，使用标准 root `hashed_passwd`、`lock_passwd:false`、`ssh_authorized_keys`、`disable_root:false`、`ssh_pwauth` 和 `chpasswd.expire:false`。仅公钥时写不可用密码 `*`，不使用可能阻止 UsePAM=no 公钥登录的 `!` 账号锁。首次启动独立等待 `cloud-init status --wait`（600 秒界限），成功后持久化非敏感完成时间；即使套餐没有管理员模板，也不会在 cloud-init 未成功时宣告 ready。等待失败/结果不确定保留 existing unknown/reconcile 语义，不盲目重派；后续启动尊重首次完成标记，不重设密码、不重跑 cloud-init。
+
+凭据明文、密码哈希和解密 user-data 不进入任务参数/结果、审计、幂等明文、普通 DTO 或 incus_config_snapshot；原生观测和 resize 的 writable 配置只在内存保留 user-data，以免 PUT 删除已有首次启动配置。幂等层只存 MasterKey-HMAC 请求摘要和不含秘密的响应：结果不确定时必须保留完全相同的原始 body/key 重试，不可换 key 重建实例。前端敏感输入仅保存在内存，受理/注销/换账号清空，报价和持久化草稿中不得包含凭据。
+
+**主机留存风险：** 生成的密码哈希仍是敏感凭据，Incus 实例配置以及 guest `/var/lib/cloud/instance/user-data.txt`、`cloud-config.txt`、seed/cache、`/etc/shadow` 和主机/实例备份可能留存它。后端数据库加密不消除这些副本，节点管理员和 guest root 仍可访问；限制 Incus/guest/备份权限，使用高强度唯一密码，优先公钥。平台不自动删除 cloud-init 缓存或执行 `cloud-init clean`，后者会改变首次启动语义。参考官方 [cloud-init 模块](https://docs.cloud-init.io/en/latest/reference/modules.html) 与 [Incus cloud-init](https://linuxcontainers.org/incus/docs/main/cloud-init/)。
+
 每日额度由后台任务处理，首次发放完成前账户可能尚未就绪。自定义实例的申请和沟通在平台外完成，平台只保留管理员 `POST /admin/custom-instances` 直接下发（请求字段仍为 `approved_config`）及已有实例纳管，不提供申请/审批页面或接口。自定义实例按admin_exempt记录，不受每日额度停机影响，仍受资源及max_resident_instances配额约束。当前OpenAPI包含147个操作。
 
 额度耗尽默认600秒后强停且不删盘；真实强停可能丢失未保存内存和在途写入。停机不等于 GPU 使用权已经移除：尚未释放的 GPU 分配仍保留并按持有区间记录。需要释放时走显式 GPU 移除流程。
@@ -334,3 +352,17 @@ HTTP监听127.0.0.1:8080，就绪检查、随机管理员登录、真实Agent固
 2026-11-03 仅 `.111` 部署欠费重试写放大修复，无数据库迁移，无前端/Host Agent/Nginx及MySQL长期配置变更。`go vet ./...`、真实隔离MySQL下 `go test -race -p 1 ./... -count=1` 及Linux构建通过；新增回归覆盖无余额重复调用保持账单revision/时间及流水不变、首次欠费状态落库、部分付款后继续充值补扣、过期预留仅允许原会话消费，以及不消费过期非预留/未来额度。线上观察超过129秒，历史明细180541/180542的revision均保持4670、金额与updated_at不变，8个计费会话游标继续推进；全量账单已支付金额与结算流水差异为0。部署前后10条实例的状态、冻结指纹/架构/规格、GPU策略和授权一致，旧后端 `/var/backups/101cloud/backend-before-debt-retry-20261103`。
 
 按用户授权清理binlog前已核对无复制通道、注册副本、binlog读取连接或已发现的本机日志备份计划。分别生成修复前/后的全库一致性备份（single-transaction/source-data=2，所有7个数据库、routines/events/triggers/hex-blob），gzip完整性与SHA256匹配；文件在本机 `/Users/nagisa/developer/101cloud-backups/` 与服务器 `/var/backups/101cloud/` 双份保存且0600：`all-databases-before-billing-binlog-20261103-111631.sql.gz`（binlog.000357:55145951）和 `all-databases-after-billing-fix-20261103-112846.sql.gz`（binlog.000361:158）。使用MySQL `PURGE BINARY LOGS TO 'binlog.000361'`，未手工删除日志、未RESET/关闭binlog，保留新备份坐标起的恢复链路；旧日志不再支持备份前时间点恢复。基线198个旧日志清理后仅余binlog.000361（验收时5.50MiB），可用空间3.18→22.37GiB，使用率97%→76%；MySQL及后端正常。修复后该保留日志中52次计费UPDATE均有业务字段变化，只有时间/版本变化的UPDATE为0。
+
+2026-11-03 仅 `.111` 部署管理员额度发放卡顿及结果说明修复，无数据库迁移。真实记录核实：账户2的额度桶18/19各发放22pt并各被历史欠费完整抵扣（1259/1547条结算流水）；请求从发放到事务提交均约27秒，非过期时间解析问题。修复资金耗尽后继续遍历欠费及逐笔重复读取资金来源/会话的长事务，正数仍优先偿债，不免债、不重复补发。`go vet ./...`、真实MySQL全量 `go test -race -p 1 ./... -count=1`、前端类型/oxlint/build及OpenAPI规范校验通过；回归覆盖有/无/null过期时间、6001笔欠费跨页和半笔付款、欠费尾部不变、补扣后余款、负数扣减保留预留、同键重放不重复发放与资金流水守恒。
+
+真实后端serve和浏览器在隔离库6001笔每笔0.02pt欠费下分别发放22pt：不设过期约1.058秒，设过期约1.061秒，分别显示偿债22pt、可用0、未偿98.02/76.02pt；无欠费账户发放22pt约0.616秒并显示可用22pt。模拟已提交后详情GET503，结果仍保留且提示勿重复提交，数据库仅新增1pt、最终23pt。该性能为本地隔离环境测量，不等同于线上硬件延迟承诺。线上只读打开确认提示后取消，未对真实账户提交测试调整；发布前后11条实例配置/状态、原两笔22pt发放及全部管理员发放总量一致，已支付金额与结算流水差异0、锁等待0。前后端及恢复备份位于 `/var/backups/101cloud/`：`backend-before-credit-adjustment-20261103`、`frontend-before-credit-adjustment-20261103.link`、`all-databases-before-credit-adjustment-20261103-130934.sql.gz`（本机同名副本在 `/Users/nagisa/developer/101cloud-backups/`，gzip/SHA256匹配，恢复坐标binlog.000363:66728416）。前端发布目录 `/srv/101cloud/releases/20261103-credit-adjustment`；未修改Nginx、Host Agent、MySQL配置或原财务数据，未再次清理binlog。
+
+2026-11-03 异步额度修复仅部署 `.111`。前向迁移 `20261103_10_async_credit_settlement.sql` 新增持久化待处理标记与查询索引。完整隔离MySQL `go test -race -p 1 ./... -count=1` 通过，包含6001笔欠费、零同步补扣、有界批次/资金来源、批次间发放、事务回滚、重启恢复、幂等、精确流水、过期与预留归属。前端vue-tsc、变更生产文件oxlint及生产构建通过；全src lint仍有22个既有非空断言违规（主要在instance-order.test.ts），未为本次修复改写无关测试。
+
+真实后端与浏览器在隔离库6001笔、总计120.02pt欠费下发放22pt，POST201约26ms、界面约0.145秒显示已入账，净余额立即-98.02pt，后台实际抵扣22pt。再发50pt的实际HTTP约10.4ms；在pending=true、实际已偿22pt时停止进程并重启，数据库继续处理到已偿72pt、未偿48.02pt、pending=false，逐笔金额与流水差异0。随后模拟发放已提交但详情GET503，入账结果与“勿重复提交”提示保留，手动刷新恢复；独立Chrome检查桌面与390px窄屏。延迟是本地隔离测量，不是线上耗时保证。
+
+线上仅登录、读取就绪接口和真实欠费账户详情，未测试发放或免债。发布前后既有实例配置/状态和全部管理员实际发放金额一致，线上账单已付金额与流水差异0、锁等待0、后端active。发布目录 `/srv/101cloud/releases/20261103-async-credit-settlement`；数据库完整备份及旧前后端保存在 `/var/backups/101cloud/`，全库备份本机副本在工作区外 `101cloud-backups/`，gzip与SHA256一致并保留binlog恢复坐标。未改Host Agent、网络或数据库运行配置。
+
+2026-11-03 16:38:02（+08:00）按管理员要求仅调整 `.111` 磁盘收费：`100daily` 政策10及对应来源2由retained改为running_only，其他字段及原free政策不变。账户锁内同步更新公开JSON/计费来源并写审计 `billing.storage_running_only`。已停止实例22/23/25的磁盘会话26/28/32在最后已结算边界16:38:01关闭；检查无held预留后关闭，未删除或改写任何历史账单、流水或磁盘数据，未变更10分钟宽限期。后续运行/停止沿用已有running_only生命周期，不需要后端重启。
+
+跨11秒（两个5秒结算周期）实际观察：三个已停机磁盘会话的账单笔数、历史应收总额和最新收费时间均不再变化，已停机实例的active磁盘会话为0；运行实例的磁盘会话仍active，后端服务active。变更前完整业务库备份 `/var/backups/101cloud/before-running-only-storage-20261103-163758.sql.gz`，工作区外101cloud-backups保留同名副本。历史欠款保留，未发放或扣减额度。

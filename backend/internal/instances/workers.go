@@ -62,6 +62,9 @@ func workerMetadata(v map[string]any) (platform.Row, error) {
 	}
 	return m, nil
 }
+
+// Native config may contain cloud-init password hashes. Keep it transient: never
+// persist this result in incus_config_snapshot, task results, audit or logs.
 func workerObserve(ctx context.Context, a *platform.App, r platform.Row) (platform.Row, string, error) {
 	v, etag, err := a.AgentConditional(ctx, platform.Uint(r["node_id"]), http.MethodGet, workerPath(r, ""), nil, "")
 	if err != nil {
@@ -513,6 +516,11 @@ func workerCreateBody(ctx context.Context, a *platform.App, r platform.Row) (pla
 	eth["nameservers"] = platform.Row{"addresses": dns}
 	network := jsonText(platform.Row{"version": 2, "ethernets": platform.Row{"eth0": eth}})
 	cfg := platform.Row{"limits.cpu": platform.Text(r["vcpus"]), "limits.memory": platform.Text(r["memory_bytes"]), "user.101cloud.instance_id": platform.Text(r["id"]), "cloud-init.network-config": network}
+	if data, e := loginUserData(a, r); e != nil {
+		return nil, e
+	} else if data != "" {
+		cfg["cloud-init.user-data"] = data
+	}
 	if platform.Text(r["image_type"]) == "container" {
 		cfg["security.privileged"] = "false"
 	}
@@ -902,6 +910,9 @@ func runLifecycle(ctx context.Context, a *platform.App, j platform.Job) error {
 var workerEnvName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func workerInitialize(ctx context.Context, a *platform.App, j platform.Job, r platform.Row) error {
+	if err := workerLoginInitialize(ctx, a, j, r); err != nil {
+		return err
+	}
 	id := platform.Uint(r["init_template_version_id"])
 	if id == 0 {
 		return nil
@@ -1035,6 +1046,7 @@ func workerInitFailure(ctx context.Context, a *platform.App, j platform.Job, err
 	return platform.Unknown(err)
 }
 
+// Preserve user-data for the native PUT only; this is not a persistable snapshot.
 func workerWritable(m platform.Row) platform.Row {
 	return platform.Row{"architecture": m["architecture"], "config": object(m["config"]), "devices": object(m["devices"]), "profiles": m["profiles"], "ephemeral": m["ephemeral"], "description": m["description"]}
 }
