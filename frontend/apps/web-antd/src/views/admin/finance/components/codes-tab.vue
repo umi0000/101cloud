@@ -3,7 +3,7 @@ import type { ID, RedemptionCode } from '#/api/types';
 
 import { onMounted, ref, shallowRef } from 'vue';
 
-import { Alert, Button, Select, Space, Table } from 'ant-design-vue';
+import { Alert, Button, Select, Table } from 'ant-design-vue';
 
 import { financeApi } from '#/api/backend';
 import { revisionTag } from '#/api/request';
@@ -89,15 +89,13 @@ onMounted(() => list.load());
       </template>
     </Alert>
     <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
-      <Space wrap>
-        <Select
-          v-model:value="filters.status"
-          allow-clear
-          class="w-32"
-          :options="statusOptions"
-          placeholder="状态"
-        />
-      </Space>
+      <Select
+        v-model:value="filters.status"
+        allow-clear
+        class="!w-32"
+        :options="statusOptions"
+        placeholder="状态"
+      />
       <Button type="primary" @click="generateOpen = true">生成兑换码</Button>
     </div>
     <Table
@@ -105,6 +103,7 @@ onMounted(() => list.load());
       :data-source="list.items.value"
       :loading="list.loading.value"
       :pagination="false"
+      :scroll="{ x: 'max-content' }"
       row-key="id"
       size="small"
     >

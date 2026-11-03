@@ -8,7 +8,7 @@ import { onMounted, ref, watch } from 'vue';
 
 import { Page } from '@vben/common-ui';
 
-import { Card, DatePicker, Input, Space, Table } from 'ant-design-vue';
+import { Card, DatePicker, Input, Table } from 'ant-design-vue';
 
 import { opsApi } from '#/api/backend';
 import CursorPager from '#/components/cursor-pager.vue';
@@ -52,17 +52,18 @@ onMounted(() => list.load());
 <template>
   <Page description="只读检索。列表不返回操作详情。" title="审计日志">
     <Card size="small">
-      <Space class="mb-3" wrap>
-        <Input v-model:value="actor" allow-clear class="w-36" placeholder="操作者用户 ID" />
-        <Input v-model:value="instance" allow-clear class="w-32" placeholder="实例 ID" />
-        <Input v-model:value="task" allow-clear class="w-32" placeholder="任务 ID" />
-        <DatePicker.RangePicker v-model:value="range" show-time />
-      </Space>
+      <div class="mb-3 flex flex-wrap items-center gap-2">
+        <Input v-model:value="actor" allow-clear class="!w-36" placeholder="操作者用户 ID" />
+        <Input v-model:value="instance" allow-clear class="!w-32" placeholder="实例 ID" />
+        <Input v-model:value="task" allow-clear class="!w-32" placeholder="任务 ID" />
+        <DatePicker.RangePicker v-model:value="range" class="max-w-full" show-time />
+      </div>
       <Table
         :columns="columns"
         :data-source="list.items.value"
         :loading="list.loading.value"
         :pagination="false"
+        :scroll="{ x: 'max-content' }"
         row-key="id"
         size="small"
       >

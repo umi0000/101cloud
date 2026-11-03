@@ -6,7 +6,7 @@ import type { LedgerEntry } from '#/api/types';
 
 import { onMounted, ref, watch } from 'vue';
 
-import { DatePicker, Input, Space, Table } from 'ant-design-vue';
+import { DatePicker, Input, Table } from 'ant-design-vue';
 
 import { financeApi } from '#/api/backend';
 import CursorPager from '#/components/cursor-pager.vue';
@@ -58,16 +58,17 @@ onMounted(() => list.load());
 
 <template>
   <div>
-    <Space class="mb-3" wrap>
-      <Input v-model:value="user" allow-clear class="w-36" placeholder="用户 ID" />
-      <Input v-model:value="instance" allow-clear class="w-36" placeholder="实例 ID" />
-      <DatePicker.RangePicker v-model:value="range" show-time />
-    </Space>
+    <div class="mb-3 flex flex-wrap items-center gap-2">
+      <Input v-model:value="user" allow-clear class="!w-36" placeholder="用户 ID" />
+      <Input v-model:value="instance" allow-clear class="!w-36" placeholder="实例 ID" />
+      <DatePicker.RangePicker v-model:value="range" class="max-w-full" show-time />
+    </div>
     <Table
       :columns="columns"
       :data-source="list.items.value"
       :loading="list.loading.value"
       :pagination="false"
+      :scroll="{ x: 'max-content' }"
       row-key="id"
       size="small"
     >

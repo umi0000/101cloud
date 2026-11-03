@@ -295,3 +295,7 @@ vue-tsc、变更文件oxlint及生产构建通过。线上只读核查真实账�
 历史自定义实例首次增加 GPU：进入“实例详情 → GPU”，缺少 GPU 定价时先显式绑定配置档，再执行挂载。仅没有任何历史分配记录的实例允许补设；使用实例 ETag 调用 `PUT /admin/instances/:id/gpu-pricing-policy`。GPU 候选展示使用实例所绑定的价格，不使用任意同型号配置档的首个价格。
 
 2026-11-03 上述套餐持有策略切换已仅部署 `.111`，目录 `/srv/101cloud/releases/20261103-plan-owned-policies`。前端全量Vitest、vue-tsc及生产构建通过；独立Chrome实际确认政策页无平台默认入口、节点GPU编辑无价格字段，用户切换套餐显示对应4/7pt价格，桌面和390px布局已检查。真实后端在隔离库完成两次报价/202准入，同一GPU持久化4/7pt费率；原生交付worker未运行，不冒充硬件交付。线上登录确认旧默认接口404及新政策页面，报价不创建、不预留资金；无真实用户测试发放、免债或实例创建。旧前端链接保存在 `/var/backups/101cloud/frontend-before-20261103-plan-owned-policies.link`。
+
+2026-11-03 列表表头与筛选栏重叠修复已仅发布 `.111` 静态前端 `/srv/101cloud/releases/20261103-list-toolbar-alignment-r2`。线上实测Ant Space wrap产生-8px底部margin，覆盖外部mb-3并使表格与筛选控件重叠；实例、目录（镜像/套餐/模板）、财务（账户/流水/兑换码/额度事件）、任务、审计的列表工具栏改为正常Flex换行布局与12px表格间距。筛选控件显式固定宽度以避免组件width:100%使每项占满一行；缺少滚动配置的列表增加表格内部横向滚动，日期范围限制容器宽度，不靠负偏移或全局覆盖Ant组件。
+
+vue-tsc、十个变更文件oxlint及生产构建通过。真实浏览器以1440px/390px遍历上述十个列表：间距12px，有数据的表头/首行单元格横坐标及宽度差0px、无页面横向溢出；空列表不虚报单元格测量。审计筛选无结果→清空恢复、窄屏表格滚动160px后表头与内容仍对齐，无运行时错误。仅GET列表及登录/退出操作，没有业务数据变更，不重启后端。原套餐配置版本及r1链接分别保存在 `/var/backups/101cloud/frontend-before-20261103-list-toolbar-alignment.link` 与 `frontend-before-20261103-list-toolbar-alignment-r2.link`。

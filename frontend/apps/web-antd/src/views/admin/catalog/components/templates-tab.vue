@@ -3,7 +3,7 @@ import type { InitTemplate } from '#/api/types';
 
 import { onMounted, ref } from 'vue';
 
-import { Button, Space, Table } from 'ant-design-vue';
+import { Button, Table } from 'ant-design-vue';
 
 import { catalogApi } from '#/api/backend';
 import { revisionTag } from '#/api/request';
@@ -79,15 +79,16 @@ onMounted(() => list.load());
 
 <template>
   <div>
-    <Space class="mb-3">
+    <div class="mb-3 flex flex-wrap items-center gap-2">
       <Button type="primary" @click="openDrawer('create', null)">新建初始化模板</Button>
       <span class="text-muted-foreground text-xs">模板脚本在实例首次启动后于实例内执行。草稿可修改；发布后只读，可被套餐和自定义实例引用。</span>
-    </Space>
+    </div>
     <Table
       :columns="columns"
       :data-source="list.items.value"
       :loading="list.loading.value"
       :pagination="false"
+      :scroll="{ x: 'max-content' }"
       row-key="id"
       size="small"
     >

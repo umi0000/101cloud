@@ -38,15 +38,16 @@ onMounted(() => list.load());
 
 <template>
   <div>
-    <Space class="mb-3" wrap>
-      <Input v-model:value="filters.user_id" allow-clear class="w-36" placeholder="用户 ID" />
-    </Space>
+    <div class="mb-3 flex flex-wrap items-center gap-2">
+      <Input v-model:value="filters.user_id" allow-clear class="!w-36" placeholder="用户 ID" />
+    </div>
     <Table
       :columns="columns"
       :custom-row="(r: CreditAccount) => ({ onClick: () => (selectedId = r.id), style: 'cursor:pointer' })"
       :data-source="list.items.value"
       :loading="list.loading.value"
       :pagination="false"
+      :scroll="{ x: 'max-content' }"
       row-key="id"
       size="small"
     >

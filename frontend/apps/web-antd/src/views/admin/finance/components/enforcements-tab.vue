@@ -3,7 +3,7 @@ import type { CreditEnforcement, PolicyVersion } from '#/api/types';
 
 import { onMounted, ref } from 'vue';
 
-import { Input, Select, Space, Table } from 'ant-design-vue';
+import { Input, Select, Table } from 'ant-design-vue';
 
 import { financeApi } from '#/api/backend';
 import CursorPager from '#/components/cursor-pager.vue';
@@ -36,16 +36,17 @@ onMounted(() => list.load());
 
 <template>
   <div>
-    <Space class="mb-3" wrap>
-      <Select v-model:value="filters.status" allow-clear class="w-32" :options="statusOptions" placeholder="状态" />
-      <Input v-model:value="filters.user_id" allow-clear class="w-36" placeholder="用户 ID" />
-    </Space>
+    <div class="mb-3 flex flex-wrap items-center gap-2">
+      <Select v-model:value="filters.status" allow-clear class="!w-32" :options="statusOptions" placeholder="状态" />
+      <Input v-model:value="filters.user_id" allow-clear class="!w-36" placeholder="用户 ID" />
+    </div>
     <Table
       :columns="columns"
       :custom-row="(r: CreditEnforcement) => ({ onClick: () => (selectedId = r.id), style: 'cursor:pointer' })"
       :data-source="list.items.value"
       :loading="list.loading.value"
       :pagination="false"
+      :scroll="{ x: 'max-content' }"
       row-key="id"
       size="small"
     >

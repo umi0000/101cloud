@@ -6,7 +6,7 @@ import { useRoute } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
 
-import { Button, Card, Descriptions, DescriptionsItem, Drawer, Input, Select, Space, Table } from 'ant-design-vue';
+import { Button, Card, Descriptions, DescriptionsItem, Drawer, Input, Select, Table } from 'ant-design-vue';
 
 import { opsApi } from '#/api/backend';
 import ConfirmAction from '#/components/confirm-action.vue';
@@ -82,23 +82,24 @@ onMounted(() => list.load());
 <template>
   <Page title="任务">
     <Card size="small">
-      <Space class="mb-3" wrap>
+      <div class="mb-3 flex flex-wrap items-center gap-2">
         <Select
           v-model:value="filters.status"
           allow-clear
-          class="w-36"
+          class="!w-36"
           :options="statusOptions"
           placeholder="状态"
         />
-        <Input v-model:value="filters.instance_id" allow-clear class="w-36" placeholder="实例 ID" />
-        <Input v-model:value="filters.node_id" allow-clear class="w-32" placeholder="节点 ID" />
-        <Input v-model:value="filters.user_id" allow-clear class="w-32" placeholder="用户 ID" />
-      </Space>
+        <Input v-model:value="filters.instance_id" allow-clear class="!w-36" placeholder="实例 ID" />
+        <Input v-model:value="filters.node_id" allow-clear class="!w-32" placeholder="节点 ID" />
+        <Input v-model:value="filters.user_id" allow-clear class="!w-32" placeholder="用户 ID" />
+      </div>
       <Table
         :columns="columns"
         :data-source="list.items.value"
         :loading="list.loading.value"
         :pagination="false"
+        :scroll="{ x: 'max-content' }"
         row-key="id"
         size="small"
         :custom-row="(r: Task) => ({ onClick: () => openTask(r.id), style: 'cursor:pointer' })"

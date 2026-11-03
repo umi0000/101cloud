@@ -126,11 +126,11 @@ onMounted(() => {
       <Button type="primary" @click="openCreate">直接下发自定义实例</Button>
     </template>
     <Card size="small">
-      <Space class="mb-3" wrap>
+      <div class="mb-3 flex flex-wrap items-center gap-2">
         <Select
           v-model:value="filters.owner_user_id"
           allow-clear
-          class="w-40"
+          class="!w-40"
           :options="userOptions"
           option-filter-prop="label"
           placeholder="所有者"
@@ -139,20 +139,21 @@ onMounted(() => {
         <Select
           v-model:value="filters.node_id"
           allow-clear
-          class="w-40"
+          class="!w-40"
           :options="nodeOptions"
           option-filter-prop="label"
           placeholder="节点"
           show-search
         />
-        <Select v-model:value="filters.product_type" allow-clear class="w-32" :options="productOptions" placeholder="产品类型" />
-        <Select v-model:value="filters.observed_state" allow-clear class="w-32" :options="stateOptions" placeholder="运行状态" />
-      </Space>
+        <Select v-model:value="filters.product_type" allow-clear class="!w-32" :options="productOptions" placeholder="产品类型" />
+        <Select v-model:value="filters.observed_state" allow-clear class="!w-32" :options="stateOptions" placeholder="运行状态" />
+      </div>
       <Table
         :columns="columns"
         :data-source="list.items.value"
         :loading="list.loading.value"
         :pagination="false"
+        :scroll="{ x: 'max-content' }"
         row-key="id"
         size="small"
       >

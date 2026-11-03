@@ -5,7 +5,7 @@ import type { InstanceType, Plan } from '#/api/types';
 
 import { onMounted, ref } from 'vue';
 
-import { Button, Select, Space, Table } from 'ant-design-vue';
+import { Button, Select, Table } from 'ant-design-vue';
 
 import { catalogApi } from '#/api/backend';
 import { revisionTag } from '#/api/request';
@@ -103,11 +103,11 @@ onMounted(() => list.load());
 
 <template>
   <div>
-    <Space class="mb-3" wrap>
+    <div class="mb-3 flex flex-wrap items-center gap-2">
       <Button type="primary" @click="openDrawer('create', null)">新建套餐</Button>
-      <Select v-model:value="filters.instance_type" allow-clear class="w-28" :options="typeOptions" placeholder="类型" />
+      <Select v-model:value="filters.instance_type" allow-clear class="!w-28" :options="typeOptions" placeholder="类型" />
       <span class="text-muted-foreground text-xs">多个套餐可同时启用；所有套餐均可随时编辑，修改仅用于后续创建，已有实例保持创建时配置。</span>
-    </Space>
+    </div>
     <Table
       :columns="columns"
       :data-source="list.items.value"

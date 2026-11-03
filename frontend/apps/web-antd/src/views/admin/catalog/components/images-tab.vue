@@ -90,11 +90,11 @@ usePolling(async () => {
 
 <template>
   <div>
-    <Space class="mb-3" wrap>
+    <div class="mb-3 flex flex-wrap items-center gap-2">
       <Button type="primary" @click="openCreate">登记镜像</Button>
-      <Select v-model:value="filters.instance_type" allow-clear class="w-28" :options="typeOptions" placeholder="类型" />
-      <Input v-model:value="filters.architecture" allow-clear class="w-40" placeholder="节点架构，如 x86_64" />
-    </Space>
+      <Select v-model:value="filters.instance_type" allow-clear class="!w-28" :options="typeOptions" placeholder="类型" />
+      <Input v-model:value="filters.architecture" allow-clear class="!w-40" placeholder="节点架构，如 x86_64" />
+    </div>
     <Table :columns="columns" :data-source="list.items.value" :loading="list.loading.value" :pagination="false" row-key="id" size="small" :scroll="{ x: 1000 }">
       <template #bodyCell="{ column, record }">
         <template v-if="column.dataIndex === 'id'"><span class="font-mono">{{ record.id }}</span></template>
