@@ -8,6 +8,9 @@ import type {
   ConsoleSession,
   CreditAccount,
   CreditEnforcement,
+  CreateElasticSpec,
+  ElasticQuote,
+  ElasticQuoteSpec,
   CustomConfig,
   GPUAllocation,
   GPUOption,
@@ -47,6 +50,7 @@ import type {
   PlatformBindings,
   PolicyKind,
   PolicyVersion,
+  PolicyVersions,
   RedemptionCode,
   ResizeLimits,
   Resources,
@@ -103,11 +107,26 @@ export const authApi = {
 /* ---------------- 普通用户：实例首页与额度 ---------------- */
 
 export const memberApi = {
+  create: (body: CreateElasticSpec & { policy_versions: PolicyVersions }, w: Write) =>
+    post<TaskAccepted>('/instances', body, w),
   creditAccount: () => detail<CreditAccount>('/credits/account'),
   gpuAllocations: (id: ID) =>
     detail<GPUAllocation[]>(`/instances/${id}/gpu-allocations`),
   instances: (q?: Query) => list<Instance>('/instances', q),
   network: (id: ID) => detail<InstanceNetwork[]>(`/instances/${id}/network`),
+  gpuOptions: (q?: Query) => list<GPUOption>('/catalog/gpu-options', q),
+  images: (q?: Query) => list<Image>('/catalog/images', q),
+  networkOptions: (q?: Query) => list<NetworkOption>('/catalog/network-options', q),
+  plans: (q?: Query) => list<Plan>('/catalog/plans', q),
+  quote: (body: ElasticQuoteSpec, w: Write) => post<ElasticQuote>('/quotes', body, w),
+  task: async (id: ID): Promise<ApiResult<Task>> => {
+    const result = await detail<unknown>(`/tasks/${id}`);
+    const parsed = TaskSchema.safeParse(result.data);
+    if (!parsed.success) {
+      throw new ApiError(result.status, { code: 'invalid_response', details: null, message: '任务数据格式异常，请联系管理员' }, result.requestId, null);
+    }
+    return { ...result, data: parsed.data };
+  },
 };
 
 /* ---------------- 管理端：用户 ---------------- */

@@ -60,7 +60,7 @@ function setupAccessGuard(router: Router) {
     if (
       to.path === '/' ||
       (!authStore.isAdmin && (to.path === '/admin' || to.path.startsWith('/admin/'))) ||
-      (authStore.isAdmin && to.path === '/instances')
+      (authStore.isAdmin && (to.path === '/instances' || to.path.startsWith('/instances/')))
     ) {
       return { path: getHomePath(role), replace: true };
     }

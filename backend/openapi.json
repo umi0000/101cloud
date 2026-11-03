@@ -11432,7 +11432,8 @@
         "type": "object",
         "properties": {
           "name": {
-            "type": "string"
+            "type": "string",
+            "description": "Optional and ignored for configuration quotes. Creating an instance still requires a valid name."
           },
           "plan_id": {
             "type": "string",
@@ -11462,7 +11463,6 @@
           }
         },
         "required": [
-          "name",
           "plan_id",
           "image_id",
           "network_option_id",

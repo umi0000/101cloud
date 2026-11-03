@@ -375,8 +375,9 @@ func releaseReservations(db *gorm.DB, s row, t time.Time) error {
 	return nil
 }
 func payCharge(db *gorm.DB, ac, s, charge row, t time.Time) error {
-	need := dec(charge["expected_pt"]).Sub(dec(charge["settled_pt"]))
 	paid := dec(charge["settled_pt"])
+	previousPaid := paid
+	need := dec(charge["expected_pt"]).Sub(paid)
 	if !need.IsPositive() {
 		return nil
 	}
@@ -439,6 +440,10 @@ func payCharge(db *gorm.DB, ac, s, charge row, t time.Time) error {
 	if need.IsPositive() {
 		status = "insufficient"
 		settledAt = nil
+	}
+	// Retrying an unpaid debt without funds must not create a new row version.
+	if paid.Equal(previousPaid) && platform.Text(charge["status"]) == status && settledAt == nil && charge["settled_at"] == nil {
+		return nil
 	}
 	charge["settled_pt"] = money(paid)
 	charge["status"] = status
@@ -664,6 +669,15 @@ func settleAll(ctx context.Context, a *platform.App) error {
 	return nil
 }
 func restore(db *gorm.DB, ac row, t time.Time) error {
+	// The caller holds the account lock. Use a current read rather than an older
+	// transaction snapshot, including held funds after bucket expiry.
+	var payable struct{ ID uint64 }
+	if e := db.Clauses(clause.Locking{Strength: "UPDATE"}).Table("credit_buckets").Select("id").Where("account_id = ? AND (reserved_pt > 0 OR (remaining_pt > reserved_pt AND valid_from <= ? AND (expires_at IS NULL OR expires_at > ?)))", ac["id"], t, t).Limit(1).Find(&payable).Error; e != nil {
+		return e
+	}
+	if payable.ID == 0 {
+		return nil
+	}
 	// Pay previously accrued grace debt first; explicitly deferred offline intervals
 	// stay pending until an administrator can establish their actual ownership time.
 	charges, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id"), "usage_charges", "account_id = ? AND status = 'insufficient'", ac["id"])

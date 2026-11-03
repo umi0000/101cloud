@@ -12,6 +12,7 @@ import { memberApi } from '#/api/backend';
 import { usePolling } from '#/composables/api';
 import { describeError } from '#/locales/errors';
 import { useAuthStore } from '#/store';
+import { useTaskStore } from '#/store/tasks';
 import { formatPt } from '#/utils/format';
 
 import ErrorFeedback from './error-feedback.vue';
@@ -20,6 +21,7 @@ import TimeText from './time-text.vue';
 
 const authStore = useAuthStore();
 const accessStore = useAccessStore();
+const tasks = useTaskStore();
 const account = shallowRef<CreditAccount | null>(null);
 const feedback = shallowRef<ErrorText | null>(null);
 const loading = ref(false);
@@ -77,6 +79,10 @@ watch(memberUserId, (userId) => {
 }, { immediate: true, flush: 'sync' });
 
 usePolling(refresh, () => 30_000);
+watch(
+  () => tasks.tracked.map((item) => `${item.taskId}:${item.task?.status ?? 'accepted'}`).join('|'),
+  () => void refresh(),
+);
 onBeforeUnmount(() => {
   disposed = true;
   generation += 1;

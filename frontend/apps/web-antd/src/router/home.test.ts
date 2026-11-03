@@ -13,13 +13,16 @@ describe('role landing and login redirects', () => {
       .toBe('/admin/instances/42?tab=gpu#allocation');
     expect(getLoginRedirect(encodeURIComponent('/instances?observed_state=running'), 'user'))
       .toBe('/instances?observed_state=running');
+    expect(getLoginRedirect(encodeURIComponent('/instances/create?plan=2'), 'user'))
+      .toBe('/instances/create?plan=2');
+    expect(getLoginRedirect('/instances/create/confirm', 'user')).toBe('/instances/create/confirm');
   });
 
   it.each([
     undefined,
     '/admin/dashboard',
     '/admin/instances/42',
-    '/instances/create',
+    '/instances/42',
     '/member-pending',
     '/auth/login',
     '/instances/../admin/dashboard',
@@ -33,6 +36,8 @@ describe('role landing and login redirects', () => {
 
   it('does not send an administrator into the member-only page', () => {
     expect(getLoginRedirect('/instances', 'admin')).toBe('/admin/dashboard');
+    expect(getLoginRedirect('/instances/create', 'admin')).toBe('/admin/dashboard');
+    expect(getLoginRedirect('/instances/create/confirm', 'admin')).toBe('/admin/dashboard');
   });
 
   it('rejects repeated redirect query values instead of choosing one', () => {

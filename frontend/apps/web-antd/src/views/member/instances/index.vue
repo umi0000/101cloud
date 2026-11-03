@@ -3,7 +3,8 @@ import type { Query } from '#/api/backend';
 import type { Instance } from '#/api/types';
 import type { ErrorText } from '#/locales/errors';
 
-import { computed, onMounted, ref, shallowRef } from 'vue';
+import { computed, onMounted, ref, shallowRef, watch } from 'vue';
+import { useRouter } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
 
@@ -15,10 +16,13 @@ import ErrorFeedback from '#/components/error-feedback.vue';
 import { useCursorList, usePolling } from '#/composables/api';
 import { ENUMS } from '#/locales/enums';
 import { describeError } from '#/locales/errors';
+import { useTaskStore } from '#/store/tasks';
 
 import InstanceCard from './components/instance-card.vue';
 
 type Filters = Record<'observed_state' | 'product_type', string | undefined>;
+const router = useRouter();
+const tasks = useTaskStore();
 const filters = ref<Filters>({ observed_state: undefined, product_type: undefined });
 const loadError = shallowRef<ErrorText | null>(null);
 const hasLoaded = ref(false);
@@ -59,6 +63,11 @@ usePolling(() => {
   if (!list.loading.value) return list.load();
 }, () => (busy.value ? 10_000 : 30_000));
 onMounted(() => void list.load());
+watch(
+  () => tasks.tracked.filter((item) => item.task && ['succeeded', 'failed', 'cancelled'].includes(item.task.status))
+    .map((item) => `${item.taskId}:${item.task?.status}`).join('|'),
+  () => void list.load(),
+);
 </script>
 
 <template>
@@ -88,6 +97,9 @@ onMounted(() => void list.load());
           />
         </label>
         <Button :loading="list.loading.value" @click="list.load">刷新</Button>
+        <Button class="sm:ml-auto" type="primary" @click="router.push('/instances/create')">
+          创建实例
+        </Button>
       </div>
     </Card>
 

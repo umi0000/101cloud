@@ -4,23 +4,25 @@ import { Badge, Button, Drawer, Empty, Tooltip } from 'ant-design-vue';
 import { TASK_TYPES } from '#/locales/enums';
 import { describeTaskError } from '#/locales/errors';
 import { useTaskStore } from '#/store/tasks';
+import { useAuthStore } from '#/store/auth';
 
 import ErrorFeedback from './error-feedback.vue';
 import StatusTag from './status-tag.vue';
 import TimeText from './time-text.vue';
 
 const tasks = useTaskStore();
+const auth = useAuthStore();
 </script>
 
 <template>
   <Tooltip title="任务中心">
     <Badge :count="tasks.active.length" :offset="[-4, 4]" size="small">
-      <Button type="text" @click="tasks.open = true">
+      <Button aria-label="任务中心" type="text" @click="tasks.open = true">
         <span class="icon-[lucide--list-checks] size-4"></span>
       </Button>
     </Badge>
   </Tooltip>
-  <Drawer v-model:open="tasks.open" title="任务中心" :width="460">
+  <Drawer v-model:open="tasks.open" title="任务中心" width="min(460px, 100vw)">
     <template #extra>
       <Button size="small" @click="tasks.clearFinished()">清除已完成</Button>
     </template>
@@ -43,7 +45,9 @@ const tasks = useTaskStore();
         <div v-if="typeof t.task.result?.progress === 'string'" class="mt-1 font-mono">{{ t.task.result.progress }}</div>
       </div>
       <div v-if="t.task?.status === 'unknown'" class="mt-2 text-xs text-orange-500">
-        结果待核对，不会自动重新发起操作。可在"管理 / 任务"中请求核对。
+        结果待核对，不会自动重新发起操作。
+        <template v-if="auth.isAdmin">可在“管理 / 任务”中请求核对。</template>
+        <template v-else>请联系管理员核对，勿重复创建。</template>
       </div>
       <ErrorFeedback v-if="t.task" class="mt-2" :feedback="describeTaskError(t.task, t.requestId)" />
       <div v-if="t.task?.status === 'failed'" class="text-muted-foreground mt-2 text-xs">

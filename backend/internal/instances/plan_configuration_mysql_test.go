@@ -436,3 +436,48 @@ func TestMySQLEditablePlanInvalidatesQuotesAndFreezesResizeBounds(t *testing.T) 
 		t.Fatal("disabled/edited plan blocked the original resize contract or replaced its snapshot")
 	}
 }
+
+func TestMySQLQuoteDoesNotRequireCreationName(t *testing.T) {
+	f := newPlanConfigurationFixture(t)
+	for _, tc := range []struct {
+		label   string
+		name    string
+		present bool
+	}{
+		{label: "missing"},
+		{label: "empty", present: true},
+		{label: "whitespace", name: "   ", present: true},
+		{label: "too_long", name: strings.Repeat("x", 129), present: true},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			body := f.createBody("1", "2.5")
+			delete(body, "name")
+			delete(body, "policy_versions")
+			body["gpu"] = catalog.GPURequest{Count: 0, AccessMode: "shared", MaxHourlyPT: "2.5"}
+			if tc.present {
+				body["name"] = tc.name
+			}
+			quote := f.call(false, http.MethodPost, "/quotes", body, 0, http.StatusOK, "")
+			if !platform.Bool(quote["admissible"]) || platform.Text(object(quote["price_details"])["total_hourly_pt"]) != "3.010000" {
+				t.Fatalf("name affected billable configuration: %+v", quote)
+			}
+			body["plan_revision"] = quote["plan_revision"]
+			body["policy_versions"] = quote["policy_versions"]
+			f.call(false, http.MethodPost, "/instances", body, 0, http.StatusUnprocessableEntity, "invalid_request")
+		})
+	}
+	for _, table := range []string{"instances", "tasks", "usage_sessions", "credit_reservations"} {
+		if f.count(table) != 0 {
+			t.Fatalf("unnamed quote or rejected creation changed %s", table)
+		}
+	}
+	if f.reads.Load() != 0 {
+		t.Fatal("unnamed quote or rejected creation reached native admission")
+	}
+	body := f.createBody("1", "2.5")
+	body["name"] = "name-entered-after-quote"
+	created := f.call(false, http.MethodPost, "/instances", body, 0, http.StatusAccepted, "")
+	if platform.Text(f.instance(platform.Uint(created["instance_id"]))["logical_name"]) != body["name"] {
+		t.Fatal("creation did not preserve the subsequently entered name")
+	}
+}

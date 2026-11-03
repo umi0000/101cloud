@@ -22,6 +22,8 @@ Instance DTO暴露plan_snapshot（custom为null）。resize仅接受resources及
 
 `20261102_10_plan_configuration.sql`在节点镜像迁移之后新增plan_nodes及套餐三个JSON配置列；节点从已有网络关联去重回填，不移动实例。旧套餐关闭GPU策略，容器保留旧完整动作/六项true编辑权限，VM只保留非GPU动作/空权限。既有elastic实例只修复对应SQL NULL或JSON null字段为旧兼容默认；保留已存策略（含已启用设置）、显式空数组/映射和其他非null值，不从当前套餐重新复制，GPU策略缺失时使用原实例价格上限。历史init.sql/旧迁移不改动，按前向迁移顺序升级。此处仅说明代码与迁移契约，不表示本次套餐配置扩展已部署或验证。
 
+计费欠费恢复在账户锁内先以当前读检查可支付资金：有效且未预留的额度，或仍被会话持有的预留（包括已过期桶）。没有资金时不扫描/逐条锁定历史欠费；充值、每日额度和已有预留仍通过原结算路径补扣。`payCharge` 对金额、状态和结算时间均未变化的欠费重试不执行 UPDATE，不递增 revision/updated_at；首次 pending→insufficient、部分付款和付清仍持久化。保留原计费精度、五秒调度、保留磁盘收费及零金额审计行为。
+
 ## 1. 部署前准备
 
 推荐使用 Linux 服务器，准备：
@@ -325,3 +327,10 @@ HTTP监听127.0.0.1:8080，就绪检查、随机管理员登录、真实Agent固
 2026-11-02 可编辑套餐版本仅部署 `.111`：应用 `20261102_20_editable_plans.sql`，套餐切换为独立active/disabled、默认disabled，启停不影响其他套餐，所有状态均可直接编辑（active编辑仍完整校验就绪引用）。旧draft/retired迁为disabled，active不变。新增实例plan_snapshot冻结资源基准与allowed_overrides；新建匹配报价plan_revision，旧报价409 plan_changed且不产生资源副作用，resize只读冻结范围和实例原价格/政策。`go vet ./...`、隔离MySQL 8.4上的 `go test -race -p 1 ./... -count=1` 全量通过，覆盖多套餐独立启停/编辑、失败回滚与ETag冲突、报价失效、新旧实例规格隔离、停用后按原冻结范围调整、fresh/upgrade迁移。前端类型检查/oxlint/build与OpenAPI规范校验通过，303个内部引用可解析。
 
 真实后端进程与浏览器完成双套餐同时启用及在线编辑、独立停用/重新启用、冻结范围调整弹窗只读验收，测试数据仅存在隔离本地库；不声称真实GPU或虚拟机生命周期硬件操作。线上后端active，已有8条实例和1个active套餐的原状态、规格及策略授权快照一致；该套餐code1/v1的revision仍为2，未在线上修改套餐或实例。备份 `/var/backups/101cloud/before-editable-plans-20261102.sql.gz`（gzip完整性已验证）、旧后端 `backend-before-editable-plans-20261102`、旧前端链接 `frontend-before-editable-plans-20261102`；未改Host Agent、Nginx或长期运行账户配置。
+
+2026-11-02 仅部署 `.111` 报价名称解耦修复。`ValidateElastic` 保留计费配置/节点/镜像/GPU/策略校验，移除与创建准入重复的名称检查；`POST /quotes` 不要求名称，`POST /instances` 仍独立拒绝无名称、空白或超过128字符的名称。无数据库迁移。隔离MySQL上的全量 `go test -race ./...`、`go vet ./...` 与Linux amd64构建通过；新增HTTP回归核对报价价格不受名称影响、拒绝创建不产生实例/任务/计费预留及有效名称创建。旧二进制 `/var/backups/101cloud/backend-before-quote-name-20261102`，前端及浏览器验收见 `../frontend/README.md`。
+
+
+2026-11-03 仅 `.111` 部署欠费重试写放大修复，无数据库迁移，无前端/Host Agent/Nginx及MySQL长期配置变更。`go vet ./...`、真实隔离MySQL下 `go test -race -p 1 ./... -count=1` 及Linux构建通过；新增回归覆盖无余额重复调用保持账单revision/时间及流水不变、首次欠费状态落库、部分付款后继续充值补扣、过期预留仅允许原会话消费，以及不消费过期非预留/未来额度。线上观察超过129秒，历史明细180541/180542的revision均保持4670、金额与updated_at不变，8个计费会话游标继续推进；全量账单已支付金额与结算流水差异为0。部署前后10条实例的状态、冻结指纹/架构/规格、GPU策略和授权一致，旧后端 `/var/backups/101cloud/backend-before-debt-retry-20261103`。
+
+按用户授权清理binlog前已核对无复制通道、注册副本、binlog读取连接或已发现的本机日志备份计划。分别生成修复前/后的全库一致性备份（single-transaction/source-data=2，所有7个数据库、routines/events/triggers/hex-blob），gzip完整性与SHA256匹配；文件在本机 `/Users/nagisa/developer/101cloud-backups/` 与服务器 `/var/backups/101cloud/` 双份保存且0600：`all-databases-before-billing-binlog-20261103-111631.sql.gz`（binlog.000357:55145951）和 `all-databases-after-billing-fix-20261103-112846.sql.gz`（binlog.000361:158）。使用MySQL `PURGE BINARY LOGS TO 'binlog.000361'`，未手工删除日志、未RESET/关闭binlog，保留新备份坐标起的恢复链路；旧日志不再支持备份前时间点恢复。基线198个旧日志清理后仅余binlog.000361（验收时5.50MiB），可用空间3.18→22.37GiB，使用率97%→76%；MySQL及后端正常。修复后该保留日志中52次计费UPDATE均有业务字段变化，只有时间/版本变化的UPDATE为0。

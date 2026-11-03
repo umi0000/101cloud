@@ -149,10 +149,10 @@ func resolvePolicies(ctx context.Context, db *gorm.DB, a *platform.App, versions
 	}
 	return out, nil
 }
+
+// ValidateElastic checks the billable configuration. Creation admission validates
+// instance names separately; quotes must work before display metadata is entered.
 func ValidateElastic(ctx context.Context, db *gorm.DB, a *platform.App, s CreateElasticSpec, versions map[string]string) (*ValidatedSpec, error) {
-	if !textValid(s.Name, 128) {
-		return nil, invalid("实例名称必须包含 1–128 个字符。")
-	}
 	if e := validResources(s.Resources); e != nil {
 		return nil, e
 	}

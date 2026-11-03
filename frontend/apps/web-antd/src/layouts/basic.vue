@@ -36,8 +36,8 @@ async function handleLogout() {
 <template>
   <BasicLayout :key="`${authStore.me?.user.id}:${authStore.me?.user.role}`" @clear-preferences-and-logout="handleLogout">
     <template #header-right-0>
-      <TaskCenter v-if="authStore.isAdmin" />
-      <MemberBalance v-else-if="memberUserId" :key="memberUserId" />
+      <MemberBalance v-if="memberUserId" :key="memberUserId" />
+      <TaskCenter v-if="authStore.me && !accessStore.loginExpired && !loggingOut" />
     </template>
     <template #user-dropdown>
       <UserDropdown

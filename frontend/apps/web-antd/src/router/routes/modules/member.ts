@@ -11,6 +11,28 @@ const routes: RouteRecordRaw[] = [
     name: 'MemberInstances',
     path: '/instances',
   },
+  {
+    component: () => import('#/views/member/instances/create.vue'),
+    meta: {
+      activePath: '/instances',
+      authority: ['user'],
+      hideInMenu: true,
+      title: '创建弹性容器',
+    },
+    name: 'MemberInstanceCreate',
+    path: '/instances/create',
+  },
+  {
+    component: () => import('#/views/member/instances/confirm.vue'),
+    meta: {
+      activePath: '/instances',
+      authority: ['user'],
+      hideInMenu: true,
+      title: '确认订单',
+    },
+    name: 'MemberInstanceConfirm',
+    path: '/instances/create/confirm',
+  },
 ];
 
 export default routes;

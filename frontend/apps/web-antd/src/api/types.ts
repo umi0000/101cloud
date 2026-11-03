@@ -234,6 +234,38 @@ export interface Plan {
   version: string;
 }
 
+/** 普通用户弹性实例：节点由网络选项确定，报价及创建绑定套餐 revision。 */
+export interface CreateElasticSpec {
+  gpu: GPURequest;
+  image_id: ID;
+  init_parameters: Record<string, unknown>;
+  name: string;
+  network_option_id: ID;
+  plan_id: ID;
+  plan_revision: string;
+  resources: Resources;
+}
+
+/** 报价仅依赖配置，不要求也不提交实例显示名称。 */
+export type ElasticQuoteSpec = Omit<CreateElasticSpec, 'name'>;
+
+export interface ElasticQuote {
+  admissible: boolean;
+  blocking_reasons: string[];
+  expires_at: Time;
+  initial_window_pt?: Pt;
+  plan_revision: string;
+  policy_versions: PolicyVersions;
+  price_details: {
+    cpu_hourly_pt: Pt;
+    disk_hourly_pt: Pt;
+    gpu_hourly_pt: Pt;
+    memory_hourly_pt: Pt;
+    total_hourly_pt: Pt;
+  };
+  reservation: false;
+}
+
 export interface PlanInput {
   allowed_overrides: AllowedOverrides;
   allowed_user_actions: CustomAction[];
