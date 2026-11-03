@@ -1,9 +1,26 @@
 #!/bin/sh
-# 101cloud 客机初始化：Ubuntu / Debian / Arch Linux，需以 root 执行。
+# 101cloud 客机初始化：Ubuntu / Debian / Arch Linux / Fedora，需以 root 执行。
 # 安装 OpenSSH，监听 IPv4 TCP 22；按 cloud-init 登录方式启用密码或仅公钥认证。
 # 无平台模式标记时兼容原行为：允许 root 使用已有的非空密码登录。
 # 不设置密码、不修改防火墙、不下载执行远程脚本。推荐在 cloud_init 阶段使用。
 # 扩展系统时，只需增加下面的包管理器和服务映射；公共 SSH 配置保持一致。
+
+#换源
+bash <(curl -sSL https://linuxmirrors.cn/main.sh) \
+  --source mirrors.xjtu.edu.cn \
+  --protocol http \
+  --use-intranet-source false \
+  --install-epel true \
+  --backup true \
+  --upgrade-software false \
+  --clean-cache false \
+  --ignore-backup-tips
+
+#opencl问题修复
+printf '%s\n' 'libnvidia-opencl.so.1' \
+  > /etc/OpenCL/vendors/nvidia.icd
+
+#配置openssh-server
 set -eu
 
 log() { printf '%s\n' "[init-openssh] $*" >&2; }
@@ -64,6 +81,10 @@ case "${ID:-}" in
         family=arch
         service_name=sshd
         ;;
+    fedora)
+        family=fedora
+        service_name=sshd
+        ;;
     *) fail "暂不支持系统 ${ID:-unknown}；请先增加并验证系统适配。" ;;
 esac
 
@@ -86,6 +107,11 @@ case "$family" in
         command -v pacman >/dev/null 2>&1 || fail '缺少 pacman。'
         log '安装 openssh；使用现有同步数据库，不执行单独 -Sy 或全系统升级。'
         pacman -S --needed --noconfirm openssh
+        ;;
+    fedora)
+        command -v dnf >/dev/null 2>&1 || fail '缺少 dnf；此脚本需要提供 dnf 的 Fedora 镜像。'
+        log '安装 openssh-server。'
+        dnf install -y openssh-server
         ;;
 esac
 

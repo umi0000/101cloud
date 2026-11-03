@@ -269,6 +269,8 @@ curl -f https://cloud.example.com/api/v1/health/ready
 
 脚本支持 systemd，以及 Debian/Ubuntu 的 SysV；Ubuntu 存在 `ssh.socket` 时切换为 SSH 服务直接监听。改动前备份到 `/etc/ssh/101cloud-backup.*/sshd_config`，用 `sshd -t` 和 root 上下文的 `sshd -T` 检查配置；生效后失败会尝试恢复配置并重启服务，但不会卸载软件包或还原所有服务启用状态。重复执行不会叠加平台配置块。需能访问软件源；Arch 使用现有同步数据库执行 `pacman -S --needed`，不单独刷新数据库或隐式全系统升级。
 
+Fedora 使用 `dnf install -y openssh-server` 和 systemd 的 `sshd.service`；需要提供 dnf、可用软件源及正在运行的 systemd，不支持通过该路径配置 rpm-ostree 原子系统。脚本不修改防火墙或 SELinux 策略。
+
 ### 实例首次登录凭据（仅创建时）
 
 普通用户最终 `POST /api/v1/instances` 可增加 `login:{root_password?:string,ssh_public_keys?:string[]}`，可同时提供两种方式，推荐公钥。省略 `login` 完全保持旧行为；提供对象时至少一种非空。密码原样保留（不 trim），8–128 个 Unicode 字符，禁止控制字符。公钥最多 10 条，每条至多 8192 UTF-8 字节，服务端真实解析单行 OpenSSH 格式：Ed25519、RSA≥2048、ECDSA nistp256/384/521；拒绝私钥、authorized_keys 选项、控制字符和多行脚本，规范化后去重并丢弃注释。报价 `/quotes` 不接受 `login`。
