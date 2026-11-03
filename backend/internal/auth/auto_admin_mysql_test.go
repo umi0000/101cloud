@@ -58,6 +58,10 @@ func TestMySQLAutomaticAdministratorCreatedOnlyOnce(t *testing.T) {
 	if e = db.Table("user_limits").Where("user_id=?", account["id"]).Select("max_instances").Scan(&quota).Error; e != nil || quota != 0 {
 		t.Fatal("initial administrator has incorrect resource quota")
 	}
+	var wallets int64
+	if e = db.Table("credit_accounts").Count(&wallets).Error; e != nil || wallets != 0 {
+		t.Fatalf("bootstrap must remain safely unconfigured before explicit allowance setup: wallets=%d error=%v", wallets, e)
+	}
 	passwordHash, e := hashPassword("changed-after-first-login")
 	if e != nil {
 		t.Fatal(e)

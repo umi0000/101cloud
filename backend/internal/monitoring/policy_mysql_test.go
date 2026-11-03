@@ -60,9 +60,16 @@ func TestMySQLPolicyPollCannotRewindIdleContinuity(t *testing.T) {
 		t.Fatal(e)
 	}
 	a := platform.New(tx, platform.Config{})
-	idle := platform.Row{"enabled": true, "min_timeout_seconds": 60, "max_timeout_seconds": 86400, "gpu_utilization_threshold_pct": 0}
-	scheduling := platform.Row{"evaluation_window_seconds": 5}
-	if e = evaluateGPUInstance(context.Background(), a, id, idle, scheduling, 3600); e != nil {
+	if e = tx.Exec("CREATE TEMPORARY TABLE policy_versions (id BIGINT PRIMARY KEY,kind VARCHAR(32),config JSON NOT NULL)").Error; e != nil {
+		t.Fatal(e)
+	}
+	if e = tx.Exec(`INSERT INTO policy_versions VALUES (1,'gpu-idle','{"enabled":true,"min_timeout_seconds":60,"max_timeout_seconds":86400,"gpu_utilization_threshold_pct":0}'),(2,'gpu-scheduling','{"evaluation_window_seconds":5,"metrics_max_age_seconds":3600}')`).Error; e != nil {
+		t.Fatal(e)
+	}
+	if e = tx.Exec(`UPDATE instances SET policy_versions=JSON_SET(policy_versions,'$."gpu-idle"','1','$."gpu-scheduling"','2') WHERE id=?`, id).Error; e != nil {
+		t.Fatal(e)
+	}
+	if e = evaluateGPUInstance(context.Background(), a, id); e != nil {
 		t.Fatal(e)
 	}
 	var saved platform.Row

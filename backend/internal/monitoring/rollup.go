@@ -268,11 +268,7 @@ func (a *rollupAccumulator) finish() platform.Row {
 
 type rollupPolicy struct{ RawDays, RollupDays, Seconds, Interval int64 }
 
-func rollupReadPolicy(ctx context.Context, a *platform.App) (rollupPolicy, error) {
-	r, e := a.Policy(ctx, "metrics")
-	if e != nil {
-		return rollupPolicy{}, e
-	}
+func rollupReadPolicy(r platform.Row) (rollupPolicy, error) {
 	p := rollupPolicy{}
 	for k, dst := range map[string]*int64{"raw_retention_days": &p.RawDays, "rollup_retention_days": &p.RollupDays, "bucket_seconds": &p.Seconds, "collection_interval_seconds": &p.Interval} {
 		n, e := strconv.ParseInt(platform.Text(r[k]), 10, 64)
@@ -283,33 +279,75 @@ func rollupReadPolicy(ctx context.Context, a *platform.App) (rollupPolicy, error
 	}
 	return p, nil
 }
+
+type resourceMetricPolicies struct {
+	Node      rollupPolicy
+	Instances map[uint64]rollupPolicy
+}
+
+func instanceMetricPolicy(ctx context.Context, a *platform.App, instance platform.Row) (rollupPolicy, error) {
+	r, err := a.InstancePolicy(ctx, instance, "metrics")
+	if err != nil {
+		return rollupPolicy{}, err
+	}
+	return rollupReadPolicy(r)
+}
+
+func nodeMetricPolicies(ctx context.Context, a *platform.App, node uint64) (resourceMetricPolicies, error) {
+	out := resourceMetricPolicies{Instances: map[uint64]rollupPolicy{}}
+	r, err := platform.Get(a.DB.WithContext(ctx), "nodes", node, false)
+	if err != nil {
+		return out, err
+	}
+	p, err := a.Policy(ctx, "metrics", platform.Text(r["metrics_policy_id"]))
+	if err != nil {
+		return out, err
+	}
+	if out.Node, err = rollupReadPolicy(p); err != nil {
+		return out, err
+	}
+	var instances []platform.Row
+	if err = a.DB.WithContext(ctx).Table("instances").Select("id,policy_versions").Where("node_id=? OR id IN (SELECT instance_id FROM instance_metric_samples WHERE node_id=? UNION SELECT instance_id FROM instance_metric_rollups WHERE node_id=?)", node, node, node).Find(&instances).Error; err != nil {
+		return out, err
+	}
+	for _, instance := range instances {
+		policy, err := instanceMetricPolicy(ctx, a, instance)
+		if err != nil {
+			return out, err
+		}
+		out.Instances[platform.Uint(instance["id"])] = policy
+	}
+	return out, nil
+}
 func RegisterRollups(a *platform.App) {
 	a.AddPoller("metrics-rollups", 10*time.Second, rollupWorker)
 	a.AddPoller("metrics-retention", time.Minute, rollupRetention)
 }
 func rollupWorker(ctx context.Context, a *platform.App) error {
-	p, e := rollupReadPolicy(ctx, a)
-	if e != nil {
-		return e
-	}
 	var cursors []platform.Row
-	if e = a.DB.WithContext(ctx).Table("node_metric_cursors").Where("project_scope = ?", "*").Order("node_id").Find(&cursors).Error; e != nil {
+	if e := a.DB.WithContext(ctx).Table("node_metric_cursors").Where("project_scope = ?", "*").Order("node_id").Find(&cursors).Error; e != nil {
 		return e
 	}
 	for _, cursor := range cursors {
 		node := platform.Uint(cursor["node_id"])
+		policies, e := nodeMetricPolicies(ctx, a, node)
+		if e != nil {
+			return e
+		}
+		p := policies.Node
 		var sizes []int64
 		if e = a.DB.WithContext(ctx).Table("metric_rollup_progress").Where("node_id = ?", node).Pluck("bucket_seconds", &sizes).Error; e != nil {
 			return e
 		}
-		found := false
-		for _, s := range sizes {
-			if s == p.Seconds {
-				found = true
-			}
+		required := map[int64]bool{p.Seconds: true}
+		for _, policy := range policies.Instances {
+			required[policy.Seconds] = true
 		}
-		if !found {
-			sizes = append(sizes, p.Seconds)
+		for _, size := range sizes {
+			delete(required, size)
+		}
+		for size := range required {
+			sizes = append(sizes, size)
 		}
 		for _, size := range sizes {
 			for range 32 {
@@ -412,20 +450,17 @@ func rollupWorker(ctx context.Context, a *platform.App) error {
 	return nil
 }
 func rollupRetention(ctx context.Context, a *platform.App) error {
-	p, e := rollupReadPolicy(ctx, a)
-	if e != nil {
-		return e
-	}
-	now := a.Time()
-	rawBefore := now.AddDate(0, 0, -int(p.RawDays))
-	rollBefore := now.AddDate(0, 0, -int(p.RollupDays))
 	var cursors []platform.Row
-	if e = a.DB.WithContext(ctx).Table("node_metric_cursors").Where("project_scope = '*' ").Find(&cursors).Error; e != nil {
-		return e
+	if err := a.DB.WithContext(ctx).Table("node_metric_cursors").Where("project_scope = '*'").Find(&cursors).Error; err != nil {
+		return err
 	}
-	for _, r := range cursors {
-		node := platform.Uint(r["node_id"])
-		if e = a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	for _, cursor := range cursors {
+		node := platform.Uint(cursor["node_id"])
+		policies, err := nodeMetricPolicies(ctx, a, node)
+		if err != nil {
+			return err
+		}
+		if err = a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			var locked platform.Row
 			if err := tx.Table("node_metric_cursors").Clauses(clause.Locking{Strength: "UPDATE"}).Where("node_id = ? AND project_scope = '*'", node).Take(&locked).Error; err != nil {
 				return err
@@ -434,48 +469,56 @@ func rollupRetention(ctx context.Context, a *platform.App) error {
 			if err := tx.Table("metric_rollup_progress").Where("node_id = ?", node).Find(&progress).Error; err != nil {
 				return err
 			}
-			if len(progress) == 0 {
-				return nil
+			completed := map[int64]time.Time{}
+			for _, row := range progress {
+				size := int64(platform.Uint(row["bucket_seconds"]))
+				completed[size] = rollupFloor(platform.Stamp(row["through_at"]), size)
 			}
-			through := rawBefore
-			current := false
-			for _, v := range progress {
-				size := int64(platform.Uint(v["bucket_seconds"]))
-				if size == p.Seconds {
-					current = true
+			for instance, policy := range policies.Instances {
+				// Shared observations also serve node reads. Keep them until both
+				// explicit bindings expire; each read surface applies its own bounds.
+				rawDays := max(policy.RawDays, policies.Node.RawDays)
+				rollupDays := max(policy.RollupDays, policies.Node.RollupDays)
+				rawBefore := a.Time().AddDate(0, 0, -int(rawDays))
+				through := rawBefore
+				ready := true
+				for _, size := range []int64{policy.Seconds, policies.Node.Seconds} {
+					at, exists := completed[size]
+					if !exists {
+						ready = false
+						break
+					}
+					if cutoff := rollupFloor(rawBefore, size); cutoff.Before(through) {
+						through = cutoff
+					}
+					if at.Before(through) {
+						through = at
+					}
 				}
-				cutoff := rollupFloor(rawBefore, size)
-				if cutoff.Before(through) {
-					through = cutoff
+				if ready {
+					var ids []uint64
+					if err := tx.Table("instance_metric_samples").Where("node_id = ? AND instance_id = ? AND sampled_at < ? AND window_end_at <= ? AND (cpu_sampled_at IS NULL OR cpu_sampled_at <= ?)", node, instance, through, through, through).Order("sampled_at,id").Limit(1000).Pluck("id", &ids).Error; err != nil {
+						return err
+					}
+					if len(ids) > 0 {
+						if err := tx.Table("instance_gpu_metric_samples").Where("sample_id IN ?", ids).Delete(&platform.Row{}).Error; err != nil {
+							return err
+						}
+						if err := tx.Table("instance_metric_samples").Where("id IN ?", ids).Delete(&platform.Row{}).Error; err != nil {
+							return err
+						}
+					}
 				}
-				t := rollupFloor(platform.Stamp(v["through_at"]), size)
-				if t.Before(through) {
-					through = t
-				}
-			}
-			if !current {
-				return nil
-			}
-			var ids []uint64
-			if err := tx.Table("instance_metric_samples").Where("node_id = ? AND sampled_at < ? AND window_end_at <= ? AND (cpu_sampled_at IS NULL OR cpu_sampled_at <= ?)", node, through, through, through).Order("sampled_at,id").Limit(1000).Pluck("id", &ids).Error; err != nil {
-				return err
-			}
-			if len(ids) > 0 {
-				if err := tx.Table("instance_gpu_metric_samples").Where("sample_id IN ?", ids).Delete(&platform.Row{}).Error; err != nil {
-					return err
-				}
-				if err := tx.Table("instance_metric_samples").Where("id IN ?", ids).Delete(&platform.Row{}).Error; err != nil {
-					return err
+				rollBefore := a.Time().AddDate(0, 0, -int(rollupDays))
+				for _, table := range []string{"instance_gpu_metric_rollups", "instance_metric_rollups"} {
+					if err := tx.Exec("DELETE FROM "+table+" WHERE node_id = ? AND instance_id = ? AND TIMESTAMPADD(SECOND,bucket_seconds,bucket_start_at) < ? ORDER BY bucket_start_at,id LIMIT 1000", node, instance, rollBefore).Error; err != nil {
+						return err
+					}
 				}
 			}
 			return nil
-		}); e != nil {
-			return e
-		}
-	}
-	for _, table := range []string{"instance_gpu_metric_rollups", "instance_metric_rollups"} {
-		if e = a.DB.WithContext(ctx).Exec("DELETE FROM "+table+" WHERE TIMESTAMPADD(SECOND,bucket_seconds,bucket_start_at) < ? ORDER BY bucket_start_at,id LIMIT 1000", rollBefore).Error; e != nil {
-			return e
+		}); err != nil {
+			return err
 		}
 	}
 	return nil

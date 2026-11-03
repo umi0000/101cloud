@@ -255,7 +255,7 @@ func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.R
 	if len(in.FixedUUIDs) > 0 && len(in.FixedUUIDs) != in.Count {
 		return nil, bad("fixed_uuids 数量必须与申请的 GPU 数量一致。")
 	}
-	policy, e := a.Policy(ctx, "gpu-scheduling")
+	policy, e := a.InstancePolicy(ctx, r, "gpu-scheduling")
 	if e != nil {
 		return nil, e
 	}
@@ -266,6 +266,18 @@ func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.R
 	smWeight, memWeight := numeric(policy["sm_weight"]), numeric(policy["memory_weight"])
 	if smWeight < 0 || memWeight < 0 || smWeight+memWeight < 0.999999 || smWeight+memWeight > 1.000001 {
 		return nil, platform.E(503, "policy_not_configured", "GPU 调度权重无效，请管理员检查调度策略。")
+	}
+	price, e := a.InstancePolicy(ctx, r, "gpu-pricing")
+	if e != nil {
+		return nil, e
+	}
+	rate, e := boundGPUPrice(in, price, max)
+	if e != nil {
+		return nil, e
+	}
+	_, priceSource, e := platform.PolicySource(db, "gpu-pricing", platform.Text(object(r["policy_versions"])["gpu-pricing"]), false)
+	if e != nil {
+		return nil, e
 	}
 	n, e := platform.Get(db, "nodes", platform.Uint(r["node_id"]), true)
 	if e != nil {
@@ -291,7 +303,7 @@ func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.R
 		inventory[platform.Text(g["uuid"])] = g
 	}
 	var all []platform.Row
-	if e = locked(db).Table("node_gpus g").Select("g.*,p.gpu_hourly_pt,p.access_mode AS priced_access_mode,p.status AS price_status,p.effective_at AS price_effective_at").Joins("JOIN gpu_price_versions p ON p.id=g.gpu_price_version_id").Where("g.node_id=?", r["node_id"]).Order("g.id").Find(&all).Error; e != nil {
+	if e = locked(db).Table("node_gpus g").Select("g.*").Where("g.node_id=?", r["node_id"]).Order("g.id").Find(&all).Error; e != nil {
 		return nil, e
 	}
 	excluded := map[uint64]bool{}
@@ -315,31 +327,12 @@ func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.R
 		used  int64
 	}
 	candidates := []candidate{}
-	expectedPrice := uint64(0)
-	if platform.Text(r["product_type"]) == "elastic" && platform.Text(r["provisioning_state"]) == "pending" {
-		policyID, e := platform.IDString(platform.Text(object(r["policy_versions"])["gpu-pricing"]))
-		if e != nil {
-			return nil, e
-		}
-		published, e := platform.Get(db, "policy_versions", policyID, false)
-		if e != nil {
-			return nil, e
-		}
-		expectedPrice = platform.Uint(published["source_id"])
-		if expectedPrice == 0 {
-			return nil, conflict("policy_changed", "报价对应的 GPU 价格源已不存在，请重新获取报价。")
-		}
-	}
 	for _, g := range all {
 		uuid := platform.Text(g["uuid"])
 		if len(fixed) > 0 && !fixed[uuid] {
 			continue
 		}
-		if g["memory_mib"] == nil || expectedPrice != 0 && platform.Uint(g["gpu_price_version_id"]) != expectedPrice || excluded[platform.Uint(g["id"])] || platform.Text(g["status"]) != "available" || platform.Text(g["price_status"]) != "active" || platform.Stamp(g["price_effective_at"]).After(a.Time()) || platform.Text(g["priced_access_mode"]) != in.AccessMode || in.Model != "" && platform.Text(g["model"]) != in.Model || platform.Uint(g["memory_mib"]) < mustUint(in.MinMemoryMiB) || a.Time().Sub(platform.Stamp(g["last_seen_at"])) > maxAge {
-			continue
-		}
-		rate, err := decimal.NewFromString(platform.Text(g["gpu_hourly_pt"]))
-		if err != nil || rate.GreaterThan(max) {
+		if g["memory_mib"] == nil || excluded[platform.Uint(g["id"])] || platform.Text(g["status"]) != "available" || platform.Text(g["model"]) != platform.Text(price["gpu_model"]) || platform.Uint(g["memory_mib"]) < mustUint(in.MinMemoryMiB) || a.Time().Sub(platform.Stamp(g["last_seen_at"])) > maxAge {
 			continue
 		}
 		var count int64
@@ -392,7 +385,6 @@ func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.R
 		}
 		filtered := candidates[:0]
 		for _, c := range candidates {
-			rate, _ := decimal.NewFromString(platform.Text(c.row["gpu_hourly_pt"]))
 			if c.score > numeric(policy["target_low_load_pct"]) || sourceScore-c.score < numeric(policy["min_improvement_pct"]) || !platform.Bool(policy["allow_price_increase"]) && rate.GreaterThan(sourceRate) {
 				continue
 			}
@@ -410,11 +402,11 @@ func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.R
 		return platform.Text(candidates[i].row["uuid"]) < platform.Text(candidates[j].row["uuid"])
 	})
 	if len(candidates) < in.Count {
-		return nil, platform.EDetails(409, "gpu_capacity_unavailable", "符合型号、显存、访问模式、价格上限和最新观测要求的 GPU 不足：本次申请 "+strconv.Itoa(in.Count)+"，当前可选 "+strconv.Itoa(len(candidates))+"。", platform.Row{"scope": "gpu", "resource": "gpus", "requested": strconv.Itoa(in.Count), "available": strconv.Itoa(len(candidates)), "unit": "count", "action": "请减少 GPU 数量、调整型号或价格上限，或联系管理员检查 GPU 库存、分配上限和观测状态。"})
+		return nil, platform.EDetails(409, "gpu_capacity_unavailable", "符合型号、显存、访问模式和最新观测要求的 GPU 不足：本次申请 "+strconv.Itoa(in.Count)+"，当前可选 "+strconv.Itoa(len(candidates))+"。", platform.Row{"scope": "gpu", "resource": "gpus", "requested": strconv.Itoa(in.Count), "available": strconv.Itoa(len(candidates)), "unit": "count", "action": "请减少 GPU 数量，或联系管理员检查 GPU 库存、分配上限和观测状态。"})
 	}
 	ids := make([]uint64, 0, in.Count)
 	for _, c := range candidates[:in.Count] {
-		allocation := platform.Row{"instance_id": r["id"], "user_id": r["user_id"], "node_id": r["node_id"], "gpu_id": c.row["id"], "gpu_price_version_id": c.row["gpu_price_version_id"], "gpu_hourly_pt": c.row["gpu_hourly_pt"], "status": "reserved", "access_mode": in.AccessMode, "reserved_at": a.Time(), "configured": false, "observed": false, "release_verified": false, "revision": 1}
+		allocation := platform.Row{"instance_id": r["id"], "user_id": r["user_id"], "node_id": r["node_id"], "gpu_id": c.row["id"], "gpu_price_version_id": priceSource, "gpu_hourly_pt": rate.StringFixed(6), "status": "reserved", "access_mode": in.AccessMode, "reserved_at": a.Time(), "configured": false, "observed": false, "release_verified": false, "revision": 1}
 		if e = db.Table("gpu_allocations").Create(&allocation).Error; e != nil {
 			return nil, e
 		}
@@ -426,13 +418,30 @@ func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.R
 	}
 	return ids, nil
 }
+func boundGPUPrice(in GPURequest, price platform.Row, max decimal.Decimal) (decimal.Decimal, error) {
+	model, access := platform.Text(price["gpu_model"]), platform.Text(price["access_mode"])
+	if model == "" || access != "shared" && access != "exclusive" {
+		return decimal.Zero, platform.E(500, "invalid_stored_policy", "实例绑定的 GPU 定价型号或访问模式无效。")
+	}
+	if in.Model != "" && in.Model != model || in.AccessMode != access {
+		return decimal.Zero, bad("GPU 定价的型号或访问模式与申请不匹配，请检查实例绑定的 GPU 定价策略。")
+	}
+	rate, e := policyMoney(platform.Text(price["gpu_hourly_pt"]))
+	if e != nil {
+		return decimal.Zero, platform.E(500, "invalid_stored_policy", "实例绑定的 GPU 价格无效。")
+	}
+	if rate.GreaterThan(max) {
+		return decimal.Zero, platform.EDetails(409, "gpu_price_exceeds_limit", "实例绑定的 GPU 单价超过本次价格上限，请提高价格上限。", platform.Row{"scope": "gpu", "resource": "gpu_hourly_pt", "gpu_hourly_pt": rate.StringFixed(6), "max_hourly_pt": max.StringFixed(6), "reason": "gpu_price_exceeds_limit"})
+	}
+	return rate, nil
+}
 func numeric(v any) float64 { f, _ := strconv.ParseFloat(platform.Text(v), 64); return f }
 func storedIdle(ctx context.Context, a *platform.App, db *gorm.DB, r platform.Row, allocations []platform.Row) error {
 	var sample platform.Row
 	if e := db.Table("instance_metric_samples").Where("instance_id=?", r["id"]).Order("sampled_at DESC,id DESC").Take(&sample).Error; e != nil {
 		return conflict("observation_incomplete", "缺少完整的 GPU 占用证据，请等待完整采集后重试。")
 	}
-	policy, e := a.Policy(ctx, "gpu-scheduling")
+	policy, e := a.InstancePolicy(ctx, r, "gpu-scheduling")
 	if e != nil {
 		return e
 	}
@@ -462,7 +471,7 @@ func liveGPU(ctx context.Context, a *platform.App, r platform.Row) (map[string]m
 		return nil, conflict("observation_incomplete", "实时 GPU 采集不完整，请等待节点恢复完整采集。")
 	}
 	stamp := platform.Stamp(frame["collected_at"])
-	policy, e := a.Policy(ctx, "gpu-scheduling")
+	policy, e := a.InstancePolicy(ctx, r, "gpu-scheduling")
 	if e != nil {
 		return nil, e
 	}
@@ -581,7 +590,7 @@ func runGPU(ctx context.Context, a *platform.App, job platform.Job) error {
 	}
 	if len(removed) > 0 && st == "running" {
 		after := a.Time()
-		policy, e := a.Policy(ctx, "gpu-scheduling")
+		policy, e := a.InstancePolicy(ctx, r, "gpu-scheduling")
 		if e != nil {
 			return platform.Unknown(e)
 		}

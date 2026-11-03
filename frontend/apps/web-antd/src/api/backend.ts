@@ -48,7 +48,6 @@ import type {
   Page,
   Plan,
   PlanInput,
-  PlatformBindings,
   PolicyKind,
   PolicyVersion,
   PolicyVersions,
@@ -115,7 +114,6 @@ export const memberApi = {
     detail<GPUAllocation[]>(`/instances/${id}/gpu-allocations`),
   instances: (q?: Query) => list<Instance>('/instances', q),
   network: (id: ID) => detail<InstanceNetwork[]>(`/instances/${id}/network`),
-  gpuOptions: (q?: Query) => list<GPUOption>('/catalog/gpu-options', q),
   images: (q?: Query) => list<Image>('/catalog/images', q),
   networkOptions: (q?: Query) => list<NetworkOption>('/catalog/network-options', q),
   plans: (q?: Query) => list<Plan>('/catalog/plans', q),
@@ -135,6 +133,7 @@ export const memberApi = {
 export const usersApi = {
   create: (
     body: {
+      credit_policy_version_id: ID;
       email: null | string;
       initial_password: string;
       role: 'admin' | 'user';
@@ -166,6 +165,7 @@ export interface NodeCreate {
   allocatable: Node['allocatable'];
   connection: NodeConnectionInput;
   defaults: Node['defaults'];
+  metrics_policy_id: ID;
   name: string;
 }
 
@@ -187,6 +187,7 @@ export const nodesApi = {
       approved_config: CustomConfig;
       incus_uuid: string;
       owner_user_id: ID;
+      policy_versions: PolicyVersions;
     },
     w: Write,
   ) => post<TaskAccepted>(`/admin/nodes/${id}/instance-imports`, body, w),
@@ -206,6 +207,7 @@ export const nodesApi = {
     body: Partial<{
       administrative_state: Node['administrative_state'];
       allocatable: Node['allocatable'];
+      metrics_policy_id: ID;
       name: string;
     }>,
     w: Write,
@@ -214,7 +216,6 @@ export const nodesApi = {
     id: ID,
     gpuId: ID,
     body: Partial<{
-      gpu_price_version_id: ID | null;
       max_allocations: number;
       status: NodeGPU['status'];
     }>,
@@ -298,7 +299,7 @@ export const instancesApi = {
   attachGPU: (id: ID, body: AttachBody, w: Write) =>
     post<TaskAccepted>(ai(id, '/gpu-attachments'), body, w),
   createCustom: (
-    body: { approved_config: CustomConfig; name: string; owner_user_id: ID },
+    body: { approved_config: CustomConfig; name: string; owner_user_id: ID; policy_versions: PolicyVersions },
     w: Write,
   ) => post<TaskAccepted>('/admin/custom-instances', body, w),
   delete: (
@@ -315,6 +316,8 @@ export const instancesApi = {
   gpuAllocations: (id: ID) =>
     detail<GPUAllocation[]>(ai(id, '/gpu-allocations')),
   gpuPolicy: (id: ID) => detail<GPUPolicy>(ai(id, '/gpu-policy')),
+  putGPUPricingPolicy: (id: ID, body: { policy_version_id: ID }, w: Write) =>
+    put<{ policy_versions: PolicyVersions; revision: string }>(ai(id, '/gpu-pricing-policy'), body, w),
   history: (id: ID, q: Query) =>
     api.get<MetricsHistory>(ai(id, '/metrics/history'), { params: clean(q) }),
   latest: (id: ID) => detail<LatestMetrics>(ai(id, '/metrics/latest')),
@@ -382,7 +385,7 @@ export const catalogApi = {
     post<Plan>('/admin/plans', body, w),
   createTemplate: (body: InitTemplateInput, w: Write) =>
     post<InitTemplate>('/admin/init-templates', body, w),
-  gpuOptions: (q?: Query) => list<GPUOption>('/catalog/gpu-options', q),
+  gpuOptions: (q?: Query) => list<GPUOption>('/admin/catalog/gpu-options', q),
   image: (id: ID) => detail<Image>(`/admin/images/${id}`),
   images: (q?: Query) => list<Image>('/admin/images', q),
   networkOptions: (q: Query) =>
@@ -423,7 +426,6 @@ const pv = (kind: PolicyKind, path = '') =>
   `/admin/policies/${kind}/versions${path}`;
 
 export const policiesApi = {
-  bindings: () => detail<PlatformBindings>('/admin/platform-policy-bindings'),
   create: (
     kind: PolicyKind,
     body: { code: string; config: Record<string, unknown>; version: string },
@@ -431,8 +433,6 @@ export const policiesApi = {
   ) => post<PolicyVersion>(pv(kind), body, w),
   get: (kind: PolicyKind, id: ID) => detail<PolicyVersion>(pv(kind, `/${id}`)),
   list: (kind: PolicyKind, q?: Query) => list<PolicyVersion>(pv(kind), q),
-  putBindings: (body: Record<PolicyKind, ID>, w: Write) =>
-    put<PlatformBindings>('/admin/platform-policy-bindings', body, w),
   remove: (kind: PolicyKind, id: ID, w: Write) =>
     del<null>(pv(kind, `/${id}`), {}, w),
   update: (
@@ -446,6 +446,8 @@ export const policiesApi = {
 /* ---------------- 管理端：财务 ---------------- */
 
 export const financeApi = {
+  createAccount: (body: { policy_version_id: ID; user_id: ID }, w: Write) =>
+    post<CreditAccount>('/admin/credit-accounts', body, w),
   account: (id: ID) => detail<CreditAccount>(`/admin/credit-accounts/${id}`),
   accounts: (q?: Query) => list<CreditAccount>('/admin/credit-accounts', q),
   adjust: (

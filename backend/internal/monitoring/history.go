@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -134,9 +133,13 @@ func histLatest(c *gin.Context, a *platform.App) (any, error) {
 	if e != nil {
 		return nil, e
 	}
+	policy, e := instanceMetricPolicy(c.Request.Context(), a, instance)
+	if e != nil {
+		return nil, e
+	}
 	var rows []platform.Row
 	db := platform.DB(c, a)
-	if e = db.Table("instance_metric_samples").Select(strings.Join(histRawFields, ",")).Where("instance_id = ?", instance["id"]).Order("sampled_at DESC,id DESC").Limit(1).Find(&rows).Error; e != nil {
+	if e = db.Table("instance_metric_samples").Select(strings.Join(histRawFields, ",")).Where("instance_id = ? AND sampled_at >= ?", instance["id"], a.Time().AddDate(0, 0, -int(policy.RawDays))).Order("sampled_at DESC,id DESC").Limit(1).Find(&rows).Error; e != nil {
 		return nil, platform.WrapDB(e)
 	}
 	if len(rows) == 0 {
@@ -146,10 +149,6 @@ func histLatest(c *gin.Context, a *platform.App) (any, error) {
 	var gpu []platform.Row
 	if e = db.Table("instance_gpu_metric_samples").Select(strings.Join(histGPUFields, ",")).Where("sample_id = ?", r["id"]).Order("gpu_uuid").Find(&gpu).Error; e != nil {
 		return nil, platform.WrapDB(e)
-	}
-	policy, e := rollupReadPolicy(c.Request.Context(), a)
-	if e != nil {
-		return nil, e
 	}
 	out := rawMetricPoint(r, gpu)
 	age := a.Time().Sub(platform.Stamp(r["sampled_at"]))
@@ -241,7 +240,7 @@ func histEncodeCursor(a *platform.App, cursor histCursor) string {
 	mac.Write(data)
 	return base64.RawURLEncoding.EncodeToString(data) + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
-func histResolution(c *gin.Context, db *gorm.DB, id uint64, from, to time.Time) (string, int64, int64, error) {
+func histResolution(c *gin.Context, from, to time.Time, policy rollupPolicy) (string, int64, int64, error) {
 	res := c.DefaultQuery("resolution", "auto")
 	var target int64
 	switch res {
@@ -268,20 +267,13 @@ func histResolution(c *gin.Context, db *gorm.DB, id uint64, from, to time.Time) 
 	default:
 		return "", 0, 0, platform.E(422, "unsupported_resolution", "Unsupported metric resolution")
 	}
-	var sizes []int64
-	if e := db.Table("instance_metric_rollups").Where("instance_id = ? AND bucket_start_at < ? AND TIMESTAMPADD(SECOND,bucket_seconds,bucket_start_at) > ?", id, to, from).Distinct().Pluck("bucket_seconds", &sizes).Error; e != nil {
-		return "", 0, 0, platform.WrapDB(e)
-	}
-	sort.Slice(sizes, func(i, j int) bool { return sizes[i] < sizes[j] })
-	for _, s := range sizes {
-		if s > 0 && s <= target && target%s == 0 {
-			return histResolutionName(target), target, s, nil
-		}
+	if policy.Seconds > 0 && policy.Seconds <= target && target%policy.Seconds == 0 {
+		return histResolutionName(target), target, policy.Seconds, nil
 	}
 	if res == "auto" {
 		return "raw", 0, 0, nil
 	}
-	return histResolutionName(target), target, target, nil
+	return "", 0, 0, platform.E(422, "unsupported_resolution", "Resolution is incompatible with the instance metrics policy")
 }
 func histResolutionName(n int64) string {
 	switch n {
@@ -323,6 +315,10 @@ func histHistory(c *gin.Context, a *platform.App) (any, error) {
 		return nil, e
 	}
 	id := platform.Uint(instance["id"])
+	policy, e := instanceMetricPolicy(c.Request.Context(), a, instance)
+	if e != nil {
+		return nil, e
+	}
 	from, e := histTime(c.Query("from"))
 	if e != nil {
 		return nil, e
@@ -344,7 +340,7 @@ func histHistory(c *gin.Context, a *platform.App) (any, error) {
 		return nil, e
 	}
 	db := platform.DB(c, a)
-	res, size, source, e := histResolution(c, db, id, from, to)
+	res, size, source, e := histResolution(c, from, to, policy)
 	if e != nil {
 		return nil, e
 	}
@@ -359,7 +355,7 @@ func histHistory(c *gin.Context, a *platform.App) (any, error) {
 	var rows []platform.Row
 	gpu := c.Query("gpu_uuid")
 	if size == 0 {
-		q := db.Table("instance_metric_samples").Select(strings.Join(histRawFields, ",")).Where("instance_id = ? AND sampled_at >= ? AND sampled_at < ?", id, from, to)
+		q := db.Table("instance_metric_samples").Select(strings.Join(histRawFields, ",")).Where("instance_id = ? AND sampled_at >= ? AND sampled_at < ? AND sampled_at >= ?", id, from, to, a.Time().AddDate(0, 0, -int(policy.RawDays)))
 		if gpu != "" {
 			q = q.Where("EXISTS (SELECT 1 FROM instance_gpu_metric_samples g WHERE g.sample_id=instance_metric_samples.id AND g.gpu_uuid = ?)", gpu)
 		}
@@ -371,7 +367,7 @@ func histHistory(c *gin.Context, a *platform.App) (any, error) {
 		}
 	} else {
 		expr := histBucketExpression(size)
-		q := db.Table("instance_metric_rollups").Select(histAggregateSelect(expr, histRollupSums, histRollupPeaks)).Where("instance_id = ? AND bucket_seconds = ? AND bucket_start_at >= ? AND bucket_start_at < ?", id, source, rollupFloor(from, size), histCeil(to, size))
+		q := db.Table("instance_metric_rollups").Select(histAggregateSelect(expr, histRollupSums, histRollupPeaks)).Where("instance_id = ? AND bucket_seconds = ? AND bucket_start_at >= ? AND bucket_start_at < ? AND TIMESTAMPADD(SECOND,bucket_seconds,bucket_start_at) >= ?", id, source, rollupFloor(from, size), histCeil(to, size), a.Time().AddDate(0, 0, -int(policy.RollupDays)))
 		if gpu != "" {
 			q = q.Where("EXISTS (SELECT 1 FROM instance_gpu_metric_rollups g WHERE g.instance_id=instance_metric_rollups.instance_id AND g.node_id=instance_metric_rollups.node_id AND g.bucket_start_at=instance_metric_rollups.bucket_start_at AND g.bucket_seconds=instance_metric_rollups.bucket_seconds AND g.gpu_uuid = ?)", gpu)
 		}
@@ -408,14 +404,14 @@ func histHistory(c *gin.Context, a *platform.App) (any, error) {
 			out := rawMetricPoint(r, cards)
 			items = append(items, out)
 		} else {
-			out, e := histRollupPoint(db, id, r, size, source, gpu)
+			out, e := histRollupPoint(db, id, r, size, source, gpu, a.Time().AddDate(0, 0, -int(policy.RollupDays)))
 			if e != nil {
 				return nil, e
 			}
 			items = append(items, out)
 		}
 	}
-	metadata, e := histCoverage(db, id, from, to, size, source, gpu)
+	metadata, e := histCoverage(db, id, from, to, size, source, gpu, policy, a.Time())
 	if e != nil {
 		return nil, e
 	}
@@ -438,7 +434,7 @@ func histAverage(out platform.Row, sum, valid, name string) {
 		out[name] = nil
 	}
 }
-func histRollupPoint(db *gorm.DB, id uint64, r platform.Row, size, source int64, gpu string) (platform.Row, error) {
+func histRollupPoint(db *gorm.DB, id uint64, r platform.Row, size, source int64, gpu string, rollBefore time.Time) (platform.Row, error) {
 	fields := append([]string{"bucket_start_at", "node_id"}, histRollupSums...)
 	fields = append(fields, histRollupPeaks...)
 	out := histProject(r, fields)
@@ -451,7 +447,7 @@ func histRollupPoint(db *gorm.DB, id uint64, r platform.Row, size, source int64,
 	histAverage(out, "memory_used_byte_seconds", "memory_used_valid_seconds", "memory_used_avg_bytes")
 	histAverage(out, "memory_limit_byte_seconds", "memory_limit_valid_seconds", "memory_limit_avg_bytes")
 	histAverage(out, "memory_utilization_pct_seconds", "memory_utilization_valid_seconds", "memory_utilization_avg_pct")
-	q := db.Table("instance_gpu_metric_rollups").Select(histAggregateSelect("MIN(bucket_start_at)", histGPUSums, histGPUPeaks)+",gpu_uuid,MAX(gpu_model) AS gpu_model,MAX(gpu_memory_total_bytes) AS gpu_memory_total_bytes").Where("instance_id = ? AND node_id = ? AND bucket_seconds = ? AND bucket_start_at >= ? AND bucket_start_at < ?", id, r["node_id"], source, start, end).Group("node_id,gpu_uuid")
+	q := db.Table("instance_gpu_metric_rollups").Select(histAggregateSelect("MIN(bucket_start_at)", histGPUSums, histGPUPeaks)+",gpu_uuid,MAX(gpu_model) AS gpu_model,MAX(gpu_memory_total_bytes) AS gpu_memory_total_bytes").Where("instance_id = ? AND node_id = ? AND bucket_seconds = ? AND bucket_start_at >= ? AND bucket_start_at < ? AND TIMESTAMPADD(SECOND,bucket_seconds,bucket_start_at) >= ?", id, r["node_id"], source, start, end, rollBefore).Group("node_id,gpu_uuid")
 	if gpu != "" {
 		q = q.Where("gpu_uuid = ?", gpu)
 	}
@@ -469,10 +465,12 @@ func histRollupPoint(db *gorm.DB, id uint64, r platform.Row, size, source int64,
 	out["gpus"] = gpus
 	return out, nil
 }
-func histCoverage(db *gorm.DB, id uint64, from, to time.Time, size, source int64, gpu string) (platform.Row, error) {
+func histCoverage(db *gorm.DB, id uint64, from, to time.Time, size, source int64, gpu string, policy rollupPolicy, now time.Time) (platform.Row, error) {
+	rawBefore := now.AddDate(0, 0, -int(policy.RawDays))
+	rollBefore := now.AddDate(0, 0, -int(policy.RollupDays))
 	ranges := platform.Row{}
 	var rawRange platform.Row
-	q := db.Table("instance_metric_samples").Select("MIN(sampled_at) AS from_at,MAX(sampled_at) AS to_at").Where("instance_id = ?", id)
+	q := db.Table("instance_metric_samples").Select("MIN(sampled_at) AS from_at,MAX(sampled_at) AS to_at").Where("instance_id = ? AND sampled_at >= ?", id, rawBefore)
 	if gpu != "" {
 		q = q.Where("EXISTS (SELECT 1 FROM instance_gpu_metric_samples g WHERE g.sample_id=instance_metric_samples.id AND g.gpu_uuid=?)", gpu)
 	}
@@ -481,7 +479,7 @@ func histCoverage(db *gorm.DB, id uint64, from, to time.Time, size, source int64
 	}
 	ranges["raw"] = histProject(rawRange, []string{"from_at", "to_at"})
 	var rollRanges []platform.Row
-	rq := db.Table("instance_metric_rollups").Select("bucket_seconds,MIN(bucket_start_at) AS from_at,MAX(TIMESTAMPADD(SECOND,bucket_seconds,bucket_start_at)) AS to_at").Where("instance_id = ?", id)
+	rq := db.Table("instance_metric_rollups").Select("bucket_seconds,MIN(bucket_start_at) AS from_at,MAX(TIMESTAMPADD(SECOND,bucket_seconds,bucket_start_at)) AS to_at").Where("instance_id = ? AND bucket_seconds = ? AND TIMESTAMPADD(SECOND,bucket_seconds,bucket_start_at) >= ?", id, policy.Seconds, rollBefore)
 	if gpu != "" {
 		rq = rq.Where("EXISTS (SELECT 1 FROM instance_gpu_metric_rollups g WHERE g.instance_id=instance_metric_rollups.instance_id AND g.node_id=instance_metric_rollups.node_id AND g.bucket_start_at=instance_metric_rollups.bucket_start_at AND g.bucket_seconds=instance_metric_rollups.bucket_seconds AND g.gpu_uuid=?)", gpu)
 	}
@@ -492,7 +490,7 @@ func histCoverage(db *gorm.DB, id uint64, from, to time.Time, size, source int64
 	intervals := []rollupInterval{}
 	if size == 0 {
 		var samples []platform.Row
-		query := db.Table("instance_metric_samples").Select("id,window_start_at,window_end_at,cpu_sampled_at,cpu_window_seconds").Where("instance_id = ? AND ((window_end_at > ? AND window_start_at < ?) OR (cpu_sampled_at > ? AND TIMESTAMPADD(MICROSECOND,-CAST(cpu_window_seconds*1000000 AS SIGNED),cpu_sampled_at) < ?))", id, from, to, from, to)
+		query := db.Table("instance_metric_samples").Select("id,window_start_at,window_end_at,cpu_sampled_at,cpu_window_seconds").Where("instance_id = ? AND sampled_at >= ? AND ((window_end_at > ? AND window_start_at < ?) OR (cpu_sampled_at > ? AND TIMESTAMPADD(MICROSECOND,-CAST(cpu_window_seconds*1000000 AS SIGNED),cpu_sampled_at) < ?))", id, rawBefore, from, to, from, to)
 		if gpu != "" {
 			query = query.Where("EXISTS (SELECT 1 FROM instance_gpu_metric_samples g WHERE g.sample_id=instance_metric_samples.id AND g.gpu_uuid=?)", gpu)
 		}
@@ -511,7 +509,7 @@ func histCoverage(db *gorm.DB, id uint64, from, to time.Time, size, source int64
 		if gpu != "" {
 			table = "instance_gpu_metric_rollups"
 		}
-		q := db.Table(table).Select("coverage_intervals").Where("instance_id = ? AND bucket_seconds = ? AND bucket_start_at < ? AND TIMESTAMPADD(SECOND,bucket_seconds,bucket_start_at) > ?", id, source, to, from)
+		q := db.Table(table).Select("coverage_intervals").Where("instance_id = ? AND bucket_seconds = ? AND bucket_start_at < ? AND TIMESTAMPADD(SECOND,bucket_seconds,bucket_start_at) > ? AND TIMESTAMPADD(SECOND,bucket_seconds,bucket_start_at) >= ?", id, source, to, from, rollBefore)
 		if gpu != "" {
 			q = q.Where("gpu_uuid = ?", gpu)
 		}

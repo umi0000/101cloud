@@ -41,7 +41,7 @@ func TestMySQLPendingDebtBlocksAllNewSpending(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			p, err := accountPolicy(db, ac)
+			p, err := sessionCreditPolicy(db, debtRow(t, db, "usage_sessions", 2))
 			if err != nil {
 				return err
 			}

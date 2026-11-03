@@ -35,7 +35,7 @@ type nodeAllocatable struct {
 	ResidentDiskBytes   string  `json:"resident_disk_bytes"`
 }
 
-const nodeGPUColumns = "node_gpus.id, node_gpus.node_id, node_gpus.uuid, node_gpus.model, node_gpus.pci_address, node_gpus.memory_mib, node_gpus.max_allocations, node_gpus.gpu_price_version_id, node_gpus.status, node_gpus.last_seen_at, node_gpus.revision, node_gpus.created_at, node_gpus.updated_at, (SELECT COUNT(*) FROM gpu_allocations ga WHERE ga.gpu_id=node_gpus.id AND ga.active_slot=1) AS allocation_count, (SELECT COUNT(*) FROM gpu_allocations ga WHERE ga.gpu_id=node_gpus.id AND ga.status='reserved') AS reservation_count"
+const nodeGPUColumns = "node_gpus.id, node_gpus.node_id, node_gpus.uuid, node_gpus.model, node_gpus.pci_address, node_gpus.memory_mib, node_gpus.max_allocations, node_gpus.status, node_gpus.last_seen_at, node_gpus.revision, node_gpus.created_at, node_gpus.updated_at, (SELECT COUNT(*) FROM gpu_allocations ga WHERE ga.gpu_id=node_gpus.id AND ga.active_slot=1) AS allocation_count, (SELECT COUNT(*) FROM gpu_allocations ga WHERE ga.gpu_id=node_gpus.id AND ga.status='reserved') AS reservation_count"
 
 func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 	a.RegisterJob("node.probe", nodeInventoryJob)
@@ -56,10 +56,11 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 	}))
 	admin.POST("/nodes", platform.Handle(func(c *gin.Context) (any, error) {
 		var in struct {
-			Name        string           `json:"name"`
-			Connection  *nodeConnection  `json:"connection"`
-			Defaults    *nodeDefaults    `json:"defaults"`
-			Allocatable *nodeAllocatable `json:"allocatable"`
+			Name            string           `json:"name"`
+			Connection      *nodeConnection  `json:"connection"`
+			Defaults        *nodeDefaults    `json:"defaults"`
+			Allocatable     *nodeAllocatable `json:"allocatable"`
+			MetricsPolicyID string           `json:"metrics_policy_id"`
 		}
 		if err := platform.Decode(c, &in); err != nil {
 			return nil, err
@@ -69,6 +70,10 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 		}
 		if !textValid(in.Defaults.StoragePool, 255) || !codeValid(in.Defaults.ProjectName) || len(in.Defaults.ProjectName) > 63 {
 			return nil, invalid("默认存储池或项目名无效，请检查 defaults。")
+		}
+		metricsPolicyID, err := nodeMetricsPolicy(platform.DB(c, a), a, in.MetricsPolicyID)
+		if err != nil {
+			return nil, err
 		}
 		row, err := nodeCapacityChanges(*in.Allocatable)
 		if err != nil {
@@ -82,6 +87,7 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 			row[k] = v
 		}
 		row["name"] = in.Name
+		row["metrics_policy_id"] = metricsPolicyID
 		row["default_storage_pool"] = in.Defaults.StoragePool
 		row["default_project_name"] = in.Defaults.ProjectName
 		row["status"] = "maintenance"
@@ -108,6 +114,7 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 			Name                *string          `json:"name"`
 			AdministrativeState *string          `json:"administrative_state"`
 			Allocatable         *nodeAllocatable `json:"allocatable"`
+			MetricsPolicyID     string           `json:"metrics_policy_id"`
 		}
 		if err := platform.Decode(c, &in); err != nil {
 			return nil, err
@@ -121,6 +128,11 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 			return nil, err
 		}
 		changes := platform.Row{}
+		policyID, e := nodeMetricsPolicy(platform.DB(c, a), a, in.MetricsPolicyID)
+		if e != nil {
+			return nil, e
+		}
+		changes["metrics_policy_id"] = policyID
 		if in.Name != nil {
 			if !textValid(*in.Name, 128) {
 				return nil, invalid("节点名称不能为空且不能超过 128 个字符。")
@@ -236,7 +248,7 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 		db := platform.DB(c, a)
 		q := db.Table("node_gpus").Select(nodeGPUColumns).Where("node_gpus.node_id = ?", id)
 		resources := nodeResources(n["resources"])
-		return platform.ListMap(c, a, q, nil, func(r platform.Row) (platform.Row, error) { return nodeGPUDTO(db, r, n, resources) })
+		return platform.ListMap(c, a, q, nil, func(r platform.Row) (platform.Row, error) { return nodeGPUDTO(r, n, resources) })
 	}))
 	admin.GET("/nodes/:id/gpus/:gpu_id", platform.Handle(func(c *gin.Context) (any, error) {
 		r, n, e := nodeGPU(c, a, false)
@@ -244,13 +256,12 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 			return nil, e
 		}
 		platform.SetETag(c, r)
-		return nodeGPUDTO(platform.DB(c, a), r, n, nodeResources(n["resources"]))
+		return nodeGPUDTO(r, n, nodeResources(n["resources"]))
 	}))
 	admin.PATCH("/nodes/:id/gpus/:gpu_id", platform.Handle(func(c *gin.Context) (any, error) {
 		var in struct {
 			Status         *string `json:"status"`
 			MaxAllocations *uint64 `json:"max_allocations"`
-			PriceID        *string `json:"gpu_price_version_id"`
 		}
 		if e := platform.Decode(c, &in); e != nil {
 			return nil, e
@@ -281,35 +292,11 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 		if max < uint64(used) {
 			return nil, catalogCapacityError("gpu_in_use", "gpu", "gpus", "GPU 分配上限", "count", uint64(used), 0, max, "max_allocations", "请先安全释放有效、预留、释放中或状态未知的 GPU 分配，再降低上限。")
 		}
-		// gpu_price_version_id is a gpu-pricing policy_versions ID externally;
-		// node_gpus references the legacy gpu_price_versions source row.
-		priceID := platform.Uint(r["gpu_price_version_id"])
-		if in.PriceID != nil {
-			if _, priceID, e = platform.PolicySource(platform.DB(c, a), "gpu-pricing", *in.PriceID, true); e != nil {
-				return nil, e
-			}
-			changes["gpu_price_version_id"] = priceID
-		}
 		state := platform.Text(r["status"])
 		if in.Status != nil {
 			state = *in.Status
 		}
-		if priceID != 0 && (in.PriceID != nil || state == "available") {
-			price, e := platform.Get(platform.DB(c, a), "gpu_price_versions", priceID, true)
-			if e != nil {
-				return nil, e
-			}
-			if platform.Text(price["status"]) != "active" || platform.Stamp(price["effective_at"]).After(a.Time()) || platform.Text(price["gpu_model"]) != platform.Text(r["model"]) {
-				return nil, invalid("GPU 价格必须已发布、生效且匹配此 GPU 型号。")
-			}
-			if platform.Text(price["access_mode"]) == "exclusive" && max != 1 {
-				return nil, invalid("独占 GPU 价格要求 max_allocations 为 1。")
-			}
-		}
 		if state == "available" {
-			if priceID == 0 {
-				return nil, invalid("启用 GPU 前必须配置已发布的 GPU 价格。")
-			}
 			if platform.Text(r["status"]) == "missing" || platform.Text(r["status"]) == "error" || platform.Text(n["health"]) != "online" || platform.Stamp(n["connection_verified_at"]).IsZero() || !nodeGPUObservedHealthy(r, n) {
 				return nil, platform.E(409, "observation_incomplete", "启用 GPU 前需要已验证在线的节点及最新健康 GPU 观测，请检查节点与 GPU 状态。")
 			}
@@ -328,7 +315,7 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 		}
 		saved["reservation_count"] = uint64(reserved)
 		platform.SetETag(c, saved)
-		return nodeGPUDTO(platform.DB(c, a), saved, n, nodeResources(n["resources"]))
+		return nodeGPUDTO(saved, n, nodeResources(n["resources"]))
 	}))
 	admin.GET("/nodes/:id/unmanaged-instances", platform.Handle(func(c *gin.Context) (any, error) {
 		id, e := platform.ID(c, "id")
@@ -346,6 +333,21 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 			return out
 		})
 	}))
+}
+
+func nodeMetricsPolicy(db *gorm.DB, a *platform.App, value string) (uint64, error) {
+	id, e := platform.IDString(value)
+	if e != nil {
+		return 0, invalid("metrics_policy_id 必须为已发布的 metrics 策略 ID。")
+	}
+	policy, e := platform.Get(db, "policy_versions", id, false)
+	if e != nil {
+		return 0, e
+	}
+	if platform.Text(policy["kind"]) != "metrics" || platform.Text(policy["status"]) != "active" || platform.Stamp(policy["effective_at"]).After(a.Time()) {
+		return 0, invalid("metrics_policy_id 必须引用已发布且生效的 metrics 策略。")
+	}
+	return id, nil
 }
 
 func nodeConnectionChanges(a *platform.App, in nodeConnection) (platform.Row, error) {
@@ -471,7 +473,7 @@ func nodeCheckCommitments(db *gorm.DB, id uint64, capacity platform.Row) error {
 	return nil
 }
 func nodeDTO(r platform.Row) platform.Row {
-	p := platform.Public(r, "id", "name", "administrative_state", "health", "connection_verified_at", "resources_sampled_at", "last_heartbeat_at", "revision", "created_at", "updated_at")
+	p := platform.Public(r, "id", "name", "metrics_policy_id", "administrative_state", "health", "connection_verified_at", "resources_sampled_at", "last_heartbeat_at", "revision", "created_at", "updated_at")
 	p["connection"] = platform.Row{"endpoint": platform.Text(r["agent_endpoint"]), "server_cert_sha256": hex.EncodeToString([]byte(platform.Text(r["server_cert_sha256"]))), "has_credentials": true, "key_version": platform.Uint(r["key_version"])}
 	p["defaults"] = platform.Row{"storage_pool": platform.Text(r["default_storage_pool"]), "project_name": platform.Text(r["default_project_name"])}
 	p["allocatable"] = platform.Row{"vcpus": platform.Uint(r["allocatable_vcpus"]), "memory_bytes": strconv.FormatUint(platform.Uint(r["allocatable_memory_bytes"]), 10), "disk_bytes": strconv.FormatUint(platform.Uint(r["allocatable_disk_bytes"]), 10), "resident_vcpus": platform.Uint(r["resident_vcpu_budget"]), "resident_memory_bytes": strconv.FormatUint(platform.Uint(r["resident_memory_budget_bytes"]), 10), "resident_disk_bytes": strconv.FormatUint(platform.Uint(r["resident_disk_budget_bytes"]), 10)}
@@ -549,13 +551,8 @@ func nodeGPU(c *gin.Context, a *platform.App, lock bool) (platform.Row, platform
 	r["reservation_count"] = counts.ReservationCount
 	return r, n, nil
 }
-func nodeGPUDTO(db *gorm.DB, r, n platform.Row, resources map[string]any) (platform.Row, error) {
+func nodeGPUDTO(r, n platform.Row, resources map[string]any) (platform.Row, error) {
 	p := platform.Public(r, "id", "node_id", "uuid", "model", "pci_address", "memory_mib", "max_allocations", "status", "last_seen_at", "revision", "created_at", "updated_at")
-	price, e := platform.PolicyID(db, "gpu-pricing", r["gpu_price_version_id"])
-	if e != nil {
-		return nil, e
-	}
-	p["gpu_price_version_id"] = price
 	p["allocation_count"] = platform.Uint(r["allocation_count"])
 	p["reservation_count"] = platform.Uint(r["reservation_count"])
 	p["observed_at"] = nodeTime(n["resources_sampled_at"])

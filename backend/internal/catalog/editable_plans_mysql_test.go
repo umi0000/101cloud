@@ -37,6 +37,7 @@ func TestMySQLEditablePlansIndependentAndAtomic(t *testing.T) {
 			exec("CREATE TEMPORARY TABLE " + table + " (" + definition + ") ENGINE=InnoDB")
 		}
 		exec(`INSERT INTO policy_versions VALUES(1,'pricing','active','2000-01-01',1,JSON_OBJECT()),(2,'credit','active','2000-01-01',1,JSON_OBJECT()),(3,'gpu-idle','active','2000-01-01',1,'{"enabled":false,"min_timeout_seconds":60,"max_timeout_seconds":3600,"default_timeout_seconds":600,"allowed_actions":["detach_gpu"]}'),(4,'gpu-scheduling','active','2000-01-01',1,JSON_OBJECT())`)
+		exec(`INSERT INTO policy_versions VALUES(5,'metrics','active','2000-01-01',NULL,JSON_OBJECT())`)
 		exec(`INSERT INTO nodes VALUES(1,'active','online',NOW(6),'{"architecture":"x86_64"}')`)
 		exec(`INSERT INTO images VALUES(1,'active','container',JSON_OBJECT())`)
 		exec(`INSERT INTO network_pools VALUES(1,'active')`)
@@ -72,7 +73,7 @@ func TestMySQLEditablePlansIndependentAndAtomic(t *testing.T) {
 			}
 			return e.Data
 		}
-		payload := `{"code":"%s","version":"1","name":"Original","instance_type":"container","resources":{"vcpus":2,"memory_bytes":"4294967296","disk_bytes":"21474836480"},"gpu":{"count":0,"model":null,"access_mode":"exclusive","max_hourly_pt":"0"},"node_ids":["1"],"image_ids":["1"],"network_option_ids":["1"],"allowed_overrides":{},"policy_versions":{"pricing":"1","credit":"2","gpu-idle":"3","gpu-scheduling":"4"}}`
+		payload := `{"code":"%s","version":"1","name":"Original","instance_type":"container","resources":{"vcpus":2,"memory_bytes":"4294967296","disk_bytes":"21474836480"},"gpu":{"count":0,"model":null,"access_mode":"exclusive","max_hourly_pt":"0"},"node_ids":["1"],"image_ids":["1"],"network_option_ids":["1"],"allowed_overrides":{},"policy_versions":{"pricing":"1","credit":"2","gpu-idle":"3","gpu-scheduling":"4","metrics":"5"}}`
 		paths := []string{}
 		tags := []string{}
 		for _, code := range []string{"first", "second"} {

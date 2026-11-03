@@ -756,7 +756,7 @@ func runLifecycle(ctx context.Context, a *platform.App, j platform.Job) error {
 		}
 		timeout := uint64(30)
 		if platform.Text(p["reason"]) == "automatic_gpu_idle" {
-			policy, e := a.Policy(ctx, "gpu-idle")
+			policy, e := a.InstancePolicy(ctx, r, "gpu-idle")
 			if e != nil {
 				return e
 			}
@@ -791,7 +791,7 @@ func runLifecycle(ctx context.Context, a *platform.App, j platform.Job) error {
 			return skip()
 		}
 		if err != nil && action == "stop" && platform.Text(p["reason"]) == "automatic_gpu_idle" && !platform.Bool(p["force"]) {
-			policy, policyErr := a.Policy(ctx, "gpu-idle")
+			policy, policyErr := a.InstancePolicy(ctx, r, "gpu-idle")
 			if policyErr != nil {
 				return workerUnknown(ctx, a, j, r, policyErr)
 			}
@@ -812,7 +812,7 @@ func runLifecycle(ctx context.Context, a *platform.App, j platform.Job) error {
 					return workerUnknown(ctx, a, j, r, currentErr)
 				}
 				_, err = workerOperation(ctx, a, j, "state.idle-force-stop", func() (map[string]any, error) {
-					latestPolicy, e := a.Policy(ctx, "gpu-idle")
+					latestPolicy, e := a.InstancePolicy(ctx, current, "gpu-idle")
 					if e != nil {
 						return nil, e
 					}
@@ -1429,9 +1429,10 @@ func workerDeletedGPUFrame(frame map[string]any, r platform.Row, confirmedAt, no
 
 func runImport(ctx context.Context, a *platform.App, j platform.Job) error {
 	var p struct {
-		Owner    string `json:"owner_user_id"`
-		UUID     string `json:"incus_uuid"`
-		Approved Spec   `json:"approved_config"`
+		Owner          string            `json:"owner_user_id"`
+		UUID           string            `json:"incus_uuid"`
+		Approved       Spec              `json:"approved_config"`
+		PolicyVersions map[string]string `json:"policy_versions"`
 	}
 	if err := json.Unmarshal(j.Parameters, &p); err != nil {
 		return err
@@ -1595,7 +1596,7 @@ func runImport(ctx context.Context, a *platform.App, j platform.Job) error {
 		}
 		native["_import_task_id"] = rootID
 		var e error
-		imported, e = reserveImported(ctx, a, db, owner, p.Approved, native)
+		imported, e = reserveImported(ctx, a, db, owner, p.Approved, native, p.PolicyVersions)
 		if e != nil {
 			return e
 		}
@@ -1980,7 +1981,7 @@ func workerIdleStop(ctx context.Context, a *platform.App, r platform.Row) error 
 	if !platform.Bool(cfg["enabled"]) || platform.Text(cfg["action"]) != "stop_instance" {
 		return workerSkipped
 	}
-	policy, err := a.Policy(ctx, "gpu-idle")
+	policy, err := a.InstancePolicy(ctx, r, "gpu-idle")
 	if err != nil {
 		return err
 	}

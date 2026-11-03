@@ -68,9 +68,12 @@ func rows(db *gorm.DB, table string, where string, args ...any) ([]row, error) {
 	return r, platform.WrapDB(e)
 }
 func policyFor(db *gorm.DB, source uint64) (row, error) {
-	r, e := find(db, "policy_versions", "kind = 'credit' AND source_id = ? AND status IN ('active','retired') AND effective_at <= ?", source, now())
-	if e != nil {
+	r, e := find(db, "policy_versions", "kind = 'credit' AND source_id = ?", source)
+	if he, ok := e.(*platform.HTTPError); ok && he.Status == 404 {
 		return nil, conflict("policy_not_configured", "an explicit published credit policy is required")
+	}
+	if e != nil {
+		return nil, e
 	}
 	var cfg row
 	if e = json.Unmarshal([]byte(platform.Text(r["config"])), &cfg); e != nil {
@@ -80,32 +83,61 @@ func policyFor(db *gorm.DB, source uint64) (row, error) {
 	cfg["policy_version_id"] = r["id"]
 	return cfg, nil
 }
-func activePolicy(db *gorm.DB, kind string) (row, error) {
-	var r row
-	e := db.Table("policy_versions p").Select("p.*").Joins("JOIN platform_policy_bindings b ON b.policy_id = p.id AND b.kind = p.kind").Where("p.kind = ? AND p.status = 'active' AND p.effective_at <= ?", kind, now()).Take(&r).Error
-	if e != nil {
-		return nil, conflict("policy_not_configured", "required platform policy has not been published and bound")
-	}
-	return r, nil
-}
 func requireID(c *gin.Context) (uint64, error) { return platform.ID(c, "id") }
-func account(db *gorm.DB, user uint64, create bool) (row, error) {
+
+func validateAllowancePolicy(p row, at time.Time) error {
+	effective := stamp(p["effective_at"])
+	if platform.Text(p["kind"]) != "credit" || platform.Uint(p["source_id"]) == 0 || platform.Text(p["status"]) != "active" || effective.IsZero() || effective.After(at) {
+		return invalid("an active, effective credit policy version is required")
+	}
+	return nil
+}
+func account(db *gorm.DB, user uint64) (row, error) {
 	r, e := locked(db, "credit_accounts", "user_id = ?", user)
-	if e == nil || !create {
-		return r, e
+	if he, ok := e.(*platform.HTTPError); ok && he.Status == 404 {
+		return nil, conflict("policy_not_configured", "an explicit credit allowance account is required")
 	}
-	var n int64
-	if x := db.Table("credit_accounts").Where("user_id = ?", user).Count(&n).Error; x != nil {
-		return nil, x
+	return r, e
+}
+
+func usageAccount(db *gorm.DB, instance row) (row, error) {
+	if platform.Text(instance["billing_mode"]) != "admin_exempt" {
+		return account(db, platform.Uint(instance["user_id"]))
 	}
-	if n != 0 {
-		return nil, e
+	ac, e := locked(db, "credit_accounts", "user_id = ?", instance["user_id"])
+	if he, ok := e.(*platform.HTTPError); ok && he.Status == 404 {
+		return nil, nil
 	}
-	p, e := activePolicy(db, "credit")
+	return ac, e
+}
+
+// CreateAccount binds an independently selected allowance profile without granting funds.
+func CreateAccount(db *gorm.DB, user uint64, policyID string) (platform.Row, error) {
+	p, source, e := platform.PolicySource(db, "credit", policyID, true)
 	if e != nil {
 		return nil, e
 	}
-	return insert(db, "credit_accounts", row{"user_id": user, "credit_policy_version_id": platform.Uint(p["source_id"]), "status": "active", "version": 0})
+	if e = validateAllowancePolicy(p, now()); e != nil {
+		return nil, e
+	}
+	if _, e = validatePolicy("credit", json.RawMessage(platform.Text(p["config"]))); e != nil {
+		return nil, e
+	}
+	return insert(db, "credit_accounts", row{"user_id": user, "credit_policy_version_id": source, "status": "active", "version": 0})
+}
+
+func instanceCreditPolicy(db *gorm.DB, instance row) (row, error) {
+	// Economic source FKs are copied from the plan at admission and never follow
+	// the wallet allowance binding or subsequent plan edits.
+	return policyFor(db, platform.Uint(instance["credit_policy_version_id"]))
+}
+
+func sessionCreditPolicy(db *gorm.DB, session row) (row, error) {
+	instance, e := platform.Get(db, "instances", platform.Uint(session["instance_id"]), false)
+	if e != nil {
+		return nil, e
+	}
+	return instanceCreditPolicy(db, instance)
 }
 func accountPolicy(db *gorm.DB, a row) (row, error) {
 	return policyFor(db, platform.Uint(a["credit_policy_version_id"]))

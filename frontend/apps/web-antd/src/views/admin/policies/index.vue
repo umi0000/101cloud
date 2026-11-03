@@ -1,17 +1,17 @@
 <script lang="ts" setup>
 /**
  * 政策与定价（前端设计 7.8）：左侧 6 类政策，右侧配置档列表。
- * 点击配置档打开抽屉直接编辑：保存（PATCH）、设为平台默认（PUT 绑定）、删除（DELETE）；右上角新建配置档。
+ * 点击配置档打开抽屉直接编辑：保存（PATCH）、删除（DELETE）；右上角新建配置档。
  */
 import type { FormState } from './components/fields';
 
-import type { PlatformBindings, PolicyKind, PolicyVersion } from '#/api/types';
+import type { PolicyKind, PolicyVersion } from '#/api/types';
 
 import { computed, onMounted, ref, watch } from 'vue';
 
 import { Page } from '@vben/common-ui';
 
-import { Alert, Button, Card, Descriptions, DescriptionsItem, Drawer, Form, Menu, MenuItem, Space, Table, Tag, Tooltip } from 'ant-design-vue';
+import { Alert, Button, Card, Descriptions, DescriptionsItem, Drawer, Form, Menu, MenuItem, Space, Table } from 'ant-design-vue';
 
 import { listAll, nodesApi, policiesApi } from '#/api/backend';
 import { POLICY_KINDS } from '#/api/types';
@@ -41,14 +41,6 @@ const list = useCursorList<PolicyVersion>((q) => policiesApi.list(kind.value, q)
 watch(kind, () => list.reset());
 
 
-const bindings = useResource(() => policiesApi.bindings());
-async function reloadBindings() {
-  try {
-    await bindings.reload();
-  } catch (error) {
-    errorToast(error);
-  }
-}
 
 const columns = [
   { dataIndex: 'id', title: 'ID', width: 80 },
@@ -72,7 +64,6 @@ const current = computed(() => {
   const d = detail.data.value;
   return s && d && d.id === s.id && d.kind === s.kind ? d : null;
 });
-const isBound = computed(() => !!current.value && bindings.data.value?.bindings[current.value.kind] === current.value.id);
 
 const editState = ref<FormState>(emptyState('pricing'));
 const editSubmitted = ref(false);
@@ -120,25 +111,8 @@ async function save() {
   await Promise.all([reloadDetail(), afterWrite()]);
 }
 
-/* 设为平台默认：提交完整 6 项映射，只替换当前 kind。 */
-const defaultOpen = ref(false);
-const defaultAction = useAction();
-async function setDefault() {
-  const c = current.value;
-  const b = bindings.data.value;
-  if (!c || !b) return false;
-  const body: PlatformBindings['bindings'] = { ...b.bindings };
-  body[c.kind] = c.id;
-  const r = await defaultAction.run((key) => policiesApi.putBindings(body, { ifMatch: bindings.etag.value, key }), {
-    onConflict: reloadBindings,
-    success: '已设为平台默认',
-  });
-  if (!r) return false;
-  await reloadBindings();
-  return true;
-}
 
-/* 删除：平台默认或仍被引用时后端返回 409，提示后端 message。 */
+/* 删除：仍被引用时后端返回 409，提示后端 message。 */
 const removeOpen = ref(false);
 const removeAction = useAction();
 async function remove() {
@@ -185,7 +159,6 @@ async function onCreated(v: PolicyVersion) {
 
 onMounted(() => {
   void list.load();
-  void reloadBindings();
 });
 </script>
 
@@ -217,7 +190,6 @@ onMounted(() => {
               <span v-if="column.dataIndex === 'id'" class="font-mono">{{ record.id }}</span>
               <span v-else-if="column.key === 'code'" class="font-mono">{{ versionLabel(record as PolicyVersion) }}</span>
               <Space v-else-if="column.key === 'status'" :size="4" wrap>
-                <Tag v-if="bindings.data.value?.bindings[kind] === record.id" :bordered="false" color="blue">平台默认</Tag>
                 <StatusTag v-if="record.status === 'retired'" kind="catalogStatus" value="retired" />
               </Space>
               <span v-else-if="column.key === 'summary'" class="text-xs">{{ configSummary(record.kind, record.config) }}</span>
@@ -240,18 +212,7 @@ onMounted(() => {
     <Drawer v-model:open="drawerOpen" :title="current ? versionLabel(current) : '配置档'" :width="640">
       <template v-if="current" #extra>
         <Space>
-          <Tag v-if="isBound" :bordered="false" color="blue">平台默认</Tag>
-          <Tooltip v-else :title="current.status === 'active' ? '' : '已退役的配置档不能设为平台默认'">
-            <Button
-              :disabled="current.status !== 'active' || !bindings.data.value || !bindings.etag.value"
-              @click="defaultOpen = true"
-            >
-              设为平台默认
-            </Button>
-          </Tooltip>
-          <Tooltip :title="isBound ? '该配置档是平台默认，请先把其他配置档设为平台默认' : ''">
-            <Button danger :disabled="isBound" @click="removeOpen = true">删除</Button>
-          </Tooltip>
+          <Button danger @click="removeOpen = true">删除</Button>
           <Button :loading="saveAction.pending.value" type="primary" @click="save">保存</Button>
         </Space>
       </template>
@@ -281,17 +242,11 @@ onMounted(() => {
 
     <VersionEditor v-model:open="editorOpen" :gpu-models="gpuModels" :kind="editorKind" @created="onCreated" />
 
-    <ConfirmAction
-      v-model:open="defaultOpen"
-      :description="current ? `把 ${versionLabel(current)} 设为平台默认${POLICY_KIND_NAMES[current.kind]}。${current.kind === 'credit' ? '新账户使用这里的额度政策；已有账户不会自动切换。' : ''}` : ''"
-      :on-confirm="setDefault"
-      title="设为平台默认"
-    />
 
     <ConfirmAction
       v-model:open="removeOpen"
       danger
-      :description="current ? `删除 ${versionLabel(current)}。仍被套餐、实例、额度账户、GPU 或使用记录引用的配置档不能删除。` : ''"
+      :description="current ? `删除 ${versionLabel(current)}。仍被套餐、实例、额度账户、节点或使用记录引用的配置档不能删除。` : ''"
       ok-text="删除"
       :on-confirm="remove"
       title="删除配置档"

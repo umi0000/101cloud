@@ -25,7 +25,7 @@ func notify(db *gorm.DB, user uint64, kind, message, related string, id uint64) 
 func hasPayableInsufficiency(charge row) bool {
 	return platform.Text(charge["status"]) == "insufficient" && dec(charge["expected_pt"]).GreaterThan(dec(charge["settled_pt"]))
 }
-func detectExhaustion(db *gorm.DB, ac, p row, t time.Time) error {
+func detectExhaustion(db *gorm.DB, ac row, t time.Time) error {
 	left, _, e := balances(db, platform.Uint(ac["id"]))
 	if e != nil {
 		return e
@@ -34,26 +34,10 @@ func detectExhaustion(db *gorm.DB, ac, p row, t time.Time) error {
 	if e != nil {
 		return e
 	}
-	left = left.Sub(owed)
-	if left.IsPositive() {
+	if left.Sub(owed).IsPositive() {
 		return nil
 	}
-	var active int64
-	if e = db.Table("credit_enforcements").Where("account_id = ? AND status IN ('grace','stopping','unknown')", ac["id"]).Count(&active).Error; e != nil {
-		return e
-	}
-	if active > 0 {
-		return nil
-	}
-	instances, e := rows(db, "instances", "user_id = ? AND billing_mode = 'credit' AND product_type = 'elastic' AND deleted_at IS NULL AND (observed_state IN ('running','frozen','unknown') OR desired_state = 'running')", ac["user_id"])
-	if e != nil {
-		return e
-	}
-	if len(instances) == 0 {
-		return nil
-	}
-	// Exhaustion requires actual payable settlement debt. A nonzero hourly rate
-	// whose cumulative six-decimal charge is still zero is not exhausted.
+	// Only confirmed payable debt starts a shutdown clock, not a rounded-zero rate.
 	var debt row
 	if e = db.Table("usage_charges").Select("COALESCE(SUM(expected_pt),0) expected_pt, COALESCE(SUM(settled_pt),0) settled_pt").Where("account_id = ? AND status = 'insufficient'", ac["id"]).Take(&debt).Error; e != nil {
 		return e
@@ -62,59 +46,67 @@ func detectExhaustion(db *gorm.DB, ac, p row, t time.Time) error {
 	if !hasPayableInsufficiency(debt) {
 		return nil
 	}
-	// A stale native start must not manufacture a fresh grace period after a
-	// completed stop. Reuse the already-expired event while desired stays stopped.
-	for _, instance := range instances {
-		if platform.Text(instance["desired_state"]) != "stopped" || platform.Text(instance["observed_state"]) != "running" {
-			continue
-		}
-		var previous row
-		err := db.Table("credit_enforcements e").Select("e.*").Joins("JOIN credit_enforcement_instances m ON m.enforcement_id=e.id").Where("e.account_id=? AND e.status='completed' AND m.instance_id=?", ac["id"], instance["id"]).Order("e.id DESC").Take(&previous).Error
-		if err == gorm.ErrRecordNotFound {
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		proceed, err := CheckCreditStop(db.Statement.Context, db, platform.Uint(instance["id"]), platform.Uint(previous["id"]))
-		if err != nil {
-			return err
-		}
-		if proceed {
-			for _, member := range instances {
-				var count int64
-				if err := db.Table("credit_enforcement_instances").Where("enforcement_id=? AND instance_id=?", previous["id"], member["id"]).Count(&count).Error; err != nil {
-					return err
-				}
-				if count == 0 {
-					if err := db.Table("credit_enforcement_instances").Create(&row{"enforcement_id": previous["id"], "instance_id": member["id"], "status": "pending"}).Error; err != nil {
-						return err
-					}
-				} else if err := db.Table("credit_enforcement_instances").Where("enforcement_id=? AND instance_id=?", previous["id"], member["id"]).Updates(row{"status": "pending", "task_id": nil, "revision": gorm.Expr("revision+1")}).Error; err != nil {
-					return err
-				}
-			}
-			return nil
-		}
-	}
-	grace := platform.Uint(p["shutdown_grace_seconds"])
-	if grace == 0 || grace > 86400 {
-		return invalid("configured shutdown grace is required")
-	}
-	event, e := insert(db, "credit_enforcements", row{"account_id": ac["id"], "user_id": ac["user_id"], "policy_version_id": ac["credit_policy_version_id"], "status": "grace", "exhausted_at": t, "shutdown_deadline": t.Add(time.Duration(grace) * time.Second), "policy_snapshot": jsonValue(p)})
+	instances, e := rows(db.Order("id"), "instances", "user_id = ? AND billing_mode = 'credit' AND product_type = 'elastic' AND deleted_at IS NULL AND (observed_state IN ('running','frozen','unknown') OR desired_state = 'running')", ac["user_id"])
 	if e != nil {
 		return e
 	}
-	for _, i := range instances {
-		if e = db.Table("credit_enforcement_instances").Create(&row{"enforcement_id": event["id"], "instance_id": i["id"], "status": "pending"}).Error; e != nil {
+	for _, instance := range instances {
+		// Historic events keep their membership, snapshot and deadline even when
+		// their old wallet profile differs from the instance's frozen profile.
+		var active int64
+		if e = db.Table("credit_enforcements e").Joins("JOIN credit_enforcement_instances m ON m.enforcement_id=e.id").Where("e.account_id=? AND m.instance_id=? AND e.status IN ('grace','stopping','unknown')", ac["id"], instance["id"]).Count(&active).Error; e != nil {
+			return e
+		}
+		if active > 0 {
+			continue
+		}
+		if platform.Text(instance["desired_state"]) == "stopped" && platform.Text(instance["observed_state"]) == "running" {
+			var previous row
+			err := db.Table("credit_enforcements e").Select("e.*").Joins("JOIN credit_enforcement_instances m ON m.enforcement_id=e.id").Where("e.account_id=? AND e.status='completed' AND m.instance_id=?", ac["id"], instance["id"]).Order("e.id DESC").Take(&previous).Error
+			if err != nil && err != gorm.ErrRecordNotFound {
+				return err
+			}
+			if err == nil {
+				proceed, err := CheckCreditStop(db.Statement.Context, db, platform.Uint(instance["id"]), platform.Uint(previous["id"]))
+				if err != nil {
+					return err
+				}
+				if proceed {
+					continue
+				}
+			}
+		}
+		p, e := instanceCreditPolicy(db, instance)
+		if e != nil {
+			return e
+		}
+		var event row
+		err := db.Table("credit_enforcements").Where("account_id=? AND policy_version_id=? AND status IN ('grace','stopping','unknown')", ac["id"], p["source_id"]).Take(&event).Error
+		if err != nil && err != gorm.ErrRecordNotFound {
+			return err
+		}
+		if err == gorm.ErrRecordNotFound {
+			grace := platform.Uint(p["shutdown_grace_seconds"])
+			if grace == 0 || grace > 86400 {
+				return invalid("configured shutdown grace is required")
+			}
+			event, e = insert(db, "credit_enforcements", row{"account_id": ac["id"], "user_id": ac["user_id"], "policy_version_id": p["source_id"], "status": "grace", "exhausted_at": t, "shutdown_deadline": t.Add(time.Duration(grace) * time.Second), "policy_snapshot": jsonValue(p)})
+			if e != nil {
+				return e
+			}
+			n, e := insert(db, "notifications", row{"user_id": ac["user_id"], "type": "credit_exhausted", "message": fmt.Sprintf("Credit exhausted. Save your data and stop the affected elastic instances now. After %d seconds the platform will force-stop them. Unsaved memory and in-flight writes may be lost. Instances and disk data will NOT be deleted. Custom/admin-exempt instances are unaffected.", grace), "related_type": "credit_enforcement", "related_id": event["id"]})
+			if e != nil {
+				return e
+			}
+			if e = db.Table("credit_enforcements").Where("id=?", event["id"]).Update("notification_id", n["id"]).Error; e != nil {
+				return e
+			}
+		}
+		if e = db.Table("credit_enforcement_instances").Create(&row{"enforcement_id": event["id"], "instance_id": instance["id"], "status": "pending"}).Error; e != nil {
 			return e
 		}
 	}
-	n, e := insert(db, "notifications", row{"user_id": ac["user_id"], "type": "credit_exhausted", "message": fmt.Sprintf("Credit exhausted. Save your data and stop your elastic instances now. After %d seconds the platform will force-stop them. Unsaved memory and in-flight writes may be lost. Instances and disk data will NOT be deleted. Custom/admin-exempt instances are unaffected.", grace), "related_type": "credit_enforcement", "related_id": event["id"]})
-	if e != nil {
-		return e
-	}
-	return db.Table("credit_enforcements").Where("id = ?", event["id"]).Update("notification_id", n["id"]).Error
+	return nil
 }
 
 // CheckCreditStop is the last durable gate immediately before an instance worker
@@ -161,7 +153,7 @@ func CheckCreditStop(ctx context.Context, db *gorm.DB, instanceID, eventID uint6
 		}
 		left = left.Sub(owed)
 		var replacements int64
-		if e = db.Table("credit_enforcements").Where("account_id = ? AND id <> ? AND status IN ('grace','stopping','unknown')", ac["id"], eventID).Count(&replacements).Error; e != nil {
+		if e = db.Table("credit_enforcements e").Joins("JOIN credit_enforcement_instances m ON m.enforcement_id=e.id").Where("e.account_id = ? AND e.id <> ? AND e.status IN ('grace','stopping','unknown') AND (e.policy_version_id = ? OR m.instance_id = ?)", ac["id"], eventID, event["policy_version_id"], instanceID).Count(&replacements).Error; e != nil {
 			return false, e
 		}
 		if !canReactivateCompletedEvent(event, instance, money(left), replacements > 0, at) {
@@ -316,7 +308,7 @@ func enforceAll(ctx context.Context, a *platform.App) error {
 		EventID    uint64
 		InstanceID uint64
 	}
-	if e := a.DB.WithContext(ctx).Raw("SELECT e.id AS event_id,i.id AS instance_id FROM credit_enforcements e JOIN credit_enforcement_instances m ON m.enforcement_id=e.id JOIN instances i ON i.id=m.instance_id WHERE e.status='completed' AND i.product_type='elastic' AND i.billing_mode='credit' AND i.desired_state='stopped' AND i.observed_state='running' AND i.deleted_at IS NULL AND e.id=(SELECT MAX(newer.id) FROM credit_enforcements newer WHERE newer.account_id=e.account_id AND newer.status='completed')").Scan(&late).Error; e != nil {
+	if e := a.DB.WithContext(ctx).Raw("SELECT e.id AS event_id,i.id AS instance_id FROM credit_enforcements e JOIN credit_enforcement_instances m ON m.enforcement_id=e.id JOIN instances i ON i.id=m.instance_id WHERE e.status='completed' AND i.product_type='elastic' AND i.billing_mode='credit' AND i.desired_state='stopped' AND i.observed_state='running' AND i.deleted_at IS NULL AND e.id=(SELECT MAX(newer.id) FROM credit_enforcements newer JOIN credit_enforcement_instances nm ON nm.enforcement_id=newer.id WHERE newer.account_id=e.account_id AND newer.status='completed' AND nm.instance_id=i.id)").Scan(&late).Error; e != nil {
 		return e
 	}
 	for _, item := range late {
@@ -524,7 +516,7 @@ func reconcileEvent(ctx context.Context, a *platform.App, id uint64) error {
 			continue
 		}
 		if e = a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
-			if _, e := account(db, platform.Uint(i["user_id"]), false); e != nil {
+			if _, e := account(db, platform.Uint(i["user_id"])); e != nil {
 				return e
 			}
 			instance, e := platform.Get(db, "instances", platform.Uint(i["id"]), true)

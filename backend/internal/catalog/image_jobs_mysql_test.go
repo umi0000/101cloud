@@ -62,6 +62,7 @@ func newImageJobFixture(t *testing.T, handler http.HandlerFunc) *imageJobFixture
 	a := platform.New(db, platform.Config{MasterKey: make([]byte, 32), NodeAllowCIDRs: []netip.Prefix{netip.MustParsePrefix("127.0.0.0/8")}})
 	for _, statement := range []string{
 		"INSERT INTO users(id,username,password_hash,role,status) VALUES(1,'image-admin','unused-test-hash','admin','active')",
+		"INSERT INTO policy_versions(id,kind,code,version,config,status,effective_at,created_by_user_id) VALUES(1,'metrics','image-test','v1',JSON_OBJECT(),'active','2000-01-01',1)",
 		"INSERT INTO images(id,code,version,name,source_type,fingerprint,architecture,image_type,gpu_ready,os_name,os_release,properties,status,created_by_user_id) VALUES(1,'linux','test','Linux','local',UNHEX('" + imageJobTestFingerprint + "'),'x86_64','container',FALSE,'Linux','test',JSON_OBJECT(),'active',1)",
 	} {
 		if err := db.Exec(statement).Error; err != nil {
@@ -84,7 +85,7 @@ func (f *imageJobFixture) selection(source string, migrated bool) (platform.Job,
 		f.t.Fatal(err)
 	}
 	pin := sha256.Sum256(server.Certificate().Raw)
-	n := platform.Row{"id": node, "name": fmt.Sprintf("node-%d", node), "agent_endpoint": server.URL, "token_ciphertext": token, "key_version": 1, "server_cert_sha256": pin[:], "default_storage_pool": "default", "default_project_name": "default", "allocatable_vcpus": 4, "allocatable_memory_bytes": 1, "allocatable_disk_bytes": 1, "resident_vcpu_budget": 4, "resident_memory_budget_bytes": 1, "resident_disk_budget_bytes": 1, "status": "active"}
+	n := platform.Row{"id": node, "name": fmt.Sprintf("node-%d", node), "metrics_policy_id": 1, "agent_endpoint": server.URL, "token_ciphertext": token, "key_version": 1, "server_cert_sha256": pin[:], "default_storage_pool": "default", "default_project_name": "default", "allocatable_vcpus": 4, "allocatable_memory_bytes": 1, "allocatable_disk_bytes": 1, "resident_vcpu_budget": 4, "resident_memory_budget_bytes": 1, "resident_disk_budget_bytes": 1, "status": "active"}
 	if err = f.db.Table("nodes").Create(&n).Error; err != nil {
 		f.t.Fatal(err)
 	}

@@ -14,6 +14,9 @@ import type {
   NetworkOption,
   Node,
   NodeGPU,
+  PolicyKind,
+  PolicyVersion,
+  PolicyVersions,
 } from '#/api/types';
 
 import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue';
@@ -34,16 +37,19 @@ import {
   Textarea,
 } from 'ant-design-vue';
 
-import { catalogApi, listAll, nodesApi } from '#/api/backend';
-import { CUSTOM_ACTIONS, GPU_USER_PERMISSIONS } from '#/api/types';
+import { catalogApi, listAll, nodesApi, policiesApi } from '#/api/backend';
+import { CUSTOM_ACTIONS, GPU_USER_PERMISSIONS, POLICY_KINDS } from '#/api/types';
 import { errorToast } from '#/composables/api';
-import { CUSTOM_ACTION_NAMES, enumLabel, GPU_PERMISSION_NAMES } from '#/locales/enums';
+import { CUSTOM_ACTION_NAMES, enumLabel, GPU_PERMISSION_NAMES, POLICY_KIND_NAMES } from '#/locales/enums';
 import { bytesToGib, formatMib, formatPt, gibToBytes, PT_PATTERN } from '#/utils/format';
 
 import { ACCESS_MODE_NAMES } from './shared';
 
 const props = defineProps<{ initial?: CustomConfig | null }>();
-const emit = defineEmits<{ 'update:value': [value: CustomConfig | null] }>();
+const emit = defineEmits<{
+  'update:value': [value: CustomConfig | null];
+  'update:policyVersions': [value: PolicyVersions];
+}>();
 
 interface FormState {
   access_mode: AccessMode;
@@ -93,6 +99,25 @@ const gpuOptions = shallowRef<GPUOption[]>([]);
 const nodes = shallowRef<Node[]>([]);
 const nodeGPUs = shallowRef<NodeGPU[]>([]);
 const loading = ref(false);
+const profiles = shallowRef<PolicyVersion[]>([]);
+const policy = reactive<PolicyVersions>({});
+const requiredPolicies = computed<PolicyKind[]>(() => [
+  'pricing', 'credit', 'metrics',
+  ...(form.instance_type === 'container' ? ['gpu-idle' as const, 'gpu-scheduling' as const] : []),
+  ...(form.gpu_count > 0 ? ['gpu-pricing' as const] : []),
+]);
+function policyUsable(kind: PolicyKind, p: PolicyVersion): boolean {
+  return p.kind === kind && p.status === 'active' && (!p.effective_at || Date.parse(p.effective_at) <= Date.now())
+    && (kind !== 'gpu-pricing' || (p.config.gpu_model === form.gpu_model && p.config.access_mode === form.access_mode));
+}
+function policyOptions(kind: PolicyKind) {
+  return profiles.value.filter((p) => policyUsable(kind, p)).map((p) => ({
+    label: `${p.code} v${p.version}${kind === 'gpu-pricing' ? ` · ${formatPt(String(p.config.gpu_hourly_pt))} pt/h` : ''}`,
+    value: p.id,
+  }));
+}
+const selectedPolicies = computed<PolicyVersions>(() => Object.fromEntries(requiredPolicies.value.map((kind) => [kind, policy[kind]])));
+watch(selectedPolicies, (v) => emit('update:policyVersions', { ...v }), { immediate: true });
 const imagesLoading = ref(false);
 const imageProject = computed(() => form.network_option_id
   ? networks.value.find((n) => n.id === form.network_option_id)?.project_name
@@ -101,12 +126,14 @@ const imageProject = computed(() => form.network_option_id
 onMounted(async () => {
   loading.value = true;
   try {
-    const [n, t] = await Promise.all([
+    const [n, t, p] = await Promise.all([
       listAll(nodesApi.list),
       listAll(catalogApi.templates),
+      Promise.all(POLICY_KINDS.map((kind) => listAll((q) => policiesApi.list(kind, q)))),
     ]);
     nodes.value = n;
     templates.value = t.filter((x) => x.status === 'active');
+    profiles.value = p.flat();
   } catch (error) {
     errorToast(error);
   } finally {
@@ -238,7 +265,7 @@ const templateOptions = computed(() =>
   templates.value.map((t) => ({ label: `${t.name}（${t.code} v${t.version}）`, value: t.id })),
 );
 
-/** GPU 选项按 model + access_mode 去重；选中时同时设置 access_mode 与默认单价上限。 */
+/** GPU 选项按 model + access_mode 去重；单价由显式选择的 GPU 定价配置档决定。 */
 const gpuChoice = computed({
   get: () => (form.gpu_model ? `${form.gpu_model}\u0000${form.access_mode}` : undefined),
   set: (key: string | undefined) => {
@@ -246,7 +273,6 @@ const gpuChoice = computed({
     if (!opt) return;
     form.gpu_model = opt.model;
     form.access_mode = opt.access_mode;
-    form.max_hourly_pt = opt.gpu_hourly_pt;
   },
 });
 const gpuChoiceOptions = computed(() => {
@@ -257,7 +283,7 @@ const gpuChoiceOptions = computed(() => {
     if (seen.has(key)) continue;
     seen.add(key);
     out.push({
-      label: `${o.model} · ${ACCESS_MODE_NAMES[o.access_mode]} · ${formatPt(o.gpu_hourly_pt)} pt/h · 显存 ${formatMib(o.memory_mib)} · ${o.availability === 'available' ? '有货' : '暂无'}`,
+      label: `${o.model} · ${ACCESS_MODE_NAMES[o.access_mode]} · 显存 ${formatMib(o.memory_mib)} · ${o.availability === 'available' ? '有货' : '暂无'}`,
       value: key,
     });
   }
@@ -312,6 +338,9 @@ function bytesOrNull(gib: number): null | string {
 
 const problems = computed(() => {
   const out: string[] = [];
+  for (const kind of requiredPolicies.value) {
+    if (!profiles.value.some((p) => p.id === policy[kind] && policyUsable(kind, p))) out.push(`请选择已生效且兼容的${POLICY_KIND_NAMES[kind]}配置档`);
+  }
   if (!form.node_id) out.push('请选择节点');
   if (!form.image_id) out.push('请选择镜像');
   else if (imagesLoading.value || !images.value.some((i) => i.id === form.image_id)) out.push('所选节点的镜像尚未就绪，请重新选择');
@@ -475,6 +504,11 @@ watch(value, (v) => emit('update:value', v), { immediate: true });
           </FormItem>
         </Col>
       </template>
+      <Col v-for="kind in requiredPolicies" :key="kind" :span="12">
+        <FormItem :label="POLICY_KIND_NAMES[kind]" required>
+          <Select v-model:value="policy[kind]" :loading="loading" :options="policyOptions(kind)" placeholder="显式选择已生效配置档" />
+        </FormItem>
+      </Col>
       <Col :span="12">
         <FormItem label="初始化模板（可选）">
           <Select

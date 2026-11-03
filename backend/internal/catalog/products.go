@@ -65,15 +65,15 @@ func registerProducts(a *platform.App, user, admin *gin.RouterGroup) {
 		return planDTO(platform.DB(c, a), r)
 	}))
 	user.GET("/catalog/images", platform.Handle(func(c *gin.Context) (any, error) { return imageList(c, a, false) }))
-	user.GET("/catalog/gpu-options", platform.Handle(func(c *gin.Context) (any, error) {
-		// Option IDs are gpu-pricing policy_versions IDs, the value accepted by plans and quotes.
-		inner := platform.DB(c, a).Table("gpu_price_versions p").Select("pv.id,p.gpu_model AS model,p.access_mode,p.gpu_hourly_pt,p.created_at,(SELECT MAX(g.memory_mib) FROM node_gpus g WHERE g.gpu_price_version_id=p.id) AS memory_mib,CASE WHEN EXISTS (SELECT 1 FROM node_gpus g JOIN nodes n ON n.id=g.node_id WHERE g.gpu_price_version_id=p.id AND g.status='available' AND n.administrative_state='active' AND n.health='online') THEN 'available' ELSE 'unavailable' END AS availability").Joins("JOIN policy_versions pv ON pv.kind='gpu-pricing' AND pv.source_id=p.id").Where("p.status='active' AND p.effective_at<=?", a.Time())
+	admin.GET("/catalog/gpu-options", platform.Handle(func(c *gin.Context) (any, error) {
+		// Administrators explicitly select profiles for provisioning; users use their plan's frozen binding.
+		inner := platform.DB(c, a).Table("gpu_price_versions p").Select("pv.id,p.gpu_model AS model,p.access_mode,p.gpu_hourly_pt,p.created_at,(SELECT MAX(g.memory_mib) FROM node_gpus g WHERE g.model=p.gpu_model) AS memory_mib,CASE WHEN EXISTS (SELECT 1 FROM node_gpus g JOIN nodes n ON n.id=g.node_id WHERE g.model=p.gpu_model AND g.status='available' AND n.administrative_state='active' AND n.health='online') THEN 'available' ELSE 'unavailable' END AS availability").Joins("JOIN policy_versions pv ON pv.kind='gpu-pricing' AND pv.source_id=p.id").Where("p.status='active' AND p.effective_at<=? AND pv.status='active' AND pv.effective_at<=?", a.Time(), a.Time())
 		if s := c.Query("node_id"); s != "" {
 			id, e := platform.IDString(s)
 			if e != nil {
 				return nil, e
 			}
-			inner = inner.Where("EXISTS (SELECT 1 FROM node_gpus g WHERE g.gpu_price_version_id=p.id AND g.node_id=?)", id)
+			inner = inner.Where("EXISTS (SELECT 1 FROM node_gpus g WHERE g.model=p.gpu_model AND g.node_id=?)", id)
 		}
 		return listProducts(c, a, platform.DB(c, a).Table("(?) AS options", inner), []string{"node_id"})
 	}))
@@ -422,12 +422,24 @@ func planValues(c *gin.Context, a *platform.App, b planInput, publish bool) (pla
 	if e := validPlanGPU(b.GPU, b.InstanceType, platform.Uint(object(b.AllowedOverrides["gpu_count"])["max"])); e != nil {
 		return nil, e
 	}
+	if e := requirePlanPolicies(b.PolicyVersions, b.InstanceType, b.GPU.Model != nil); e != nil {
+		return nil, e
+	}
 	pol, e := resolvePolicies(c.Request.Context(), platform.DB(c, a), a, b.PolicyVersions, publish)
 	if e != nil {
 		return nil, e
 	}
-	if b.GPU.Model != nil && pol["gpu-pricing"] == nil {
-		return nil, invalid("GPU policy required")
+	if b.GPU.Model != nil {
+		price, err := platform.Get(platform.DB(c, a), "gpu_price_versions", platform.Uint(pol["gpu-pricing"]["source_id"]), false)
+		if err != nil {
+			return nil, err
+		}
+		if platform.Text(price["gpu_model"]) != *b.GPU.Model || platform.Text(price["access_mode"]) != b.GPU.AccessMode {
+			return nil, invalid("GPU 定价策略必须匹配套餐的 GPU 型号和访问模式。")
+		}
+		if publish && (platform.Text(price["status"]) != "active" || platform.Stamp(price["effective_at"]).After(a.Time())) {
+			return nil, missingReference("published GPU pricing profile")
+		}
 	}
 	policy, actions, permissions, e := planGPUConfiguration(b, pol)
 	if e != nil {
@@ -455,7 +467,11 @@ func planValues(c *gin.Context, a *platform.App, b planInput, publish bool) (pla
 	if b.GPU.Model != nil {
 		model = *b.GPU.Model
 	}
-	return platform.Row{"code": b.Code, "version": b.Version, "name": b.Name, "image_type": b.InstanceType, "vcpus": b.Resources.VCPUs, "memory_bytes": mustUnsigned(b.Resources.MemoryBytes), "disk_bytes": mustUnsigned(b.Resources.DiskBytes), "gpu_count": b.GPU.Count, "gpu_model": model, "gpu_access_mode": b.GPU.AccessMode, "gpu_max_hourly_pt": policy.Rebalance.MaxHourlyPT, "gpu_policy": jsonString(policy), "allowed_user_actions": jsonString(actions), "gpu_user_permissions": jsonString(permissions), "pricing_version_id": platform.Uint(pol["pricing"]["source_id"]), "credit_policy_version_id": platform.Uint(pol["credit"]["source_id"]), "idle_policy_version_id": platform.Uint(pol["gpu-idle"]["source_id"]), "init_template_version_id": template, "init_parameters": "{}", "allow_residency": false, "status": "disabled", "policy_versions": jsonString(b.PolicyVersions), "allowed_overrides": jsonString(b.AllowedOverrides)}, nil
+	var idleSource any
+	if pol["gpu-idle"] != nil {
+		idleSource = platform.Uint(pol["gpu-idle"]["source_id"])
+	}
+	return platform.Row{"code": b.Code, "version": b.Version, "name": b.Name, "image_type": b.InstanceType, "vcpus": b.Resources.VCPUs, "memory_bytes": mustUnsigned(b.Resources.MemoryBytes), "disk_bytes": mustUnsigned(b.Resources.DiskBytes), "gpu_count": b.GPU.Count, "gpu_model": model, "gpu_access_mode": b.GPU.AccessMode, "gpu_max_hourly_pt": policy.Rebalance.MaxHourlyPT, "gpu_policy": jsonString(policy), "allowed_user_actions": jsonString(actions), "gpu_user_permissions": jsonString(permissions), "pricing_version_id": platform.Uint(pol["pricing"]["source_id"]), "credit_policy_version_id": platform.Uint(pol["credit"]["source_id"]), "idle_policy_version_id": idleSource, "init_template_version_id": template, "init_parameters": "{}", "allow_residency": false, "status": "disabled", "policy_versions": jsonString(b.PolicyVersions), "allowed_overrides": jsonString(b.AllowedOverrides)}, nil
 }
 func savePlanRelations(db *gorm.DB, id uint64, b planInput) error {
 	for _, v := range []struct {

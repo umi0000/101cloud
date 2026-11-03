@@ -29,10 +29,15 @@ type gpuAutomaticPolicy struct {
 	} `json:"rebalance"`
 }
 
+type gpuPollKey struct {
+	Node   uint64
+	Policy string
+}
+
 var gpuPollState = struct {
 	sync.Mutex
-	next time.Time
-}{}
+	next map[gpuPollKey]time.Time
+}{next: map[gpuPollKey]time.Time{}}
 
 // The detach mirror deliberately excludes stop_instance. Read that saved action
 // explicitly so an idle-stop-only policy is still evaluated without enabling detach.
@@ -42,48 +47,54 @@ var gpuHighWindowConflict = clause.OnConflict{DoUpdates: clause.AssignmentColumn
 var gpuIdleWindowConflict = clause.OnConflict{DoUpdates: clause.AssignmentColumns([]string{"agent_boot_id", "runtime_started_at", "last_sequence", "last_sampled_at", "idle_since", "updated_at"})}
 
 func evaluateGPU(ctx context.Context, a *platform.App) error {
-	scheduling, err := a.Policy(ctx, "gpu-scheduling")
-	if err != nil {
-		return err
-	}
-	idle, err := a.Policy(ctx, "gpu-idle")
-	if err != nil {
-		return err
-	}
-	interval := platform.Uint(scheduling["poll_interval_seconds"])
-	maxAge := platform.Uint(scheduling["metrics_max_age_seconds"])
-	if interval == 0 || maxAge == 0 {
-		return platform.E(422, "invalid_policy", "GPU sampling intervals are required")
-	}
-	gpuPollState.Lock()
-	if a.Time().Before(gpuPollState.next) {
-		gpuPollState.Unlock()
-		return nil
-	}
-	gpuPollState.next = a.Time().Add(time.Duration(interval) * time.Second)
-	gpuPollState.Unlock()
 	var nodes []struct{ ID uint64 }
-	if err = a.DB.WithContext(ctx).Table("nodes").Select("id").Where("administrative_state='active' AND EXISTS (SELECT 1 FROM node_gpus ng WHERE ng.node_id=nodes.id)").Find(&nodes).Error; err != nil {
+	if err := a.DB.WithContext(ctx).Table("nodes").Select("id").Where("administrative_state='active' AND EXISTS (SELECT 1 FROM node_gpus ng WHERE ng.node_id=nodes.id)").Find(&nodes).Error; err != nil {
 		return err
 	}
 	var failures []error
-	// Bounded sequential resource poll; each call has an independent deadline.
 	for _, n := range nodes {
-		call, cancel := context.WithTimeout(ctx, 15*time.Second)
-		e := sampleGPUResources(call, a, n.ID, scheduling)
-		cancel()
-		if e != nil {
-			failures = append(failures, e)
+		var candidates []platform.Row
+		if err := a.DB.WithContext(ctx).Table("instances").Select("*,JSON_UNQUOTE(JSON_EXTRACT(policy_versions,'$.\"gpu-scheduling\"')) AS scheduling_policy_id").Where(gpuAutomaticCandidateFilter, n.ID).Find(&candidates).Error; err != nil {
+			failures = append(failures, err)
 			continue
 		}
-		var ids []uint64
-		if e = a.DB.WithContext(ctx).Table("instances").Where(gpuAutomaticCandidateFilter, n.ID).Pluck("id", &ids).Error; e != nil {
-			failures = append(failures, e)
-			continue
+		groups := map[string][]platform.Row{}
+		for _, instance := range candidates {
+			id := platform.Text(instance["scheduling_policy_id"])
+			groups[id] = append(groups[id], instance)
 		}
-		for _, id := range ids {
-			if e = evaluateGPUInstance(ctx, a, id, idle, scheduling, maxAge); e != nil {
-				failures = append(failures, e)
+		for policyID, instances := range groups {
+			scheduling, err := a.Policy(ctx, "gpu-scheduling", policyID)
+			if err != nil {
+				failures = append(failures, err)
+				continue
+			}
+			interval := platform.Uint(scheduling["poll_interval_seconds"])
+			if interval == 0 || platform.Uint(scheduling["metrics_max_age_seconds"]) == 0 {
+				failures = append(failures, platform.E(422, "invalid_policy", "GPU sampling intervals are required"))
+				continue
+			}
+			key := gpuPollKey{Node: n.ID, Policy: policyID}
+			gpuPollState.Lock()
+			due := !a.Time().Before(gpuPollState.next[key])
+			if due {
+				gpuPollState.next[key] = a.Time().Add(time.Duration(interval) * time.Second)
+			}
+			gpuPollState.Unlock()
+			if !due {
+				continue
+			}
+			call, cancel := context.WithTimeout(ctx, 15*time.Second)
+			err = sampleGPUResources(call, a, n.ID, policyID, scheduling)
+			cancel()
+			if err != nil {
+				failures = append(failures, err)
+				continue
+			}
+			for _, instance := range instances {
+				if err = evaluateGPUInstance(ctx, a, platform.Uint(instance["id"])); err != nil {
+					failures = append(failures, err)
+				}
 			}
 		}
 	}
@@ -96,7 +107,7 @@ func metricDecimal(v any) (decimal.Decimal, bool) {
 	d, e := decimal.NewFromString(platform.Text(v))
 	return d, e == nil
 }
-func sampleGPUResources(ctx context.Context, a *platform.App, node uint64, policy platform.Row) error {
+func sampleGPUResources(ctx context.Context, a *platform.App, node uint64, policyID string, policy platform.Row) error {
 	raw, e := a.Agent(ctx, node, "GET", "/agent/v1/resources", nil)
 	if e != nil {
 		return e
@@ -141,7 +152,7 @@ func sampleGPUResources(ctx context.Context, a *platform.App, node uint64, polic
 			}
 			seen = append(seen, g.UUID)
 			var previous platform.Row
-			e := tx.Table("metric_gpu_high_windows").Clauses(clause.Locking{Strength: "UPDATE"}).Where("node_id=? AND gpu_uuid=?", node, g.UUID).Take(&previous).Error
+			e := tx.Table("metric_gpu_high_windows").Clauses(clause.Locking{Strength: "UPDATE"}).Where("node_id=? AND gpu_uuid=? AND policy_version_id=?", node, g.UUID, policyID).Take(&previous).Error
 			if e != nil && !errors.Is(e, gorm.ErrRecordNotFound) {
 				return e
 			}
@@ -152,7 +163,7 @@ func sampleGPUResources(ctx context.Context, a *platform.App, node uint64, polic
 					since = platform.Stamp(previous["high_since"])
 				}
 			}
-			row := map[string]any{"node_id": node, "gpu_uuid": g.UUID, "high_since": since, "last_sampled_at": observedAt, "updated_at": a.Time()}
+			row := map[string]any{"node_id": node, "gpu_uuid": g.UUID, "policy_version_id": policyID, "high_since": since, "last_sampled_at": observedAt, "updated_at": a.Time()}
 			if e := tx.Table("metric_gpu_high_windows").Clauses(gpuHighWindowConflict).Create(row).Error; e != nil {
 				return e
 			}
@@ -160,7 +171,7 @@ func sampleGPUResources(ctx context.Context, a *platform.App, node uint64, polic
 				return e
 			}
 		}
-		q := tx.Table("metric_gpu_high_windows").Where("node_id=?", node)
+		q := tx.Table("metric_gpu_high_windows").Where("node_id=? AND policy_version_id=?", node, policyID)
 		if len(seen) > 0 {
 			q = q.Where("gpu_uuid NOT IN ?", seen)
 		}
@@ -168,7 +179,7 @@ func sampleGPUResources(ctx context.Context, a *platform.App, node uint64, polic
 	})
 }
 
-func evaluateGPUInstance(ctx context.Context, a *platform.App, id uint64, idle, scheduling platform.Row, maxAge uint64) error {
+func evaluateGPUInstance(ctx context.Context, a *platform.App, id uint64) error {
 	return a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var placement struct{ UserID uint64 }
 		if e := tx.Table("instances").Select("user_id").Where("id=?", id).Take(&placement).Error; e != nil {
@@ -184,6 +195,22 @@ func evaluateGPUInstance(ctx context.Context, a *platform.App, id uint64, idle, 
 		}
 		if platform.Text(instance["observed_state"]) != "running" || instance["deleted_at"] != nil {
 			return nil
+		}
+		idle, e := a.InstancePolicy(ctx, instance, "gpu-idle")
+		if e != nil {
+			return e
+		}
+		scheduling, e := a.InstancePolicy(ctx, instance, "gpu-scheduling")
+		if e != nil {
+			return e
+		}
+		var bindings map[string]string
+		if e = json.Unmarshal([]byte(platform.Text(instance["policy_versions"])), &bindings); e != nil {
+			return e
+		}
+		maxAge := platform.Uint(scheduling["metrics_max_age_seconds"])
+		if maxAge == 0 {
+			return platform.E(422, "invalid_policy", "GPU metric maximum age is required")
 		}
 		var policy gpuAutomaticPolicy
 		if e = json.Unmarshal([]byte(platform.Text(instance["gpu_policy"])), &policy); e != nil {
@@ -262,7 +289,7 @@ func evaluateGPUInstance(ctx context.Context, a *platform.App, id uint64, idle, 
 			}
 			if safe && allocation > 0 && duration >= time.Duration(platform.Uint(scheduling["evaluation_window_seconds"]))*time.Second {
 				var high platform.Row
-				e = tx.Table("metric_gpu_high_windows").Where("node_id=? AND gpu_uuid=?", node, uuid).Take(&high).Error
+				e = tx.Table("metric_gpu_high_windows").Where("node_id=? AND gpu_uuid=? AND policy_version_id=?", node, uuid, bindings["gpu-scheduling"]).Take(&high).Error
 				if e != nil && !errors.Is(e, gorm.ErrRecordNotFound) {
 					return e
 				}

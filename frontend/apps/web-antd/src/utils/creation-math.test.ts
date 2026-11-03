@@ -38,7 +38,7 @@ function plan(overrides: Plan['allowed_overrides'] = {}, resources = baseResourc
     name: 'Elastic',
     network_option_ids: ['1'],
     node_ids: ['1'],
-    policy_versions: {},
+    policy_versions: { pricing: 'pricing-1', credit: 'credit-1', metrics: 'metrics-1' },
     pricing_version_id: null,
     resources,
     revision: '1',

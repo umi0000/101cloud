@@ -18,20 +18,18 @@ import (
 func createInstance(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64, spec Spec, custom bool, versions map[string]string) (platform.Row, error) {
 	return admitCreate(ctx, a, db, owner, spec, custom, versions, nil, nil)
 }
-func reserveImported(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64, spec Spec, native platform.Row) (platform.Row, error) {
-	return admitCreate(ctx, a, db, owner, spec, true, nil, native, nil)
+func reserveImported(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64, spec Spec, native platform.Row, versions map[string]string) (platform.Row, error) {
+	return admitCreate(ctx, a, db, owner, spec, true, versions, native, nil)
 }
 func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64, spec Spec, custom bool, versions map[string]string, native platform.Row, login *LoginRequest) (platform.Row, error) {
 	if e := lockOwnerAccount(db, owner); e != nil {
 		return nil, e
 	}
-	if !custom {
-		if len(versions) == 0 {
-			return nil, bad("请先获取最新报价并提交其中的 policy_versions。")
-		}
-		if e := validateVersions(ctx, a, db, versions); e != nil {
-			return nil, e
-		}
+	if len(versions) == 0 {
+		return nil, bad("必须显式提交 policy_versions；弹性实例请使用最新报价中的策略版本。")
+	}
+	if e := validateVersions(ctx, a, db, versions); e != nil {
+		return nil, e
 	}
 	if strings.TrimSpace(spec.Name) == "" || len([]rune(spec.Name)) > 128 {
 		return nil, bad("实例名称必须包含 1–128 个字符。")
@@ -99,14 +97,16 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 		if spec.InstanceType != platform.Text(image["image_type"]) {
 			return nil, bad("实例类型与镜像不匹配，请选择对应类型的镜像。")
 		}
-		versions = map[string]string{}
+		if e = validateCustomVersions(ctx, a, db, versions, spec); e != nil {
+			return nil, e
+		}
 		for kind, dest := range map[string]*uint64{"pricing": &pricingID, "credit": &creditID, "gpu-idle": &idleID} {
-			var p platform.Row
-			if e = db.Table("policy_versions p").Select("p.id,p.source_id").Joins("JOIN platform_policy_bindings b ON b.policy_id=p.id").Where("b.kind=? AND p.status='active' AND p.effective_at<=?", kind, a.Time()).Take(&p).Error; e != nil || platform.Uint(p["source_id"]) == 0 {
-				return nil, platform.E(503, "policy_not_configured", "缺少已发布且生效的策略，请管理员完成策略配置。")
+			if versions[kind] == "" {
+				continue
 			}
-			*dest = platform.Uint(p["source_id"])
-			versions[kind] = strconv.FormatUint(platform.Uint(p["id"]), 10)
+			if _, *dest, e = platform.PolicySource(db, kind, versions[kind], true); e != nil {
+				return nil, e
+			}
 		}
 		if spec.InitTemplateVersionID != "" {
 			templateID, e = platform.IDString(spec.InitTemplateVersionID)
@@ -213,6 +213,9 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 		product, billingMode = "custom", "admin_exempt"
 	}
 	r := platform.Row{"user_id": owner, "node_id": nodeID, "image_id": imageID, "instance_plan_id": nil, "logical_name": spec.Name, "project_name": binding["project_name"], "incus_name": incusName, "image_type": spec.InstanceType, "architecture": image["architecture"], "image_fingerprint": image["fingerprint"], "vcpus": spec.Resources.VCPUs, "memory_bytes": memory, "disk_bytes": disk, "storage_pool": node["default_storage_pool"], "pricing_version_id": pricingID, "cpu_hourly_pt": pricing["cpu_hourly_pt"], "memory_gib_hourly_pt": pricing["memory_gib_hourly_pt"], "disk_gib_hourly_pt": pricing["disk_gib_hourly_pt"], "credit_policy_version_id": creditID, "billing_mode": billingMode, "desired_state": "running", "observed_state": "pending", "provisioning_state": "pending", "auto_release_gpu": false, "auto_rebind_gpu": false, "idle_policy_version_id": idleID, "max_gpu_hourly_pt": spec.GPU.MaxHourlyPT, "init_template_version_id": nil, "init_parameters": jsonText(spec.InitParameters), "incus_config_snapshot": "{}", "product_type": product, "allowed_user_actions": jsonText(allowed), "gpu_user_permissions": jsonText(permissions), "policy_versions": jsonText(versions), "gpu_policy": jsonText(gpuPolicy), "revision": 1, "created_at": a.Time(), "updated_at": a.Time()}
+	if idleID == 0 {
+		r["idle_policy_version_id"] = nil
+	}
 	idle := object(gpuPolicy["idle"])
 	r["auto_release_gpu"] = platform.Bool(idle["enabled"]) && platform.Text(idle["action"]) == "detach_gpu"
 	r["auto_rebind_gpu"] = platform.Bool(object(gpuPolicy["rebalance"])["enabled"])

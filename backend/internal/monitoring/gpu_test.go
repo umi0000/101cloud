@@ -74,8 +74,9 @@ func TestGPUWindowMapUpserts(t *testing.T) {
 	var fixture struct {
 		ID     uint64
 		NodeID uint64
+		SchedulingPolicyID string
 	}
-	if err = db.WithContext(ctx).Table("instances").Select("id,node_id").Order("id").Limit(1).Find(&fixture).Error; err != nil {
+	if err = db.WithContext(ctx).Table("instances").Select("id,node_id,JSON_UNQUOTE(JSON_EXTRACT(policy_versions,'$.\"gpu-scheduling\"')) AS scheduling_policy_id").Where("JSON_EXTRACT(policy_versions,'$.\"gpu-scheduling\"') IS NOT NULL").Order("id").Limit(1).Find(&fixture).Error; err != nil {
 		t.Fatal(err)
 	}
 	if fixture.ID == 0 {
@@ -89,7 +90,7 @@ func TestGPUWindowMapUpserts(t *testing.T) {
 	uuid := fmt.Sprintf("GPU-monitoring-upsert-%d", time.Now().UnixNano())
 	first := time.Now().Truncate(time.Microsecond)
 	second := first.Add(time.Second)
-	high := map[string]any{"node_id": fixture.NodeID, "gpu_uuid": uuid, "high_since": first, "last_sampled_at": first, "updated_at": first}
+	high := map[string]any{"node_id": fixture.NodeID, "gpu_uuid": uuid, "policy_version_id": fixture.SchedulingPolicyID, "high_since": first, "last_sampled_at": first, "updated_at": first}
 	if err = tx.Table("metric_gpu_high_windows").Clauses(gpuHighWindowConflict).Create(high).Error; err != nil {
 		t.Fatal(err)
 	}

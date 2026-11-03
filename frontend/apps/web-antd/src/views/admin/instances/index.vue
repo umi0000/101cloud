@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import type { CustomConfig, Instance, Node, User } from '#/api/types';
+import type { CustomConfig, Instance, Node, PolicyVersions, User } from '#/api/types';
 
 import { computed, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
@@ -83,13 +83,15 @@ const createOpen = ref(false);
 const formKey = ref(0);
 const draft = ref({ name: '', owner_user_id: undefined as string | undefined });
 const config = shallowRef<CustomConfig | null>(null);
+const policyVersions = ref<PolicyVersions>({});
 const create = useAction();
 
-watch([draft, config], () => create.resetKey(), { deep: true });
+watch([draft, config, policyVersions], () => create.resetKey(), { deep: true });
 
 function openCreate() {
   draft.value = { name: '', owner_user_id: undefined };
   config.value = null;
+  policyVersions.value = {};
   formKey.value++;
   createOpen.value = true;
 }
@@ -104,7 +106,7 @@ async function submitCreate() {
   const d = draft.value;
   const ownerUserId = d.owner_user_id;
   if (!canSubmit.value || !config.value || !ownerUserId) return;
-  const body = { approved_config: config.value, name: d.name.trim(), owner_user_id: ownerUserId };
+  const body = { approved_config: config.value, name: d.name.trim(), owner_user_id: ownerUserId, policy_versions: { ...policyVersions.value } };
   const r = await create.run((key) => instancesApi.createCustom(body, { key }), { success: '已提交下发' });
   if (!r) return;
   trackAccepted(r.data, '下发自定义实例', () => list.load());
@@ -212,7 +214,7 @@ onMounted(() => {
           </FormItem>
         </div>
       </Form>
-      <CustomInstanceForm :key="formKey" @update:value="(v) => (config = v)" />
+      <CustomInstanceForm :key="formKey" @update:value="(v) => (config = v)" @update:policy-versions="(v) => (policyVersions = v)" />
       <div class="text-muted-foreground text-xs">
         自定义实例由后端定为免额度（admin_exempt）。会占用所有者的实例数与常驻实例配额，配额不足时返回"超出资源配额"。
       </div>

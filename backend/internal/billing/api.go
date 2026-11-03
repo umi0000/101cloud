@@ -68,7 +68,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 			return nil, invalid("invalid redemption code")
 		}
 		db := platform.DB(c, a)
-		ac, e := account(db, platform.Current(c).ID, true)
+		ac, e := account(db, platform.Current(c).ID)
 		if e != nil {
 			return nil, e
 		}
@@ -164,6 +164,42 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		platform.SetETag(c, r)
 		return public(r), nil
 	}))
+	admin.POST("/credit-accounts", platform.Handle(func(c *gin.Context) (any, error) {
+		var input struct {
+			UserID   string `json:"user_id"`
+			PolicyID string `json:"policy_version_id"`
+		}
+		if e := platform.Decode(c, &input); e != nil {
+			return nil, e
+		}
+		userID, e := platform.IDString(input.UserID)
+		if e != nil {
+			return nil, e
+		}
+		db := platform.DB(c, a)
+		user, e := platform.Get(db, "users", userID, true)
+		if e != nil {
+			return nil, e
+		}
+		if platform.Text(user["status"]) == "deleted" {
+			return nil, conflict("invalid_state", "deleted users cannot receive a credit account")
+		}
+		ac, e := CreateAccount(db, userID, input.PolicyID)
+		if e != nil {
+			return nil, e
+		}
+		if e = platform.Audit(c.Request.Context(), db, platform.Current(c).ID, 0, 0, "credit.account_created", row{"account_id": sid(ac["id"]), "user_id": input.UserID, "policy_version_id": input.PolicyID}); e != nil {
+			return nil, e
+		}
+		result, e := accountDTO(db, ac)
+		if e != nil {
+			return nil, e
+		}
+		platform.SetETag(c, ac)
+		c.Header("Location", "/api/v1/admin/credit-accounts/"+sid(ac["id"]))
+		platform.Reply(c, 201, result)
+		return nil, nil
+	}))
 	admin.GET("/credit-accounts", platform.Handle(func(c *gin.Context) (any, error) {
 		db := platform.DB(c, a)
 		q := db.Table("credit_accounts")
@@ -211,24 +247,11 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		if e = platform.Revision(c, ac); e != nil {
 			return nil, e
 		}
-		var active int64
-		if e = db.Table("usage_sessions").Where("account_id=? AND status='active'", id).Count(&active).Error; e != nil {
-			return nil, e
-		}
-		if active > 0 {
-			return nil, conflict("configuration_conflict", "close active resource usage intervals before changing account policy")
-		}
-		if e = db.Table("credit_enforcements").Where("account_id=? AND status IN ('grace','stopping','unknown')", id).Count(&active).Error; e != nil {
-			return nil, e
-		}
-		if active > 0 {
-			return nil, conflict("configuration_conflict", "resolve the active shutdown event before changing account policy")
-		}
 		policy, e := platform.Get(db, "policy_versions", policyID, true)
 		if e != nil {
 			return nil, e
 		}
-		if e = validateBindingVersion("credit", policy, now()); e != nil {
+		if e = validateAllowancePolicy(policy, now()); e != nil {
 			return nil, e
 		}
 		var next CreditConfig
@@ -570,18 +593,19 @@ func accountDTO(db *gorm.DB, ac row) (row, error) {
 		return nil, e
 	}
 	next := cycle.AddDate(0, 0, 1)
-	var event row
-	err := db.Table("credit_enforcements").Where("account_id = ? AND status IN ('grace','stopping','unknown')", ac["id"]).Take(&event).Error
-	var enforcement any
-	if err == nil {
-		enforcement, e = eventDTO(db, event)
+	events, e := rows(db.Order("shutdown_deadline, id"), "credit_enforcements", "account_id = ? AND status IN ('grace','stopping','unknown')", ac["id"])
+	if e != nil {
+		return nil, e
+	}
+	enforcements := make([]row, 0, len(events))
+	for _, event := range events {
+		item, e := eventDTO(db, event)
 		if e != nil {
 			return nil, e
 		}
-	} else if err != gorm.ErrRecordNotFound {
-		return nil, err
+		enforcements = append(enforcements, item)
 	}
-	return row{"id": sid(ac["id"]), "user_id": sid(ac["user_id"]), "revision": sid(ac["revision"]), "status": ac["status"], "settlement_pending": platform.Bool(ac["settlement_pending"]), "remaining_pt": money(left.Sub(debt)), "reserved_pt": money(held), "available_pt": money(left.Sub(held).Sub(debt)), "outstanding_debt_pt": money(debt), "next_grant_at": next.In(zone).Format(time.RFC3339Nano), "server_time": now().Format(time.RFC3339Nano), "policy_version_id": sid(p["policy_version_id"]), "enforcement": enforcement}, nil
+	return row{"id": sid(ac["id"]), "user_id": sid(ac["user_id"]), "revision": sid(ac["revision"]), "status": ac["status"], "settlement_pending": platform.Bool(ac["settlement_pending"]), "remaining_pt": money(left.Sub(debt)), "reserved_pt": money(held), "available_pt": money(left.Sub(held).Sub(debt)), "outstanding_debt_pt": money(debt), "next_grant_at": next.In(zone).Format(time.RFC3339Nano), "server_time": now().Format(time.RFC3339Nano), "policy_version_id": sid(p["policy_version_id"]), "enforcements": enforcements}, nil
 }
 
 func outstandingDebt(db *gorm.DB, accountID uint64) (decimal.Decimal, error) {

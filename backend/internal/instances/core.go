@@ -53,6 +53,13 @@ func object(v any) map[string]any {
 	if r, ok := v.(map[string]any); ok {
 		return r
 	}
+	if values, ok := v.(map[string]string); ok {
+		r := make(map[string]any, len(values))
+		for key, value := range values {
+			r[key] = value
+		}
+		return r
+	}
 	var r map[string]any
 	switch x := v.(type) {
 	case []byte:
@@ -139,6 +146,7 @@ func permitted(c *gin.Context, r platform.Row, action string) error {
 }
 func instanceDTO(a *platform.App, r platform.Row) platform.Row {
 	out := platform.Public(r, "id", "product_type", "billing_mode", "desired_state", "observed_state", "provisioning_state", "observed_at", "revision", "created_at", "updated_at", "node_id", "user_id")
+	out["policy_versions"] = object(r["policy_versions"])
 	out["resource_reservations_released"] = platform.Text(r["provisioning_state"]) == "failed" && platform.Bool(object(r["incus_config_snapshot"])["creation_reservations_released"])
 	out["name"] = platform.Text(r["logical_name"])
 	out["instance_type"] = platform.Text(r["image_type"])
@@ -170,7 +178,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 	registerGPU(a, user, admin)
 	for _, g := range []*gin.RouterGroup{user, admin} {
 		g.GET("/instances", platform.Handle(func(c *gin.Context) (any, error) {
-			q := instanceImageQuery(platform.DB(c, a)).Select("id,user_id,node_id,logical_name,product_type,billing_mode,image_type,image_id,instance_plan_id,plan_snapshot,vcpus,memory_bytes,disk_bytes,desired_state,observed_state,provisioning_state,observed_at,allowed_user_actions,incus_config_snapshot,revision,created_at,updated_at,image_os_name,image_os_release").Where("deleted_at IS NULL")
+			q := instanceImageQuery(platform.DB(c, a)).Select("id,user_id,node_id,logical_name,product_type,billing_mode,image_type,image_id,instance_plan_id,plan_snapshot,policy_versions,vcpus,memory_bytes,disk_bytes,desired_state,observed_state,provisioning_state,observed_at,allowed_user_actions,incus_config_snapshot,revision,created_at,updated_at,image_os_name,image_os_release").Where("deleted_at IS NULL")
 			if !c.GetBool("admin") {
 				q = q.Where("user_id=?", platform.Current(c).ID)
 			}
@@ -571,13 +579,13 @@ func validResources(r Resources) (uint64, uint64, error) {
 	return m, d, nil
 }
 func validateVersions(ctx context.Context, a *platform.App, db *gorm.DB, versions map[string]string) error {
-	for _, kind := range []string{"pricing", "credit", "gpu-idle", "gpu-scheduling"} {
+	for _, kind := range []string{"pricing", "credit", "metrics"} {
 		if versions[kind] == "" {
-			return conflict("policy_changed", "Required quote policy is missing")
+			return conflict("policy_changed", "Required policy binding is missing: "+kind)
 		}
 	}
 	for kind, value := range versions {
-		if kind != "pricing" && kind != "credit" && kind != "gpu-idle" && kind != "gpu-scheduling" && kind != "gpu-pricing" {
+		if kind != "pricing" && kind != "credit" && kind != "gpu-idle" && kind != "gpu-scheduling" && kind != "gpu-pricing" && kind != "metrics" {
 			return bad("Unknown quote policy kind")
 		}
 		id, err := platform.IDString(value)
@@ -593,7 +601,36 @@ func validateVersions(ctx context.Context, a *platform.App, db *gorm.DB, version
 		}
 	}
 	// Catalog.ValidateElastic separately matches the quoted plan revision and
-	// policy versions. Changing a platform default alone does not change a quote.
+	// policy versions; existing instances retain their admitted bindings.
+	return nil
+}
+func validateCustomVersions(ctx context.Context, a *platform.App, db *gorm.DB, versions map[string]string, spec Spec) error {
+	if e := validateVersions(ctx, a, db, versions); e != nil {
+		return e
+	}
+	if spec.InstanceType == "container" {
+		for _, kind := range []string{"gpu-idle", "gpu-scheduling"} {
+			if versions[kind] == "" {
+				return bad("Required custom policy binding is missing: " + kind)
+			}
+		}
+	}
+	if spec.GPU.Count > 0 {
+		if versions["gpu-pricing"] == "" {
+			return bad("Required custom policy binding is missing: gpu-pricing")
+		}
+		_, source, e := platform.PolicySource(db, "gpu-pricing", versions["gpu-pricing"], true)
+		if e != nil {
+			return e
+		}
+		price, e := platform.Get(db, "gpu_price_versions", source, false)
+		if e != nil {
+			return e
+		}
+		if platform.Text(price["gpu_model"]) != spec.GPU.Model || platform.Text(price["access_mode"]) != spec.GPU.AccessMode {
+			return bad("GPU pricing profile does not match the requested model and access mode")
+		}
+	}
 	return nil
 }
 func lockOwnerAccount(db *gorm.DB, owner uint64) error {

@@ -7,7 +7,7 @@ import type { AllocatableForm } from './node-forms';
 
 import { computed, onMounted, ref, watch } from 'vue';
 
-import { Alert, Button, Card, Descriptions, DescriptionsItem, Empty, Form, Space, Table, Tag } from 'ant-design-vue';
+import { Alert, Button, Card, Descriptions, DescriptionsItem, Empty, Form, FormItem, Space, Table, Tag } from 'ant-design-vue';
 
 import { nodesApi } from '#/api/backend';
 import StatusTag from '#/components/status-tag.vue';
@@ -16,6 +16,7 @@ import { errorToast, useAction, useResource } from '#/composables/api';
 import { formatBytes, formatPercent } from '#/utils/format';
 
 import AllocatableFields from './allocatable-fields.vue';
+import MetricsPolicySelect from './metrics-policy-select.vue';
 import { allocatableFromForm, allocatableToForm } from './node-forms';
 
 const props = defineProps<{ epoch: number; etag: null | string; node: Node }>();
@@ -35,12 +36,16 @@ watch(() => props.epoch, loadResources);
 /* ---------- 可分配量编辑 ---------- */
 const editing = ref(false);
 const form = ref<AllocatableForm>(allocatableToForm(props.node.allocatable));
+const metricsPolicyId = ref<string>();
+const metricsSelect = ref<InstanceType<typeof MetricsPolicySelect>>();
 const formRef = ref<FormInstance>();
 const action = useAction();
 watch(form, () => action.resetKey(), { deep: true });
+watch(metricsPolicyId, () => action.resetKey());
 
 function startEdit() {
   form.value = allocatableToForm(props.node.allocatable);
+  metricsPolicyId.value = props.node.metrics_policy_id;
   editing.value = true;
 }
 
@@ -51,8 +56,8 @@ async function save() {
     return;
   }
   const r = await action.run(
-    () => nodesApi.update(props.node.id, { allocatable: allocatableFromForm(form.value) }, { ifMatch: props.etag }),
-    { onConflict: () => emit('changed'), success: '可分配量已更新' },
+    () => nodesApi.update(props.node.id, { allocatable: allocatableFromForm(form.value), metrics_policy_id: metricsPolicyId.value! }, { ifMatch: props.etag }),
+    { onConflict: () => emit('changed'), success: '节点配置已更新' },
   );
   if (!r) return;
   editing.value = false;
@@ -94,7 +99,7 @@ const nicColumns = [
 
 <template>
   <div class="flex flex-col gap-3">
-    <Card size="small" title="可分配量">
+    <Card size="small" title="节点配置 / 可分配量">
       <template #extra>
         <Space v-if="editing">
           <Button size="small" @click="editing = false">取消</Button>
@@ -102,7 +107,10 @@ const nicColumns = [
         </Space>
         <Button v-else size="small" @click="startEdit">编辑</Button>
       </template>
-      <Form v-if="editing" ref="formRef" layout="vertical" :model="form">
+      <Form v-if="editing" ref="formRef" layout="vertical" :model="{ ...form, metrics_policy_id: metricsPolicyId }">
+        <FormItem label="监控策略" name="metrics_policy_id" :rules="[{ required: true, validator: () => metricsSelect?.validate() }]">
+          <MetricsPolicySelect ref="metricsSelect" v-model="metricsPolicyId" />
+        </FormItem>
         <AllocatableFields v-model="form" />
         <div class="text-muted-foreground text-xs">不能低于已有实例占用的资源（否则返回"容量已被占用"）。</div>
       </Form>
@@ -115,6 +123,7 @@ const nicColumns = [
         <DescriptionsItem label="常驻磁盘">{{ formatBytes(node.allocatable.resident_disk_bytes) }}</DescriptionsItem>
         <DescriptionsItem label="存储池"><span class="font-mono">{{ node.defaults.storage_pool }}</span></DescriptionsItem>
         <DescriptionsItem label="Incus 项目"><span class="font-mono">{{ node.defaults.project_name }}</span></DescriptionsItem>
+        <DescriptionsItem label="监控策略"><span class="font-mono">{{ node.metrics_policy_id }}</span></DescriptionsItem>
       </Descriptions>
       <div class="text-muted-foreground mt-2 text-xs">后端不提供节点已分配资源汇总，这里只显示可分配量与宿主实测。</div>
     </Card>

@@ -66,9 +66,9 @@ func openBillingMySQL(t *testing.T, prefix string) (context.Context, *gorm.DB) {
 	return ctx, db
 }
 
-// Policy profiles are created active, edited in place, switched through the
-// platform bindings and deleted only when nothing references them.
-func TestMySQLPolicyProfilesEditSwitchDelete(t *testing.T) {
+// Policy profiles are created active, edited in place and deleted only when
+// no plan, instance, account, node or historical record references them.
+func TestMySQLPolicyProfilesEditDelete(t *testing.T) {
 	ctx, db := openBillingMySQL(t, "ci_policy_profiles_")
 	if err := db.Exec("INSERT INTO users(id,username,password_hash,role,status) VALUES(1,'policy-admin','unused-test-hash','admin','active')").Error; err != nil {
 		t.Fatal(err)
@@ -164,28 +164,19 @@ func TestMySQLPolicyProfilesEditSwitchDelete(t *testing.T) {
 		}
 		return n
 	}
-	bind := func(bindings map[string]string) {
-		t.Helper()
-		w := call(http.MethodGet, "/platform-policy-bindings", "", "")
-		body, _ := json.Marshal(bindings)
-		if w = call(http.MethodPut, "/platform-policy-bindings", string(body), w.Header().Get("ETag")); w.Code != 200 {
-			t.Fatalf("bind: %d %s", w.Code, w.Body.String())
-		}
-	}
 
-	// Create: every kind is active and effective immediately, hence bindable.
-	defaults := map[string]string{}
-	for _, kind := range requiredPolicyKinds {
-		defaults[kind] = create(kind, "default-"+kind).ID
+	// Every kind is active and effective immediately, without global bindings.
+	profiles := map[string]string{}
+	for kind := range configs {
+		profiles[kind] = create(kind, "profile-"+kind).ID
 	}
 	var sourceStatus []string
-	if err := db.Table("credit_policy_versions").Where("id = ?", sourceOf(defaults["credit"])).Pluck("status", &sourceStatus).Error; err != nil || len(sourceStatus) != 1 || sourceStatus[0] != "active" {
+	if err := db.Table("credit_policy_versions").Where("id = ?", sourceOf(profiles["credit"])).Pluck("status", &sourceStatus).Error; err != nil || len(sourceStatus) != 1 || sourceStatus[0] != "active" {
 		t.Fatalf("credit source row not active: %v %v", sourceStatus, err)
 	}
-	bind(defaults)
 
-	// Edit in place: the bound, active profile and its source row both change.
-	creditID := defaults["credit"]
+	// Edit in place: the active profile and its source row both change.
+	creditID := profiles["credit"]
 	edited := validCreditPolicy()
 	edited["daily_allowance_pt"] = "12.500000"
 	body, _ := json.Marshal(map[string]any{"config": edited})
@@ -208,16 +199,9 @@ func TestMySQLPolicyProfilesEditSwitchDelete(t *testing.T) {
 		t.Fatalf("stale edit accepted: %d %s", w.Code, w.Body.String())
 	}
 
-	// Delete the platform default: rejected, rows kept.
+	// Profile deletion still requires optimistic concurrency.
 	if w = call(http.MethodDelete, "/policies/credit/versions/"+creditID, "", ""); w.Code != 428 {
 		t.Fatalf("delete without If-Match: %d %s", w.Code, w.Body.String())
-	}
-	w = call(http.MethodDelete, "/policies/credit/versions/"+creditID, "", etag("credit", creditID))
-	if code, message := failure(w); w.Code != 409 || code != "configuration_conflict" || !strings.Contains(message, "默认") {
-		t.Fatalf("bound profile delete: %d %s", w.Code, w.Body.String())
-	}
-	if count("policy_versions", "id = ?", creditID) != 1 || count("credit_policy_versions", "id = ?", sourceOf(creditID)) != 1 {
-		t.Fatal("rejected delete removed the bound profile")
 	}
 
 	// Delete a profile referenced by a credit account (source FK): rejected.
@@ -235,9 +219,9 @@ func TestMySQLPolicyProfilesEditSwitchDelete(t *testing.T) {
 
 	// Delete a non-economic profile referenced only by plan policy_versions JSON: rejected.
 	planScheduling := create("gpu-scheduling", "plan-scheduling")
-	versions, _ := json.Marshal(map[string]string{"pricing": defaults["pricing"], "credit": defaults["credit"], "gpu-idle": defaults["gpu-idle"], "gpu-scheduling": planScheduling.ID})
+	versions, _ := json.Marshal(map[string]string{"pricing": profiles["pricing"], "credit": profiles["credit"], "gpu-idle": profiles["gpu-idle"], "gpu-scheduling": planScheduling.ID, "metrics": profiles["metrics"]})
 	if err := db.Exec("INSERT INTO instance_plans(id,code,version,name,image_type,vcpus,memory_bytes,disk_bytes,gpu_count,pricing_version_id,credit_policy_version_id,idle_policy_version_id,init_parameters,allow_residency,status,allowed_overrides,policy_versions,gpu_policy,allowed_user_actions,gpu_user_permissions) VALUES(1,'plan','1','Plan','container',1,1073741824,10737418240,0,?,?,?,JSON_OBJECT(),FALSE,'disabled',JSON_OBJECT(),?,JSON_OBJECT(),JSON_ARRAY(),JSON_OBJECT())",
-		sourceOf(defaults["pricing"]), sourceOf(defaults["credit"]), sourceOf(defaults["gpu-idle"]), string(versions)).Error; err != nil {
+		sourceOf(profiles["pricing"]), sourceOf(profiles["credit"]), sourceOf(profiles["gpu-idle"]), string(versions)).Error; err != nil {
 		t.Fatal(err)
 	}
 	w = call(http.MethodDelete, "/policies/gpu-scheduling/versions/"+planScheduling.ID, "", etag("gpu-scheduling", planScheduling.ID))
@@ -248,24 +232,28 @@ func TestMySQLPolicyProfilesEditSwitchDelete(t *testing.T) {
 		t.Fatal("rejected delete removed the plan profile")
 	}
 
-	// Switch the platform default, then delete the previous default: both rows go.
-	replacement := create("credit", "replacement-credit")
-	switched := map[string]string{}
-	for k, v := range defaults {
-		switched[k] = v
+	// A node's explicit metrics binding prevents deleting its reusable profile.
+	nodeMetrics := create("metrics", "node-metrics")
+	if err := db.Exec("INSERT INTO nodes(id,name,agent_endpoint,token_ciphertext,key_version,server_cert_sha256,default_storage_pool,default_project_name,allocatable_vcpus,allocatable_memory_bytes,allocatable_disk_bytes,resident_vcpu_budget,resident_memory_budget_bytes,resident_disk_budget_bytes,status,metrics_policy_id) VALUES(1,'policy-node','https://policy.invalid:8443','unused',1,UNHEX(SHA2('policy-cert',256)),'default','default',4,1073741824,1073741824,4,1073741824,1073741824,'active',?)", nodeMetrics.ID).Error; err != nil {
+		t.Fatal(err)
 	}
-	switched["credit"] = replacement.ID
-	bind(switched)
-	var bound []uint64
-	if err := db.Table("platform_policy_bindings").Where("kind = 'credit'").Pluck("policy_id", &bound).Error; err != nil || len(bound) != 1 || strconv.FormatUint(bound[0], 10) != replacement.ID {
-		t.Fatalf("default not switched: %v %v", bound, err)
+	w = call(http.MethodDelete, "/policies/metrics/versions/"+nodeMetrics.ID, "", etag("metrics", nodeMetrics.ID))
+	if code, message := failure(w); w.Code != 409 || code != "configuration_conflict" || !strings.Contains(message, "1 个节点") {
+		t.Fatalf("node-referenced delete: %d %s", w.Code, w.Body.String())
 	}
-	// The original default is still referenced by the plan's credit source FK.
+	if err := db.Exec("DELETE FROM nodes WHERE id = 1").Error; err != nil {
+		t.Fatal(err)
+	}
+	if w = call(http.MethodDelete, "/policies/metrics/versions/"+nodeMetrics.ID, "", etag("metrics", nodeMetrics.ID)); w.Code != 204 {
+		t.Fatalf("released node profile delete: %d %s", w.Code, w.Body.String())
+	}
+
+	// The credit source FK also prevents deleting a plan's profile.
 	w = call(http.MethodDelete, "/policies/credit/versions/"+creditID, "", etag("credit", creditID))
 	if code, message := failure(w); w.Code != 409 || code != "configuration_conflict" || !strings.Contains(message, "1 个套餐") {
 		t.Fatalf("plan source-referenced delete: %d %s", w.Code, w.Body.String())
 	}
-	// An unreferenced, unbound profile is deleted together with its source row.
+	// An unreferenced profile is deleted together with its source row.
 	unused := create("credit", "unused-credit")
 	unusedSource := sourceOf(unused.ID)
 	if w = call(http.MethodDelete, "/policies/credit/versions/"+unused.ID, "", `"rev-99"`); w.Code != 412 {
@@ -290,7 +278,7 @@ func TestMySQLPolicyProfilesEditSwitchDelete(t *testing.T) {
 
 	// The draft workflow endpoints no longer exist.
 	for _, action := range []string{"publish", "retire"} {
-		if w = call(http.MethodPost, "/policies/credit/versions/"+replacement.ID+"/"+action, `{}`, etag("credit", replacement.ID)); w.Code != 404 {
+		if w = call(http.MethodPost, "/policies/credit/versions/"+creditID+"/"+action, `{}`, etag("credit", creditID)); w.Code != 404 {
 			t.Fatalf("%s route still served: %d %s", action, w.Code, w.Body.String())
 		}
 	}

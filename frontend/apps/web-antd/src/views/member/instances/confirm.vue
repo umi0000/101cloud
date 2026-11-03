@@ -40,7 +40,7 @@ const accountBlock = computed(() => {
   if (store.accountLoading) return '正在核对最新可用额度，暂不能创建。';
   if (!store.account) return '尚未获取可用额度，请刷新额度后再确认。';
   if (store.account.status !== 'active') return '额度账户当前不可用，暂不能估算时长或创建。';
-  if (store.account.enforcement && store.account.enforcement.status !== 'cancelled') return '账户存在额度停机事件，请先核对额度与停机状态；暂不能估算正常可用时长或创建。';
+  if (store.account.enforcements.some((e) => e.status !== 'cancelled')) return '账户存在额度停机事件，请先核对额度与停机状态；暂不能估算正常可用时长或创建。';
   if (quote.value && !quoteFitsAvailableCredit(quote.value, store.account.available_pt)) return '可用额度不足以支付首个计费窗口，或当前报价缺少有效预留金额，请更新报价。';
   return '';
 });

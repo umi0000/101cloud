@@ -39,7 +39,7 @@ vi.mock('#/locales/errors', () => ({
   describeError: (error: ApiError) => ({ code: error.code, details: error.details ? [error.message] : [], requestId: error.requestId, stage: '', text: error.message || '安全错误提示' }),
 }));
 
-function selection(): InstanceOrderSelection {
+function selection(): InstanceOrderSelection & { account: NonNullable<InstanceOrderSelection['account']> } {
   const time = '2026-11-03T00:00:00Z';
   return {
     spec: {
@@ -58,7 +58,7 @@ function selection(): InstanceOrderSelection {
       },
       gpu_user_permissions: {}, allowed_overrides: {}, allowed_user_actions: ['start', 'stop'],
       image_ids: ['image-a'], network_option_ids: ['net-a'], node_ids: ['node-a'],
-      policy_versions: { credit: 'c1', pricing: 'p1' }, pricing_version_id: 'p1', init_template_version_id: null,
+      policy_versions: { credit: 'c1', metrics: 'm1', pricing: 'p1' }, pricing_version_id: 'p1', init_template_version_id: null,
     },
     image: {
       id: 'image-a', code: 'ubuntu', name: 'Ubuntu 24.04 cloud', version: '1', revision: 'image-rev-1',
@@ -75,13 +75,13 @@ function selection(): InstanceOrderSelection {
     network: { id: 'net-a', node_id: 'node-a', project_name: 'default', mode: 'managed_bridge', created_at: time },
     account: {
       id: 'account-a', user_id: 'user-a', status: 'active', available_pt: '10', remaining_pt: '10',
-      reserved_pt: '0', outstanding_debt_pt: '0', enforcement: null, policy_version_id: 'c1',
+      reserved_pt: '0', outstanding_debt_pt: '0', enforcements: [], policy_version_id: 'c1',
       settlement_pending: false,
       revision: 'account-rev-1', server_time: time, next_grant_at: '2026-11-04T00:00:00Z',
     },
     quote: {
       admissible: true, blocking_reasons: [], expires_at: new Date(Date.now() + 60_000).toISOString(), plan_revision: 'rev-1',
-      policy_versions: { credit: 'c1', pricing: 'p1' }, initial_window_pt: '1', reservation: false,
+      policy_versions: { credit: 'c1', metrics: 'm1', pricing: 'p1' }, initial_window_pt: '1', reservation: false,
       price_details: { cpu_hourly_pt: '1', disk_hourly_pt: '0', gpu_hourly_pt: '0', memory_hourly_pt: '0', total_hourly_pt: '1' },
     },
   };
@@ -111,6 +111,54 @@ async function prepared() {
   expect(await store.prepare(selection())).toBe(true);
   return { store, memory };
 }
+
+function enforcement(id: string, status: NonNullable<InstanceOrderSelection['account']>['enforcements'][number]['status']) {
+  return {
+    id, status, user_id: 'user-a', instance_ids: [`instance-${id}`], policy_version_id: `credit-${id}`,
+    revision: 'event-rev-1', exhausted_at: '2026-11-03T00:00:00Z', shutdown_deadline: '2026-11-04T00:00:00Z',
+  };
+}
+
+describe('shared wallet enforcement guards', () => {
+  it.each(['grace', 'stopping', 'unknown', 'completed'] as const)(
+    'blocks a %s event even when another policy event is cancelled',
+    async (status) => {
+      const store = useInstanceOrderStore();
+      useInstanceLoginDraft().save(draft());
+      const selected = selection();
+      selected.account.enforcements = [enforcement('cancelled', 'cancelled'), enforcement('other-policy', status)];
+      expect(await store.prepare(selected)).toBe(true);
+      expect(await store.submit()).toBeNull();
+      expect(runtime.create).not.toHaveBeenCalled();
+      expect(runtime.quote).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['grace', 'stopping', 'unknown', 'completed'] as const)(
+    'blocks a %s event discovered during final preflight',
+    async (status) => {
+      const { store } = await prepared();
+      const latestAccount = selection().account;
+      latestAccount.enforcements = [enforcement('cancelled', 'cancelled'), enforcement('other-policy', status)];
+      runtime.credit.mockResolvedValueOnce({ data: latestAccount });
+      expect(await store.submit()).toBeNull();
+      expect(runtime.create).not.toHaveBeenCalled();
+      expect(store.hasPendingIntent).toBe(false);
+      expect(store.account?.enforcements).toEqual(latestAccount.enforcements);
+    },
+  );
+
+  it('allows creation when every policy event is cancelled', async () => {
+    const store = useInstanceOrderStore();
+    useInstanceLoginDraft().save(draft());
+    const selected = selection();
+    selected.account.enforcements = [enforcement('policy-a', 'cancelled'), enforcement('policy-b', 'cancelled')];
+    runtime.credit.mockResolvedValueOnce({ data: selected.account });
+    expect(await store.prepare(selected)).toBe(true);
+    expect(await store.submit()).toEqual({ task_id: 'task-a' });
+    expect(runtime.create).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('private instance credential boundaries', () => {
   it('exposes only public-key type/fingerprint and sends key material only with final creation', async () => {

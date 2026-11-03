@@ -1,6 +1,7 @@
 package billing
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
 	"time"
@@ -297,56 +298,7 @@ func TestExhaustionRequiresAnActualPayableInsufficiency(t *testing.T) {
 	}
 }
 
-func completeBindings() map[string]string {
-	return map[string]string{"pricing": "1", "gpu-pricing": "2", "credit": "3", "gpu-scheduling": "4", "gpu-idle": "5", "metrics": "6"}
-}
-func TestPlatformBindingsRequireTheCompleteKindMapping(t *testing.T) {
-	if e := validateBindingShape(completeBindings()); e != nil {
-		t.Fatalf("complete binding set rejected: %v", e)
-	}
-	cases := []struct {
-		name     string
-		bindings map[string]string
-	}{{"nil", nil}, {"empty", map[string]string{}}, {"partial", map[string]string{"credit": "3"}}}
-	for _, kind := range requiredPolicyKinds {
-		p := completeBindings()
-		delete(p, kind)
-		cases = append(cases, struct {
-			name     string
-			bindings map[string]string
-		}{"missing_" + kind, p})
-	}
-	extra := completeBindings()
-	extra["arbitrary"] = "7"
-	cases = append(cases, struct {
-		name     string
-		bindings map[string]string
-	}{"unknown_kind", extra})
-	replaced := completeBindings()
-	delete(replaced, "metrics")
-	replaced["arbitrary"] = "6"
-	cases = append(cases, struct {
-		name     string
-		bindings map[string]string
-	}{"unknown_replaces_required", replaced})
-	for _, bad := range []string{"", "0", "-1", "1.0", "18446744073709551616"} {
-		p := completeBindings()
-		p["credit"] = bad
-		cases = append(cases, struct {
-			name     string
-			bindings map[string]string
-		}{"invalid_id_" + bad, p})
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if e := validateBindingShape(tc.bindings); e == nil {
-				t.Fatal("unsafe replacement mapping accepted")
-			}
-		})
-	}
-}
-
-func TestPlatformBindingCannotReplaceCurrentPolicyWithFutureVersion(t *testing.T) {
+func TestAllowanceSelectionRequiresPublishedEffectiveCreditPolicy(t *testing.T) {
 	at := time.Date(2026, 10, 30, 12, 0, 0, 0, zone)
 	for _, tc := range []struct {
 		name, kind, status string
@@ -362,8 +314,8 @@ func TestPlatformBindingCannotReplaceCurrentPolicyWithFutureVersion(t *testing.T
 		{"wrong_kind", "pricing", "active", at.Add(-time.Hour), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			p := row{"kind": tc.kind, "status": tc.status, "effective_at": tc.effective}
-			e := validateBindingVersion("credit", p, at)
+			p := row{"kind": tc.kind, "source_id": uint64(1), "status": tc.status, "effective_at": tc.effective}
+			e := validateAllowancePolicy(p, at)
 			if (e == nil) != tc.valid {
 				t.Fatalf("binding validity mismatch: %v", e)
 			}
@@ -462,5 +414,13 @@ func TestPreDispatchCancellationRequiresPristineSessions(t *testing.T) {
 	base["charge_kind"], base["metering_state"] = "storage", "running"
 	if !pristineCreationSession(base, instance, ac) {
 		t.Fatal("unmetered retained-storage admission cannot cancel")
+	}
+}
+
+func TestExemptAdmissionDoesNotRequireAllowanceAccount(t *testing.T) {
+	instance := row{"billing_mode": "admin_exempt", "user_id": uint64(1)}
+	ctx := context.Background()
+	if err := AdmitInstance(ctx, nil, instance, "create"); err != nil {
+		t.Fatal(err)
 	}
 }

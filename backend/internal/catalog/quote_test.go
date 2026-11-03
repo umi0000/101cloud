@@ -109,13 +109,14 @@ func TestMySQLQuoteUsesReadyImageForNetworkProject(t *testing.T) {
 		"network_pools":         "id BIGINT PRIMARY KEY,status VARCHAR(24)",
 		"nodes":                 "id BIGINT PRIMARY KEY,resources JSON,default_project_name VARCHAR(64)",
 		"policy_versions":       "id BIGINT PRIMARY KEY,kind VARCHAR(24),source_id BIGINT,status VARCHAR(24),effective_at DATETIME(6)",
+		"gpu_price_versions":    "id BIGINT PRIMARY KEY,gpu_model VARCHAR(64),access_mode VARCHAR(24),status VARCHAR(24),effective_at DATETIME(6)",
 	} {
 		if err := db.Exec("CREATE TEMPORARY TABLE `" + table + "` (" + definition + ") ENGINE=InnoDB").Error; err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, statement := range []string{
-		`INSERT INTO instance_plans VALUES(1,'active','container',2,4294967296,21474836480,1,'NVIDIA A100','exclusive','3',JSON_OBJECT(),'{"pricing":"1","credit":"2","gpu-idle":"3","gpu-scheduling":"4","gpu-pricing":"5"}',NULL)`,
+		`INSERT INTO instance_plans VALUES(1,'active','container',2,4294967296,21474836480,1,'NVIDIA A100','exclusive','3',JSON_OBJECT(),'{"pricing":"1","credit":"2","gpu-idle":"3","gpu-scheduling":"4","gpu-pricing":"5","metrics":"6"}',NULL)`,
 		`INSERT INTO plan_images VALUES(1,1)`,
 		`INSERT INTO plan_network_options VALUES(1,1)`,
 		`INSERT INTO plan_nodes VALUES(1,1)`,
@@ -124,7 +125,8 @@ func TestMySQLQuoteUsesReadyImageForNetworkProject(t *testing.T) {
 		`INSERT INTO network_pools VALUES(1,'active')`,
 		`INSERT INTO node_network_bindings VALUES(1,1,'tenant-project',1,'active','verified','bridge')`,
 		`INSERT INTO image_nodes VALUES(1,1,1,'default','aarch64',UNHEX(REPEAT('bb',32)),FALSE,FALSE,JSON_OBJECT(),'ready',NULL,'default',1,NOW(6)),(2,1,1,'tenant-project','x86_64',UNHEX(REPEAT('aa',32)),TRUE,TRUE,JSON_OBJECT(),'ready',NULL,'cloud',1,NOW(6))`,
-		`INSERT INTO policy_versions VALUES(1,'pricing',1,'active',NOW()-INTERVAL 1 HOUR),(2,'credit',1,'active',NOW()-INTERVAL 1 HOUR),(3,'gpu-idle',1,'active',NOW()-INTERVAL 1 HOUR),(4,'gpu-scheduling',1,'active',NOW()-INTERVAL 1 HOUR),(5,'gpu-pricing',1,'active',NOW()-INTERVAL 1 HOUR)`,
+		`INSERT INTO policy_versions VALUES(1,'pricing',1,'active',NOW()-INTERVAL 1 HOUR),(2,'credit',1,'active',NOW()-INTERVAL 1 HOUR),(3,'gpu-idle',1,'active',NOW()-INTERVAL 1 HOUR),(4,'gpu-scheduling',1,'active',NOW()-INTERVAL 1 HOUR),(5,'gpu-pricing',1,'active',NOW()-INTERVAL 1 HOUR),(6,'metrics',NULL,'active',NOW()-INTERVAL 1 HOUR)`,
+		`INSERT INTO gpu_price_versions VALUES(1,'NVIDIA A100','exclusive','active',NOW()-INTERVAL 1 HOUR)`,
 	} {
 		if err := db.Exec(statement).Error; err != nil {
 			t.Fatal(err)

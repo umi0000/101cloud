@@ -60,12 +60,15 @@ func TestMySQLImageRegistrationAndNodeAvailability(t *testing.T) {
 	if e = db.Exec("INSERT INTO users(id,username,password_hash,role,status) VALUES(1,'image-admin','test-unused','admin','active')").Error; e != nil {
 		t.Fatal(e)
 	}
+	if e = db.Exec("INSERT INTO policy_versions(id,kind,code,version,config,status,effective_at,created_by_user_id) VALUES(1,'metrics','image-test','v1',JSON_OBJECT(),'active','2000-01-01',1)").Error; e != nil {
+		t.Fatal(e)
+	}
 	for id := 1; id <= 2; id++ {
 		endpoint := server.URL
 		if id == 2 {
 			endpoint += "/"
 		}
-		e = db.Exec("INSERT INTO nodes(id,name,agent_endpoint,token_ciphertext,key_version,server_cert_sha256,default_storage_pool,default_project_name,allocatable_vcpus,allocatable_memory_bytes,allocatable_disk_bytes,resident_vcpu_budget,resident_memory_budget_bytes,resident_disk_budget_bytes,status) VALUES(?,?,?,?,1,?,'default','default',4,1,1,4,1,1,'active')", id, fmt.Sprintf("image-node-%d", id), endpoint, token, pin[:]).Error
+		e = db.Exec("INSERT INTO nodes(id,name,agent_endpoint,token_ciphertext,key_version,server_cert_sha256,default_storage_pool,default_project_name,allocatable_vcpus,allocatable_memory_bytes,allocatable_disk_bytes,resident_vcpu_budget,resident_memory_budget_bytes,resident_disk_budget_bytes,status,metrics_policy_id) VALUES(?,?,?,?,1,?,'default','default',4,1,1,4,1,1,'active',1)", id, fmt.Sprintf("image-node-%d", id), endpoint, token, pin[:]).Error
 		if e != nil {
 			t.Fatal(e)
 		}

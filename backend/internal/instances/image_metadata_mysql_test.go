@@ -16,7 +16,7 @@ import (
 func TestMySQLInstanceSourceImageMetadata(t *testing.T) {
 	db, a := admissionMySQLFixture(t)
 	for _, statement := range []string{
-		"ALTER TABLE instances ADD logical_name VARCHAR(128), ADD billing_mode VARCHAR(20), ADD image_type VARCHAR(20), ADD image_id BIGINT, ADD instance_plan_id BIGINT, ADD plan_snapshot JSON, ADD observed_at DATETIME(6), ADD allowed_user_actions JSON, ADD created_at DATETIME(6), ADD updated_at DATETIME(6)",
+		"ALTER TABLE instances ADD logical_name VARCHAR(128), ADD billing_mode VARCHAR(20), ADD image_type VARCHAR(20), ADD image_id BIGINT, ADD instance_plan_id BIGINT, ADD plan_snapshot JSON, ADD policy_versions JSON, ADD observed_at DATETIME(6), ADD allowed_user_actions JSON, ADD created_at DATETIME(6), ADD updated_at DATETIME(6)",
 		"CREATE TABLE images (id BIGINT PRIMARY KEY,name VARCHAR(128),os_name VARCHAR(100),os_release VARCHAR(100),status VARCHAR(20),source_config JSON)",
 		"CREATE TABLE tasks (id BIGINT PRIMARY KEY,instance_id BIGINT,is_instance_mutation BOOLEAN,status VARCHAR(20))",
 		"CREATE TABLE credit_enforcements (id BIGINT PRIMARY KEY,status VARCHAR(20),shutdown_deadline DATETIME(6))",

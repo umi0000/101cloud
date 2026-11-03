@@ -71,19 +71,22 @@ func planMoney(s string) (decimal.Decimal, error) {
 }
 
 func planGPUConfiguration(b planInput, policies map[string]platform.Row) (PlanGPUPolicy, []string, map[string]bool, error) {
-	var idle billing.IdleConfig
-	if e := json.Unmarshal([]byte(platform.Text(policies["gpu-idle"]["config"])), &idle); e != nil || idle.Min <= 0 || idle.Max < idle.Min || idle.Default < idle.Min || idle.Default > idle.Max || len(idle.Actions) == 0 {
-		return PlanGPUPolicy{}, nil, nil, platform.E(500, "invalid_stored_policy", "套餐绑定的 GPU 空闲策略配置无效。")
-	}
 	price, e := planMoney(b.GPU.MaxHourlyPT)
 	if e != nil {
 		return PlanGPUPolicy{}, nil, nil, e
 	}
-	action := idle.Actions[0]
-	if action == "release_gpu" {
-		action = "detach_gpu"
+	var idle billing.IdleConfig
+	cfg := PlanGPUPolicy{Idle: PlanIdlePolicy{Action: "detach_gpu"}, Rebalance: PlanRebalancePolicy{MaxHourlyPT: price.StringFixed(6)}}
+	if b.InstanceType != "virtual-machine" {
+		if e := json.Unmarshal([]byte(platform.Text(policies["gpu-idle"]["config"])), &idle); e != nil || idle.Min <= 0 || idle.Max < idle.Min || idle.Default < idle.Min || idle.Default > idle.Max || len(idle.Actions) == 0 {
+			return PlanGPUPolicy{}, nil, nil, platform.E(500, "invalid_stored_policy", "套餐绑定的 GPU 空闲策略配置无效。")
+		}
+		action := idle.Actions[0]
+		if action == "release_gpu" {
+			action = "detach_gpu"
+		}
+		cfg.Idle = PlanIdlePolicy{TimeoutSeconds: uint64(idle.Default), Action: action}
 	}
-	cfg := PlanGPUPolicy{Idle: PlanIdlePolicy{TimeoutSeconds: uint64(idle.Default), Action: action}, Rebalance: PlanRebalancePolicy{MaxHourlyPT: price.StringFixed(6)}}
 	if in := b.GPUPolicy; in != nil {
 		if in.Idle == nil || in.Rebalance == nil || in.Idle.Enabled == nil || in.Idle.TimeoutSeconds == nil || in.Rebalance.Enabled == nil || in.Rebalance.AllowLive == nil {
 			return cfg, nil, nil, invalid("gpu_policy.idle 和 rebalance 必须包含全部配置字段。")
@@ -98,20 +101,22 @@ func planGPUConfiguration(b planInput, policies map[string]platform.Row) (PlanGP
 		}
 		cfg.Rebalance = PlanRebalancePolicy{Enabled: *in.Rebalance.Enabled, AllowLive: *in.Rebalance.AllowLive, MaxHourlyPT: cap.StringFixed(6)}
 	}
-	if cfg.Idle.TimeoutSeconds < uint64(idle.Min) || cfg.Idle.TimeoutSeconds > uint64(idle.Max) {
-		return cfg, nil, nil, invalid("gpu_policy.idle.timeout_seconds 超出套餐绑定策略范围。")
-	}
-	if !enum(cfg.Idle.Action, "detach_gpu", "stop_instance") {
-		return cfg, nil, nil, invalid("gpu_policy.idle.action 必须为 detach_gpu 或 stop_instance。")
-	}
-	allowedAction := false
-	for _, action := range idle.Actions {
-		if action == cfg.Idle.Action || (action == "release_gpu" && cfg.Idle.Action == "detach_gpu") {
-			allowedAction = true
+	if b.InstanceType != "virtual-machine" {
+		if cfg.Idle.TimeoutSeconds < uint64(idle.Min) || cfg.Idle.TimeoutSeconds > uint64(idle.Max) {
+			return cfg, nil, nil, invalid("gpu_policy.idle.timeout_seconds 超出套餐绑定策略范围。")
 		}
-	}
-	if !allowedAction || (cfg.Idle.Enabled && !idle.Enabled) {
-		return cfg, nil, nil, invalid("套餐绑定策略未允许所选 GPU 空闲动作。")
+		if !enum(cfg.Idle.Action, "detach_gpu", "stop_instance") {
+			return cfg, nil, nil, invalid("gpu_policy.idle.action 必须为 detach_gpu 或 stop_instance。")
+		}
+		allowedAction := false
+		for _, action := range idle.Actions {
+			if action == cfg.Idle.Action || (action == "release_gpu" && cfg.Idle.Action == "detach_gpu") {
+				allowedAction = true
+			}
+		}
+		if !allowedAction || (cfg.Idle.Enabled && !idle.Enabled) {
+			return cfg, nil, nil, invalid("套餐绑定策略未允许所选 GPU 空闲动作。")
+		}
 	}
 	actions := b.AllowedUserActions
 	if actions == nil {

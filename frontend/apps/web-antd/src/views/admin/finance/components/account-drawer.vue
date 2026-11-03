@@ -249,13 +249,16 @@ async function submitAdjust() {
       </DescriptionsItem>
       <DescriptionsItem label="下次发放"><TimeText :value="detail.data.value.next_grant_at" /></DescriptionsItem>
       <DescriptionsItem label="额度事件">
-        <Space v-if="detail.data.value.enforcement">
-          <span class="font-mono">#{{ detail.data.value.enforcement.id }}</span>
-          <StatusTag kind="enforcement" :value="detail.data.value.enforcement.status" />
-          <span>停机期限</span>
-          <TimeText :value="detail.data.value.enforcement.shutdown_deadline" />
+        <span v-if="!detail.data.value.enforcements.length">—</span>
+        <Space v-else direction="vertical">
+          <Space v-for="event in detail.data.value.enforcements" :key="event.id" wrap>
+            <span class="font-mono">#{{ event.id }}</span>
+            <StatusTag kind="enforcement" :value="event.status" />
+            <span>政策 #{{ event.policy_version_id }}</span>
+            <span>停机期限</span>
+            <TimeText :value="event.shutdown_deadline" />
+          </Space>
         </Space>
-        <span v-else>—</span>
       </DescriptionsItem>
       <DescriptionsItem label="revision"><span class="font-mono">{{ detail.data.value.revision }}</span></DescriptionsItem>
     </Descriptions>

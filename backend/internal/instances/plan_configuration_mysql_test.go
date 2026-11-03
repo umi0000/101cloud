@@ -126,25 +126,27 @@ func newPlanConfigurationFixture(t *testing.T) *planConfigurationFixture {
 		`INSERT INTO pricing_versions(id,code,version,cpu_hourly_pt,memory_gib_hourly_pt,disk_gib_hourly_pt,status,effective_at,created_by_user_id) VALUES(1,'plan-price','1',1,0.5,0.01,'active',NOW(6)-INTERVAL 1 HOUR,1)`,
 		`INSERT INTO credit_policy_versions(id,code,version,daily_allowance_pt,bonus_cap_pt,timezone,reset_time,billing_window_seconds,status,effective_at,created_by_user_id,daily_validity_seconds,shutdown_grace_seconds,grace_charge_mode,restore_action,storage_charge_mode,offline_charge_mode) VALUES(1,'plan-credit','1',100,10000,'Asia/Shanghai','00:00:00',60,'active',NOW(6)-INTERVAL 1 HOUR,1,86400,60,'continue','manual','retained','continue')`,
 		`INSERT INTO idle_policy_versions(id,code,version,sample_interval_seconds,evaluation_window_seconds,consecutive_idle_windows,cpu_utilization_threshold_pct,gpu_utilization_threshold_pct,gpu_memory_threshold_pct,network_bytes_threshold,action,status,effective_at,created_by_user_id) VALUES(1,'plan-idle','1',10,60,2,5,5,5,0,'release_gpu','active',NOW(6)-INTERVAL 1 HOUR,1)`,
+		`INSERT INTO gpu_price_versions(id,code,version,name,gpu_model,access_mode,gpu_hourly_pt,status,effective_at,created_by_user_id) VALUES(1,'plan-gpu','1','Plan GPU','NVIDIA A100','shared',2,'active',NOW(6)-INTERVAL 1 HOUR,1)`,
 		`INSERT INTO policy_versions(id,kind,code,version,source_id,config,status,effective_at,created_by_user_id) VALUES
 		(1,'pricing','plan-price','1',1,'{"cpu_hourly_pt":"1.000000","memory_gib_hourly_pt":"0.500000","disk_gib_hourly_pt":"0.010000"}','active',NOW(6)-INTERVAL 1 HOUR,1),
 		(2,'credit','plan-credit','1',1,'{"billing_window_seconds":60,"storage_charge_mode":"retained","offline_charge_mode":"continue"}','active',NOW(6)-INTERVAL 1 HOUR,1),
 		(3,'gpu-idle','plan-idle','1',1,'{"enabled":true,"default_timeout_seconds":1800,"min_timeout_seconds":60,"max_timeout_seconds":7200,"allowed_actions":["release_gpu","stop_instance"],"graceful_stop_timeout_seconds":60}','active',NOW(6)-INTERVAL 1 HOUR,1),
-		(4,'gpu-scheduling','plan-scheduling','1',NULL,'{"metrics_max_age_seconds":60,"cooldown_seconds":600,"allow_price_increase":false}','active',NOW(6)-INTERVAL 1 HOUR,1)`,
-		`INSERT INTO platform_policy_bindings(kind,policy_id) VALUES('pricing',1),('credit',2),('gpu-idle',3),('gpu-scheduling',4)`,
+		(4,'gpu-scheduling','plan-scheduling','1',NULL,'{"metrics_max_age_seconds":60,"cooldown_seconds":600,"allow_price_increase":false}','active',NOW(6)-INTERVAL 1 HOUR,1),
+		(5,'metrics','plan-metrics','1',NULL,'{"raw_retention_days":7,"rollup_retention_days":30,"bucket_seconds":60,"collection_interval_seconds":10}','active',NOW(6)-INTERVAL 1 HOUR,1),
+		(6,'gpu-pricing','plan-gpu','1',1,'{"gpu_model":"NVIDIA A100","access_mode":"shared","gpu_hourly_pt":"2.000000"}','active',NOW(6)-INTERVAL 1 HOUR,1)`,
 		`INSERT INTO credit_accounts(id,user_id,credit_policy_version_id,status) VALUES(1,2,1,'active')`,
 		`INSERT INTO credit_buckets(account_id,source_type,business_key,granted_pt,remaining_pt,reserved_pt,valid_from) VALUES(1,'admin','plan-fixture',10000,10000,0,NOW(6)-INTERVAL 1 HOUR)`,
 		`INSERT INTO images(id,code,version,name,source_type,fingerprint,architecture,image_type,gpu_ready,os_name,os_release,properties,status,created_by_user_id) VALUES(1,'plan-image','1','Plan image','local',UNHEX(SHA2('plan-image',256)),'x86_64','container',TRUE,'Linux','test',JSON_OBJECT(),'active',1)`,
 	} {
 		f.exec(statement)
 	}
-	f.exec(`INSERT INTO nodes(id,name,agent_endpoint,token_ciphertext,key_version,server_cert_sha256,default_storage_pool,default_project_name,allocatable_vcpus,allocatable_memory_bytes,allocatable_disk_bytes,resident_vcpu_budget,resident_memory_budget_bytes,resident_disk_budget_bytes,resources,resources_sampled_at,last_heartbeat_at,status,administrative_state,health,connection_verified_at) VALUES(1,'plan-node',?,?,1,?,'default','default',100,1099511627776,1099511627776,100,1099511627776,1099511627776,'{"architecture":"x86_64"}',NOW(6),NOW(6),'active','active','online',NOW(6))`, server.URL, token, fingerprint[:])
+	f.exec(`INSERT INTO nodes(id,name,agent_endpoint,token_ciphertext,key_version,server_cert_sha256,default_storage_pool,default_project_name,allocatable_vcpus,allocatable_memory_bytes,allocatable_disk_bytes,resident_vcpu_budget,resident_memory_budget_bytes,resident_disk_budget_bytes,resources,resources_sampled_at,last_heartbeat_at,status,administrative_state,health,connection_verified_at,metrics_policy_id) VALUES(1,'plan-node',?,?,1,?,'default','default',100,1099511627776,1099511627776,100,1099511627776,1099511627776,'{"architecture":"x86_64"}',NOW(6),NOW(6),'active','active','online',NOW(6),5)`, server.URL, token, fingerprint[:])
 	for _, statement := range []string{
 		`INSERT INTO image_nodes(image_id,node_id,project_name,architecture,fingerprint,cloud_init,gpu_ready,properties,status,last_verified_at) VALUES(1,1,'default','x86_64',UNHEX(SHA2('plan-image',256)),TRUE,TRUE,JSON_OBJECT(),'ready',NOW(6))`,
 		`INSERT INTO network_pools(id,name,address_family,network_address,prefix_length,range_start,range_end,dns_servers,status) VALUES(1,'plan-pool',4,INET6_ATON('192.0.2.0'),24,INET6_ATON('192.0.2.10'),INET6_ATON('192.0.2.20'),JSON_ARRAY(),'active')`,
 		`INSERT INTO node_network_bindings(id,node_id,network_pool_id,mode,parent_interface,project_name,status,validation_status,validated_at) VALUES(1,1,1,'bridge','br0','default','active','verified',NOW(6))`,
 		`INSERT INTO ip_addresses(network_pool_id,address_family,address,status) VALUES(1,4,INET6_ATON('192.0.2.10'),'available'),(1,4,INET6_ATON('192.0.2.11'),'available')`,
-		`INSERT INTO instance_plans(id,code,version,name,image_type,vcpus,memory_bytes,disk_bytes,gpu_count,gpu_model,gpu_access_mode,gpu_max_hourly_pt,pricing_version_id,credit_policy_version_id,idle_policy_version_id,init_parameters,allow_residency,status,allowed_overrides,policy_versions,gpu_policy,allowed_user_actions,gpu_user_permissions) VALUES(1,'configured-plan','1','Configured plan','container',2,2147483648,1073741824,0,'NVIDIA A100','shared',3.25,1,1,1,JSON_OBJECT(),FALSE,'active','{"gpu_count":{"min":"0","max":"1","step":"1"}}','{"pricing":"1","credit":"2","gpu-idle":"3","gpu-scheduling":"4"}','{"idle":{"enabled":true,"timeout_seconds":900,"action":"detach_gpu"},"rebalance":{"enabled":true,"allow_live":true,"max_hourly_pt":"3.250000"}}','["stop","gpu_policy","console"]','{"idle":false,"idle_timeout":true,"idle_action":false,"rebalance":false,"allow_live":false,"max_hourly_pt":true}')`,
+		`INSERT INTO instance_plans(id,code,version,name,image_type,vcpus,memory_bytes,disk_bytes,gpu_count,gpu_model,gpu_access_mode,gpu_max_hourly_pt,pricing_version_id,credit_policy_version_id,idle_policy_version_id,init_parameters,allow_residency,status,allowed_overrides,policy_versions,gpu_policy,allowed_user_actions,gpu_user_permissions) VALUES(1,'configured-plan','1','Configured plan','container',2,2147483648,1073741824,0,'NVIDIA A100','shared',3.25,1,1,1,JSON_OBJECT(),FALSE,'active','{"gpu_count":{"min":"0","max":"1","step":"1"}}','{"pricing":"1","credit":"2","gpu-idle":"3","gpu-scheduling":"4","metrics":"5","gpu-pricing":"6"}','{"idle":{"enabled":true,"timeout_seconds":900,"action":"detach_gpu"},"rebalance":{"enabled":true,"allow_live":true,"max_hourly_pt":"3.250000"}}','["stop","gpu_policy","console"]','{"idle":false,"idle_timeout":true,"idle_action":false,"rebalance":false,"allow_live":false,"max_hourly_pt":true}')`,
 		`INSERT INTO plan_images(plan_id,image_id) VALUES(1,1)`,
 		`INSERT INTO plan_network_options(plan_id,network_option_id) VALUES(1,1)`,
 		`INSERT INTO plan_nodes(plan_id,node_id) VALUES(1,1)`,
@@ -196,7 +198,7 @@ func (f *planConfigurationFixture) call(admin bool, method, path string, body an
 }
 
 func (f *planConfigurationFixture) createBody(node, cap string) platform.Row {
-	return platform.Row{"name": "elastic-plan-instance", "plan_id": "1", "plan_revision": "1", "image_id": "1", "network_option_id": "1", "node_id": node, "resources": Resources{VCPUs: 2, MemoryBytes: "2147483648", DiskBytes: "1073741824"}, "gpu": GPURequest{Count: 0, AccessMode: "shared", MaxHourlyPT: cap}, "init_parameters": platform.Row{}, "policy_versions": map[string]string{"pricing": "1", "credit": "2", "gpu-idle": "3", "gpu-scheduling": "4"}}
+	return platform.Row{"name": "elastic-plan-instance", "plan_id": "1", "plan_revision": "1", "image_id": "1", "network_option_id": "1", "node_id": node, "resources": Resources{VCPUs: 2, MemoryBytes: "2147483648", DiskBytes: "1073741824"}, "gpu": catalog.GPURequest{Count: 0, AccessMode: "shared", MaxHourlyPT: cap}, "init_parameters": platform.Row{}, "policy_versions": map[string]string{"pricing": "1", "credit": "2", "gpu-idle": "3", "gpu-scheduling": "4", "metrics": "5", "gpu-pricing": "6"}}
 }
 
 func (f *planConfigurationFixture) instance(id uint64) platform.Row {
@@ -480,4 +482,94 @@ func TestMySQLQuoteDoesNotRequireCreationName(t *testing.T) {
 	if platform.Text(f.instance(platform.Uint(created["instance_id"]))["logical_name"]) != body["name"] {
 		t.Fatal("creation did not preserve the subsequently entered name")
 	}
+}
+
+func TestMySQLTwoPlansFreezeDistinctPricesOnSameGPU(t *testing.T) {
+	f := newPlanConfigurationFixture(t)
+	f.exec(`UPDATE policy_versions SET config=JSON_SET(config,'$.sm_weight',0.5,'$.memory_weight',0.5) WHERE id=4`)
+	f.exec(`UPDATE nodes SET resources=JSON_OBJECT('architecture','x86_64','gpus',JSON_ARRAY(JSON_OBJECT('uuid','GPU-plan','utilization_percent',0,'memory_utilization_percent',0))),resources_sampled_at=NOW(6) WHERE id=1`)
+	f.exec(`INSERT INTO node_gpus(node_id,uuid,model,memory_mib,max_allocations,status,last_seen_at) VALUES(1,'GPU-plan','NVIDIA A100',81920,8,'available',NOW(6))`)
+	var plan platform.Row
+	if err := f.db.Table("instance_plans").Where("id=1").Take(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	plan["id"], plan["code"], plan["gpu_max_hourly_pt"] = 2, "second-plan", "10.000000"
+	if err := f.db.Table("instance_plans").Create(&plan).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"plan_images", "plan_nodes", "plan_network_options"} {
+		column := map[string]string{"plan_images": "image_id", "plan_nodes": "node_id", "plan_network_options": "network_option_id"}[table]
+		f.exec("INSERT INTO " + table + "(plan_id," + column + ") VALUES(2,1)")
+	}
+	for i, rate := range []string{"4.000000", "7.000000"} {
+		id := i + 2
+		profile := i + 7
+		f.exec(`INSERT INTO gpu_price_versions(id,code,version,name,gpu_model,access_mode,gpu_hourly_pt,status,effective_at,created_by_user_id) VALUES(?,?,'1','Plan GPU rate','NVIDIA A100','shared',?,'active',NOW(6)-INTERVAL 1 HOUR,1)`, id, fmt.Sprintf("gpu-rate-%d", id), rate)
+		f.exec(`INSERT INTO policy_versions(id,kind,code,version,source_id,config,status,effective_at,created_by_user_id) VALUES(?,'gpu-pricing',?,'1',?,JSON_OBJECT('gpu_model','NVIDIA A100','access_mode','shared','gpu_hourly_pt',?),'active',NOW(6)-INTERVAL 1 HOUR,1)`, profile, fmt.Sprintf("gpu-rate-%d", id), id, rate)
+		f.exec(`UPDATE instance_plans SET gpu_max_hourly_pt=10,policy_versions=JSON_SET(policy_versions,'$."gpu-pricing"',?) WHERE id=?`, strconv.Itoa(profile), i+1)
+		body := f.createBody("1", "10")
+		body["plan_id"] = strconv.Itoa(i + 1)
+		body["gpu"] = GPURequest{Count: 1, Model: "NVIDIA A100", AccessMode: "shared", MaxHourlyPT: "10", MinMemoryMiB: "0"}
+		versions := body["policy_versions"].(map[string]string)
+		versions["gpu-pricing"] = strconv.Itoa(profile)
+		quoteBody := f.createBody("1", "10")
+		quoteBody["plan_id"] = body["plan_id"]
+		model := "NVIDIA A100"
+		quoteBody["gpu"] = catalog.GPURequest{Count: 1, Model: &model, AccessMode: "shared", MaxHourlyPT: "10"}
+		delete(quoteBody, "policy_versions")
+		quote := f.call(false, http.MethodPost, "/quotes", quoteBody, 0, http.StatusOK, "")
+		if platform.Text(object(quote["price_details"])["gpu_hourly_pt"]) != rate || !platform.Bool(quote["admissible"]) {
+			t.Fatalf("plan quote does not match its GPU profile: %+v", quote)
+		}
+		created := f.call(false, http.MethodPost, "/instances", body, 0, http.StatusAccepted, "")
+		r := f.instance(platform.Uint(created["instance_id"]))
+		var allocation platform.Row
+		if err := f.db.Table("gpu_allocations").Where("instance_id=?", r["id"]).Take(&allocation).Error; err != nil {
+			t.Fatal(err)
+		}
+		if platform.Text(allocation["gpu_hourly_pt"]) != rate || platform.Uint(allocation["gpu_price_version_id"]) != uint64(id) || platform.Uint(allocation["gpu_id"]) != 1 {
+			t.Fatalf("plan %d allocation did not retain its bound price: %+v", i+1, allocation)
+		}
+	}
+}
+
+func TestMySQLLegacyCustomGPUPriceRequiresExplicitOneTimeConfiguration(t *testing.T) {
+	f := newPlanConfigurationFixture(t)
+	created := f.call(false, http.MethodPost, "/instances", f.createBody("1", "2.5"), 0, http.StatusAccepted, "")
+	id := platform.Uint(created["instance_id"])
+	f.exec(`UPDATE instances SET product_type='custom',billing_mode='admin_exempt',instance_plan_id=NULL,plan_snapshot=NULL,policy_versions=JSON_REMOVE(policy_versions,'$."gpu-pricing"') WHERE id=?`, id)
+	r := f.instance(id)
+	if _, err := f.a.InstancePolicy(t.Context(), r, "gpu-pricing"); err == nil {
+		t.Fatal("legacy missing binding selected an implicit price")
+	}
+	path := fmt.Sprintf("/instances/%d/gpu-pricing-policy", id)
+	input := platform.Row{"policy_version_id": "6"}
+	f.call(true, http.MethodPut, path, input, platform.Uint(r["revision"]), http.StatusOK, "")
+	r = f.instance(id)
+	if platform.Text(object(r["policy_versions"])["gpu-pricing"]) != "6" {
+		t.Fatal("explicit legacy price binding was not persisted")
+	}
+	f.call(true, http.MethodPut, path, input, platform.Uint(r["revision"]), http.StatusConflict, "policy_binding_frozen")
+}
+
+func TestMySQLGPUProfileCatalogIsAdminOnly(t *testing.T) {
+	f := newPlanConfigurationFixture(t)
+	userRequest := httptest.NewRequest(http.MethodGet, "/api/v1/catalog/gpu-options", nil)
+	response := httptest.NewRecorder()
+	f.router.ServeHTTP(response, userRequest)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("member GPU profile catalog is still exposed: %d", response.Code)
+	}
+	deniedRouter := gin.New()
+	member := deniedRouter.Group("/api/v1", func(c *gin.Context) {
+		c.Set("user", platform.User{ID: 2, Role: "user"})
+		c.Next()
+	})
+	catalog.Register(platform.New(f.db, f.a.Config), member, member.Group("/admin", platform.Admin()))
+	denied := httptest.NewRecorder()
+	deniedRouter.ServeHTTP(denied, httptest.NewRequest(http.MethodGet, "/api/v1/admin/catalog/gpu-options", nil))
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("member reached administrator GPU profile catalog: %d", denied.Code)
+	}
+	f.call(true, http.MethodGet, "/catalog/gpu-options", nil, 0, http.StatusOK, "")
 }

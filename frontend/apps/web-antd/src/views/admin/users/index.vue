@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import type { Role, User, UserStatus } from '#/api/types';
+import type { PolicyVersion, Role, User, UserStatus } from '#/api/types';
 
 import { computed, onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
@@ -8,13 +8,15 @@ import { Page } from '@vben/common-ui';
 
 import { Alert, Button, Card, Form, FormItem, Input, Modal, Select, Space, Table } from 'ant-design-vue';
 
-import { usersApi } from '#/api/backend';
+import { listAll, policiesApi, usersApi } from '#/api/backend';
 import CursorPager from '#/components/cursor-pager.vue';
 import StatusTag from '#/components/status-tag.vue';
 import TimeText from '#/components/time-text.vue';
-import { useAction, useCursorList } from '#/composables/api';
+import { errorToast, useAction, useCursorList } from '#/composables/api';
 import { enumLabel } from '#/locales/enums';
 import { useUserCache } from '#/store/user-cache';
+
+import { isEffective } from '../finance/components/credit-policy';
 
 import PasswordReveal from './components/password-reveal.vue';
 import { PASSWORD_MAX, passwordError, randomPassword } from './password';
@@ -53,9 +55,29 @@ const columns = [
 /* ---------- 创建用户 ---------- */
 
 const createOpen = ref(false);
-const form = ref({ email: '', initial_password: '', role: 'user' as Role, username: '' });
+const form = ref({ credit_policy_version_id: '', email: '', initial_password: '', role: 'user' as Role, username: '' });
 const create = useAction();
 watch(form, () => create.resetKey(), { deep: true });
+
+const creditVersions = ref<PolicyVersion[]>([]);
+const policiesLoading = ref(false);
+const policiesFailed = ref(false);
+const policyOptions = computed(() =>
+  creditVersions.value.filter((v) => isEffective(v)).map((v) => ({ label: `${v.code} v${v.version}`, value: v.id })),
+);
+
+async function loadPolicies() {
+  policiesLoading.value = true;
+  policiesFailed.value = false;
+  try {
+    creditVersions.value = await listAll((q) => policiesApi.list('credit', q));
+  } catch (error) {
+    policiesFailed.value = true;
+    errorToast(error);
+  } finally {
+    policiesLoading.value = false;
+  }
+}
 
 const errors = computed(() => {
   const f = form.value;
@@ -67,11 +89,16 @@ const errors = computed(() => {
       n < 1 || n > 64 ? '用户名需 1–64 个字符' : f.username.trim() === f.username ? null : '用户名首尾不能有空格',
   };
 });
-const formValid = computed(() => !errors.value.username && !errors.value.email && !errors.value.password);
+const formValid = computed(() =>
+  !errors.value.username && !errors.value.email && !errors.value.password
+  && !policiesLoading.value && !policiesFailed.value
+  && policyOptions.value.some((p) => p.value === form.value.credit_policy_version_id),
+);
 
 function openCreate() {
-  form.value = { email: '', initial_password: '', role: 'user', username: '' };
+  form.value = { credit_policy_version_id: '', email: '', initial_password: '', role: 'user', username: '' };
   createOpen.value = true;
+  void loadPolicies();
 }
 
 const created = ref<null | { id: string; password: string; username: string }>(null);
@@ -83,7 +110,13 @@ async function submitCreate() {
   const email = f.email.trim();
   const r = await create.run((key) =>
     usersApi.create(
-      { email: email || null, initial_password: f.initial_password, role: f.role, username: f.username },
+      {
+        credit_policy_version_id: f.credit_policy_version_id,
+        email: email || null,
+        initial_password: f.initial_password,
+        role: f.role,
+        username: f.username,
+      },
       { key },
     ),
   );
@@ -193,9 +226,37 @@ onMounted(() => list.load());
         <FormItem label="角色" required>
           <Select v-model:value="form.role" :options="roleOptions" />
         </FormItem>
+        <FormItem
+          help="用户共享钱包的每日额度规则独立于实例套餐；选择套餐不会发放额度。"
+          label="共享钱包额度政策"
+          required
+        >
+          <Select
+            v-model:value="form.credit_policy_version_id"
+            class="w-full"
+            :disabled="create.pending.value || policiesLoading || policiesFailed"
+            :loading="policiesLoading"
+            option-filter-prop="label"
+            :options="policyOptions"
+            placeholder="请选择已生效的额度政策"
+            show-search
+          />
+          <Alert v-if="policiesFailed" class="mt-2" message="额度政策加载失败" show-icon type="error">
+            <template #action><Button size="small" @click="loadPolicies">重试</Button></template>
+          </Alert>
+          <Alert
+            v-else-if="!policiesLoading && !policyOptions.length"
+            class="mt-2"
+            message="暂无已生效的额度政策，请先在政策配置中发布，再刷新选项。"
+            show-icon
+            type="warning"
+          >
+            <template #action><Button size="small" @click="loadPolicies">刷新</Button></template>
+          </Alert>
+        </FormItem>
       </Form>
       <Alert
-        message="新用户配额全部为 0，创建后请在“配额”中授予资源。额度账户由后台约 1 分钟内自动创建。"
+        message="新用户配额全部为 0，创建后请在“配额”中授予资源。共享钱包将绑定所选政策；创建账户本身不发放额度。"
         show-icon
         type="info"
       />

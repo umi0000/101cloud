@@ -34,7 +34,8 @@ func newAdjustmentMySQLFixture(t *testing.T) *adjustmentMySQLFixture {
 		`INSERT INTO credit_policy_versions(id,code,version,daily_allowance_pt,bonus_cap_pt,timezone,reset_time,billing_window_seconds,status,effective_at,created_by_user_id,daily_validity_seconds,shutdown_grace_seconds,grace_charge_mode,restore_action,storage_charge_mode,offline_charge_mode) VALUES(1,'adjustment-credit','1',0,0,'Asia/Shanghai','06:30:00',60,'active','2000-01-01',1,86400,600,'waived','cancel_pending_stop','retained','defer')`,
 		`INSERT INTO idle_policy_versions(id,code,version,sample_interval_seconds,evaluation_window_seconds,consecutive_idle_windows,cpu_utilization_threshold_pct,gpu_utilization_threshold_pct,gpu_memory_threshold_pct,network_bytes_threshold,action,status,effective_at,created_by_user_id) VALUES(1,'adjustment-idle','1',10,60,2,5,5,5,0,'release_gpu','active','2000-01-01',1)`,
 		`INSERT INTO credit_accounts(id,user_id,credit_policy_version_id,status) VALUES(1,2,1,'active')`,
-		`INSERT INTO nodes(id,name,agent_endpoint,token_ciphertext,key_version,server_cert_sha256,default_storage_pool,default_project_name,allocatable_vcpus,allocatable_memory_bytes,allocatable_disk_bytes,resident_vcpu_budget,resident_memory_budget_bytes,resident_disk_budget_bytes,status) VALUES(1,'adjustment-node','https://adjustment.invalid:8443','unused-cipher',1,UNHEX(SHA2('adjustment-cert',256)),'default','default',4,1073741824,1073741824,4,1073741824,1073741824,'active')`,
+		`INSERT INTO policy_versions(id,kind,code,version,config,status,effective_at,created_by_user_id) VALUES(100,'metrics','adjustment-metrics','1',JSON_OBJECT('raw_retention_days',7,'rollup_retention_days',30,'bucket_seconds',60,'collection_interval_seconds',5),'active','2000-01-01',1)`,
+		`INSERT INTO nodes(id,name,agent_endpoint,token_ciphertext,key_version,server_cert_sha256,default_storage_pool,default_project_name,allocatable_vcpus,allocatable_memory_bytes,allocatable_disk_bytes,resident_vcpu_budget,resident_memory_budget_bytes,resident_disk_budget_bytes,status,metrics_policy_id) VALUES(1,'adjustment-node','https://adjustment.invalid:8443','unused-cipher',1,UNHEX(SHA2('adjustment-cert',256)),'default','default',4,1073741824,1073741824,4,1073741824,1073741824,'active',100)`,
 		`INSERT INTO images(id,code,version,name,source_type,fingerprint,architecture,image_type,gpu_ready,os_name,os_release,properties,status,created_by_user_id) VALUES(1,'adjustment-image','1','Adjustment image','local',UNHEX(SHA2('adjustment-image',256)),'x86_64','container',FALSE,'Linux','test',JSON_OBJECT(),'active',1)`,
 		`INSERT INTO instances(id,user_id,node_id,image_id,instance_plan_id,logical_name,project_name,incus_name,image_type,architecture,image_fingerprint,vcpus,memory_bytes,disk_bytes,storage_pool,pricing_version_id,cpu_hourly_pt,memory_gib_hourly_pt,disk_gib_hourly_pt,credit_policy_version_id,billing_mode,desired_state,observed_state,provisioning_state,auto_release_gpu,auto_rebind_gpu,idle_policy_version_id,max_gpu_hourly_pt,init_parameters,incus_config_snapshot,product_type,allowed_user_actions,gpu_user_permissions,policy_versions,gpu_policy) VALUES(1,2,1,1,NULL,'Adjustment instance','default','adjustment-instance','container','x86_64',UNHEX(SHA2('adjustment-image',256)),1,1073741824,1073741824,'default',1,1,0,0,1,'credit','stopped','stopped','ready',FALSE,FALSE,1,0,JSON_OBJECT(),JSON_OBJECT(),'custom',JSON_ARRAY(),JSON_OBJECT(),JSON_OBJECT(),JSON_OBJECT())`,
 	} {
@@ -44,7 +45,10 @@ func newAdjustmentMySQLFixture(t *testing.T) *adjustmentMySQLFixture {
 	}
 	policy := validCreditPolicy()
 	policy["daily_allowance_pt"] = "0.000000"
-	if err := db.Exec(`INSERT INTO policy_versions(kind,code,version,source_id,config,status,effective_at,created_by_user_id) VALUES('credit','adjustment-credit','1',1,?,'active','2000-01-01',1)`, jsonValue(policy)).Error; err != nil {
+	if err := db.Exec(`INSERT INTO policy_versions(id,kind,code,version,source_id,config,status,effective_at,created_by_user_id) VALUES(1,'credit','adjustment-credit','1',1,?,'active','2000-01-01',1)`, jsonValue(policy)).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`UPDATE instances SET policy_versions=JSON_OBJECT('credit','1','metrics','100') WHERE id=1`).Error; err != nil {
 		t.Fatal(err)
 	}
 	at := now().Add(-72 * time.Hour)

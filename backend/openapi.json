@@ -289,6 +289,11 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "metrics_policy_id": {
+                    "type": "string",
+                    "pattern": "^[1-9][0-9]*$",
+                    "description": "Explicit active/effective metrics policy_versions.id; required on every node PATCH and returned by the Node DTO."
+                  },
                   "name": {
                     "type": "string"
                   },
@@ -340,7 +345,7 @@
                     "additionalProperties": false
                   }
                 },
-                "required": [],
+                "required": ["metrics_policy_id"],
                 "additionalProperties": false
               }
             }
@@ -582,18 +587,6 @@
                   "max_allocations": {
                     "type": "integer",
                     "minimum": 1
-                  },
-                  "gpu_price_version_id": {
-                    "description": "gpu-pricing policy version id (policy_versions.id). Unknown id or another kind: 422 validation_failed; not active, model or exclusive-slot mismatch: 422. null leaves the price unchanged.",
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "pattern": "^[1-9][0-9]*$"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
                   }
                 },
                 "required": [],
@@ -2013,6 +2006,53 @@
         }
       }
     },
+    "/admin/instances/{id}/gpu-pricing-policy": {
+      "put": {
+        "operationId": "put_admin_instances_id_gpu_pricing_policy",
+        "tags": ["admin"],
+        "description": "One-time explicit GPU pricing setup for a legacy custom instance with no gpu-pricing binding and no GPU allocation history. Requires an active, effective gpu-pricing policy version. Elastic instances, existing bindings, or any historical allocation return 409 policy_binding_frozen. Never replaces a frozen binding or reprices allocations. Returns policy_versions, revision, and updated ETag.",
+        "parameters": [
+          {"in": "path", "name": "id", "required": true, "schema": {"type": "string", "pattern": "^[1-9][0-9]*$"}},
+          {"in": "header", "name": "X-CSRF-Token", "required": true, "schema": {"type": "string"}},
+          {"in": "header", "name": "If-Match", "required": true, "schema": {"type": "string", "pattern": "^\"rev-[0-9]+\"$"}},
+          {"in": "header", "name": "Idempotency-Key", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 128}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "properties": {"policy_version_id": {"type": "string", "pattern": "^[1-9][0-9]*$", "description": "Public policy_versions ID, kind=gpu-pricing; not an economic source ID."}},
+            "required": ["policy_version_id"],
+            "additionalProperties": false
+          }}}
+        },
+        "responses": {
+          "200": {
+            "description": "Explicit GPU pricing binding configured once",
+            "headers": {"ETag": {"schema": {"type": "string"}}},
+            "content": {"application/json": {"schema": {
+              "type": "object",
+              "properties": {
+                "data": {
+                  "type": "object",
+                  "properties": {
+                    "policy_versions": {"type": "object", "additionalProperties": {"type": "string", "pattern": "^[1-9][0-9]*$"}},
+                    "revision": {"type": "string", "pattern": "^[1-9][0-9]*$"}
+                  },
+                  "required": ["policy_versions", "revision"],
+                  "additionalProperties": false
+                },
+                "request_id": {"type": "string"}
+              },
+              "required": ["data", "request_id"],
+              "additionalProperties": false
+            }}}
+          },
+          "409": {"description": "policy_binding_frozen: only an unbound custom instance with no allocation history may be configured", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+          "default": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
     "/admin/instances/{id}/gpu-allocations": {
       "get": {
         "operationId": "get_admin_instances_id_gpu_allocations",
@@ -3015,6 +3055,35 @@
             "$ref": "#/components/responses/ApiError"
           }
         }
+      },
+      "post": {
+        "operationId": "post_admin_credit_accounts",
+        "tags": ["admin"],
+        "description": "Explicitly configures the shared allowance wallet for an existing user lacking an account, including a fresh bootstrap administrator. No immediate grant, backdated allowance or automatic profile selection; normal daily processing starts from account creation. Existing accounts are not silently replaced.",
+        "parameters": [
+          {"in": "header", "name": "X-CSRF-Token", "required": true, "schema": {"type": "string"}},
+          {"in": "header", "name": "Idempotency-Key", "required": true, "schema": {"type": "string", "minLength": 1, "maxLength": 128}}
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {"application/json": {"schema": {
+            "type": "object",
+            "properties": {
+              "user_id": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+              "policy_version_id": {"type": "string", "pattern": "^[1-9][0-9]*$", "description": "Active/effective credit policy_versions.id for wallet allowance, independent of any plan."}
+            },
+            "required": ["user_id", "policy_version_id"],
+            "additionalProperties": false
+          }}}
+        },
+        "responses": {
+          "201": {"description": "Account configured without granting funds", "content": {"application/json": {"schema": {
+            "type": "object",
+            "properties": {"data": {"$ref": "#/components/schemas/CreditAccount"}, "request_id": {"type": "string"}},
+            "required": ["data", "request_id"], "additionalProperties": false
+          }}}},
+          "default": {"$ref": "#/components/responses/ApiError"}
+        }
       }
     },
     "/admin/credit-accounts/{id}": {
@@ -3796,143 +3865,6 @@
         }
       }
     },
-    "/admin/platform-policy-bindings": {
-      "get": {
-        "operationId": "get_admin_platform_policy_bindings",
-        "tags": [
-          "admin"
-        ],
-        "description": "Administrator required. ",
-        "parameters": [],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "request_id"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/ApiError"
-          }
-        }
-      },
-      "put": {
-        "operationId": "put_admin_platform_policy_bindings",
-        "tags": [
-          "admin"
-        ],
-        "description": "Administrator required. ",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "X-CSRF-Token",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "If-Match",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "pattern": "^\"rev-[0-9]+\"$"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Success",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "data": {
-                      "description": "The domain object and fields are defined in \u540e\u7aef\u63a5\u53e3\u6587\u6863.md for this operation."
-                    },
-                    "request_id": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "data",
-                    "request_id"
-                  ],
-                  "additionalProperties": false
-                }
-              }
-            }
-          },
-          "default": {
-            "$ref": "#/components/responses/ApiError"
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "pricing": {
-                    "type": "string",
-                    "pattern": "^[1-9][0-9]*$"
-                  },
-                  "gpu-pricing": {
-                    "type": "string",
-                    "pattern": "^[1-9][0-9]*$"
-                  },
-                  "credit": {
-                    "type": "string",
-                    "pattern": "^[1-9][0-9]*$"
-                  },
-                  "gpu-scheduling": {
-                    "type": "string",
-                    "pattern": "^[1-9][0-9]*$"
-                  },
-                  "gpu-idle": {
-                    "type": "string",
-                    "pattern": "^[1-9][0-9]*$"
-                  },
-                  "metrics": {
-                    "type": "string",
-                    "pattern": "^[1-9][0-9]*$"
-                  }
-                },
-                "required": [
-                  "pricing",
-                  "gpu-pricing",
-                  "credit",
-                  "gpu-scheduling",
-                  "gpu-idle",
-                  "metrics"
-                ],
-                "additionalProperties": false
-              }
-            }
-          }
-        }
-      }
-    },
     "/admin/policies/{kind}/versions": {
       "get": {
         "operationId": "get_admin_policies_kind_versions",
@@ -4031,7 +3963,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Administrator required. Creates an active policy profile effective immediately; it can be bound as the platform default right away.",
+        "description": "Administrator required. Creates an active policy profile effective immediately, selectable explicitly by a compatible plan, custom instance, node or allowance account. No platform default binding exists.",
         "parameters": [
           {
             "in": "path",
@@ -4176,7 +4108,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Administrator required. Edits the profile config in place (any status). Credit config applies immediately to accounts on this profile; pricing rates are snapshotted at admission, so only new instances use edited rates. A gpu-pricing profile already assigned to GPUs cannot change gpu_model or access_mode: 409 configuration_conflict.",
+        "description": "Administrator required. Edits the profile config in place (any status). Credit config is read through each account allowance binding and each frozen instance credit binding independently; existing grants and captured shutdown deadlines do not change. Pricing rates are snapshotted at admission/allocation. A gpu-pricing profile referenced by plans, instances, allocations or history cannot change gpu_model or access_mode: 409 configuration_conflict.",
         "parameters": [
           {
             "in": "path",
@@ -4274,7 +4206,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Administrator required. Deletes the profile and its internal source row. 409 configuration_conflict (Chinese message naming the users) while it is the platform default binding or referenced by plans, instances, credit accounts/grants/shutdown events, GPUs, GPU allocations or usage sessions.",
+        "description": "Administrator required. Deletes the profile and its internal source row. 409 configuration_conflict (Chinese message naming references and counts) while referenced by plans, instances, nodes (metrics), credit accounts/grants/shutdown events, GPU allocations or usage sessions.",
         "parameters": [
           {
             "in": "path",
@@ -4442,7 +4374,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Administrator required. ",
+        "description": "Administrator required. Explicit credit_policy_version_id selects the user's independent wallet allowance; creating a user/account does not immediately grant credit. Plans never replace this allowance binding or grant funds per instance.",
         "parameters": [
           {
             "in": "header",
@@ -4498,6 +4430,11 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "credit_policy_version_id": {
+                    "type": "string",
+                    "pattern": "^[1-9][0-9]*$",
+                    "description": "Required active/effective credit policy_versions.id for the user's shared allowance wallet."
+                  },
                   "username": {
                     "type": "string"
                   },
@@ -4526,7 +4463,8 @@
                 "required": [
                   "username",
                   "initial_password",
-                  "role"
+                  "role",
+                  "credit_policy_version_id"
                 ],
                 "additionalProperties": false
               }
@@ -5522,13 +5460,13 @@
         }
       }
     },
-    "/catalog/gpu-options": {
+    "/admin/catalog/gpu-options": {
       "get": {
-        "operationId": "get_catalog_gpu_options",
+        "operationId": "get_admin_catalog_gpu_options",
         "tags": [
-          "catalog"
+          "admin"
         ],
-        "description": "node_id narrows options to GPU models present on that node.",
+        "description": "Administrator required. Explicit profile listing for custom instance creation/import and administrative GPU configuration only; there is no global end-user GPU pricing catalog. Returns freely selectable published gpu-pricing profiles compatible with actual GPU hardware; node_id narrows hardware availability, never by a node price binding. Different profiles can price the same hardware differently.",
         "parameters": [
           {
             "in": "query",
@@ -6613,7 +6551,7 @@
         "tags": [
           "instances"
         ],
-        "description": "Returns stored and effective GPU policy, active platform ranges, and six per-field editable flags. For any nonadministrator, editable requires both gpu_policy in the instance action allowlist and the corresponding gpu_user_permissions flag; missing flags are false.",
+        "description": "Returns stored and effective GPU policy, frozen instance-bound policy ranges, and six per-field editable flags. For any nonadministrator, editable requires both gpu_policy in the instance action allowlist and the corresponding gpu_user_permissions flag; missing flags are false.",
         "parameters": [
           {
             "in": "path",
@@ -6675,7 +6613,7 @@
         "tags": [
           "instances"
         ],
-        "description": "Replaces all idle/rebalance fields. Both elastic and custom nonadministrators require gpu_policy in allowed_user_actions, and each changed field requires its matching gpu_user_permissions flag. Unchanged unauthorized fields may be round-tripped. Active platform policy bounds and container safety checks remain enforced.",
+        "description": "Replaces all idle/rebalance fields. Both elastic and custom nonadministrators require gpu_policy in allowed_user_actions, and each changed field requires its matching gpu_user_permissions flag. Unchanged unauthorized fields may be round-tripped. Frozen instance policy bounds and container safety checks remain enforced.",
         "parameters": [
           {
             "in": "path",
@@ -9034,6 +8972,10 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "policy_versions": {
+                    "$ref": "#/components/schemas/PolicyVersions",
+                    "description": "Required top-level explicit profiles, outside approved_config; pricing/credit/metrics, plus gpu-idle/gpu-scheduling for containers and gpu-pricing when count > 0."
+                  },
                   "owner_user_id": {
                     "type": "string",
                     "pattern": "^[1-9][0-9]*$"
@@ -9048,7 +8990,8 @@
                 "required": [
                   "owner_user_id",
                   "incus_uuid",
-                  "approved_config"
+                  "approved_config",
+                  "policy_versions"
                 ],
                 "additionalProperties": false
               }
@@ -9672,6 +9615,10 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "policy_versions": {
+                    "$ref": "#/components/schemas/PolicyVersions",
+                    "description": "Required top-level explicit profiles, outside approved_config; pricing/credit/metrics, plus gpu-idle/gpu-scheduling for containers and gpu-pricing when count > 0."
+                  },
                   "owner_user_id": {
                     "type": "string",
                     "pattern": "^[1-9][0-9]*$"
@@ -9695,7 +9642,8 @@
                 "required": [
                   "owner_user_id",
                   "name",
-                  "approved_config"
+                  "approved_config",
+                  "policy_versions"
                 ],
                 "additionalProperties": false
               }
@@ -11278,9 +11226,9 @@
           "server_time": {"type": "string", "format": "date-time"},
           "settlement_pending": {"type": "boolean", "description": "Durable background settlement is pending; false does not change ledger history."},
           "policy_version_id": {"type": "string", "pattern": "^[1-9][0-9]*$"},
-          "enforcement": {"type": ["object", "null"]}
+          "enforcements": {"type": "array", "items": {"type": "object"}, "description": "Shutdown events for this shared wallet, grouped by each instance's frozen credit policy; empty array when none. Each event retains id/status/exhausted_at/shutdown_deadline/instance_ids/policy_version_id."}
         },
-        "required": ["id", "user_id", "revision", "status", "settlement_pending", "remaining_pt", "reserved_pt", "available_pt", "outstanding_debt_pt", "next_grant_at", "server_time", "policy_version_id", "enforcement"],
+        "required": ["id", "user_id", "revision", "status", "settlement_pending", "remaining_pt", "reserved_pt", "available_pt", "outstanding_debt_pt", "next_grant_at", "server_time", "policy_version_id", "enforcements"],
         "additionalProperties": false
       },
       "CreditAdjustmentResult": {
@@ -11438,12 +11386,17 @@
       },
       "PolicyVersions": {
         "type": "object",
+        "description": "Explicit policy_versions.id values, never internal source IDs. pricing/credit/metrics are always required; containers additionally require gpu-idle/gpu-scheduling. gpu-pricing is required for GPU-capable container plans (including optional GPU count) and custom containers with count > 0. Bindings are frozen on instance admission and never follow later plan changes; credit here governs instance storage/grace, not the independent user wallet allowance.",
         "properties": {
           "pricing": {
             "type": "string",
             "pattern": "^[1-9][0-9]*$"
           },
           "credit": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "metrics": {
             "type": "string",
             "pattern": "^[1-9][0-9]*$"
           },
@@ -11463,8 +11416,7 @@
         "required": [
           "pricing",
           "credit",
-          "gpu-idle",
-          "gpu-scheduling"
+          "metrics"
         ],
         "additionalProperties": false
       },
@@ -12583,6 +12535,11 @@
       "NodeCreate": {
         "type": "object",
         "properties": {
+          "metrics_policy_id": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$",
+            "description": "Explicit active/effective metrics policy_versions.id used by node collection and node queries; returned in Node DTOs. Instance queries use their frozen metrics binding."
+          },
           "name": {
             "type": "string"
           },
@@ -12648,7 +12605,8 @@
           "name",
           "connection",
           "defaults",
-          "allocatable"
+          "allocatable",
+          "metrics_policy_id"
         ],
         "additionalProperties": false
       },
@@ -12748,7 +12706,6 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 86400,
-            "default": 600,
             "description": "Explicit configured grace; existing deadline events retain their captured value."
           },
           "grace_charge_mode": {
@@ -13418,7 +13375,7 @@
             },
             "effective_policy": {
               "type": "object",
-              "description": "Effective idle/rebalance and platform safety requirements; may disable stored settings when blocked.",
+              "description": "Effective idle/rebalance and frozen instance policy safety requirements; may disable stored settings when blocked.",
               "additionalProperties": true
             },
             "allowed_ranges": {

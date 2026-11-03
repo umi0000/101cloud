@@ -120,15 +120,30 @@ func versionMap(v any) map[string]string {
 	}
 	return out
 }
+func requirePlanPolicies(versions map[string]string, instanceType string, gpuCapable bool) error {
+	required := []string{"pricing", "credit", "metrics"}
+	if instanceType == "container" {
+		required = append(required, "gpu-idle", "gpu-scheduling")
+		if gpuCapable {
+			required = append(required, "gpu-pricing")
+		}
+	}
+	for _, kind := range required {
+		if versions[kind] == "" {
+			return platform.E(409, "policy_not_configured", "所需策略 "+kind+" 尚未配置，请联系管理员发布并绑定策略。")
+		}
+	}
+	return nil
+}
 func resolvePolicies(ctx context.Context, db *gorm.DB, a *platform.App, versions map[string]string, active bool) (map[string]platform.Row, error) {
 	out := map[string]platform.Row{}
-	for _, k := range []string{"pricing", "credit", "gpu-idle", "gpu-scheduling"} {
+	for _, k := range []string{"pricing", "credit", "metrics"} {
 		if versions[k] == "" {
 			return nil, platform.E(409, "policy_not_configured", "所需策略 "+k+" 尚未配置，请联系管理员发布并绑定策略。")
 		}
 	}
 	for k, s := range versions {
-		if !enum(k, "pricing", "credit", "gpu-idle", "gpu-scheduling", "gpu-pricing") {
+		if !enum(k, "pricing", "credit", "gpu-idle", "gpu-scheduling", "gpu-pricing", "metrics") {
 			return nil, invalid("policy_versions 包含未知的策略类型。")
 		}
 		id, e := platform.IDString(s)
@@ -238,6 +253,9 @@ func ValidateElastic(ctx context.Context, db *gorm.DB, a *platform.App, s Create
 		return nil, invalid("节点架构与镜像不兼容，请选择相同架构的镜像或节点。")
 	}
 	configured := versionMap(plan["policy_versions"])
+	if e = requirePlanPolicies(configured, typ, platform.Text(plan["gpu_model"]) != ""); e != nil {
+		return nil, e
+	}
 	if versions != nil {
 		if len(versions) != len(configured) {
 			return nil, platform.E(409, "policy_changed", "报价对应策略已变更，请重新获取报价。")
@@ -252,8 +270,17 @@ func ValidateElastic(ctx context.Context, db *gorm.DB, a *platform.App, s Create
 	if e != nil {
 		return nil, e
 	}
-	if s.GPU.Count > 0 && policies["gpu-pricing"] == nil {
-		return nil, platform.E(409, "policy_not_configured", "GPU 定价策略尚未配置，请联系管理员发布并绑定策略。")
+	if s.GPU.Count > 0 {
+		price, err := platform.Get(db, "gpu_price_versions", platform.Uint(policies["gpu-pricing"]["source_id"]), false)
+		if err != nil {
+			return nil, err
+		}
+		if platform.Text(price["gpu_model"]) != *s.GPU.Model || platform.Text(price["access_mode"]) != s.GPU.AccessMode {
+			return nil, invalid("GPU 定价的型号或访问模式与申请不匹配，请重新选择。")
+		}
+		if platform.Text(price["status"]) != "active" || platform.Stamp(price["effective_at"]).After(a.Time()) {
+			return nil, platform.E(409, "policy_changed", "GPU 定价策略已失效，请重新获取报价。")
+		}
 	}
 	if e = ValidateInit(ctx, db, platform.Uint(plan["init_template_version_id"]), s.InitParameters); e != nil {
 		return nil, e
@@ -361,10 +388,13 @@ func quoteAvailability(ctx context.Context, db *gorm.DB, a *platform.App, s Crea
 	if e != nil {
 		return nil, e
 	}
-	config := object(policies["gpu-scheduling"]["config"])
-	maxAge := platform.Uint(config["metrics_max_age_seconds"])
-	if maxAge == 0 {
-		return nil, platform.E(409, "policy_not_configured", "库存观测有效期策略未配置，请联系管理员检查 GPU 调度策略。")
+	maxAge := uint64(60)
+	if s.GPU.Count > 0 {
+		config := object(policies["gpu-scheduling"]["config"])
+		maxAge = platform.Uint(config["metrics_max_age_seconds"])
+		if maxAge == 0 {
+			return nil, platform.E(409, "policy_not_configured", "库存观测有效期策略未配置，请联系管理员检查 GPU 调度策略。")
+		}
 	}
 	sampled := platform.Stamp(node["resources_sampled_at"])
 	if sampled.IsZero() || a.Time().Sub(sampled) > time.Duration(maxAge)*time.Second {
@@ -391,11 +421,11 @@ func quoteAvailability(ctx context.Context, db *gorm.DB, a *platform.App, s Crea
 		reasons = append(reasons, "no_registered_address_available")
 	}
 	if s.GPU.Count > 0 {
-		q := db.Table("node_gpus g").Joins("JOIN gpu_price_versions p ON p.id=g.gpu_price_version_id").Where("g.node_id=? AND g.model=? AND g.status='available' AND g.memory_mib IS NOT NULL AND g.last_seen_at>=? AND p.status='active' AND p.effective_at<=? AND p.access_mode=? AND p.gpu_hourly_pt<=? AND p.id=?", node["id"], *s.GPU.Model, a.Time().Add(-time.Duration(maxAge)*time.Second), a.Time(), s.GPU.AccessMode, s.GPU.MaxHourlyPT, platform.Uint(policies["gpu-pricing"]["source_id"]))
+		q := db.Table("node_gpus g").Where("g.node_id=? AND g.model=? AND g.status='available' AND g.memory_mib IS NOT NULL AND g.last_seen_at>=?", node["id"], *s.GPU.Model, a.Time().Add(-time.Duration(maxAge)*time.Second))
 		if s.GPU.AccessMode == "exclusive" {
 			q = q.Where("NOT EXISTS (SELECT 1 FROM gpu_allocations ga WHERE ga.gpu_id=g.id AND ga.active_slot=1)")
 		} else {
-			q = q.Where("g.max_allocations > (SELECT COUNT(*) FROM gpu_allocations ga WHERE ga.gpu_id=g.id AND ga.active_slot=1)")
+			q = q.Where("g.max_allocations > (SELECT COUNT(*) FROM gpu_allocations ga WHERE ga.gpu_id=g.id AND ga.active_slot=1) AND NOT EXISTS (SELECT 1 FROM gpu_allocations ga WHERE ga.gpu_id=g.id AND ga.active_slot=1 AND ga.access_mode='exclusive')")
 		}
 		var eligible []string
 		if e = q.Pluck("g.uuid", &eligible).Error; e != nil {

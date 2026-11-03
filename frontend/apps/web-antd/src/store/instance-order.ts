@@ -290,7 +290,7 @@ export const useInstanceOrderStore = defineStore('instance-order', () => {
       if (!confirmedQuote.admissible || !quoteHasValidAmounts(confirmedQuote)
         || accountError.value || !account.value || account.value.status !== 'active'
         || !quoteFitsAvailableCredit(confirmedQuote, account.value.available_pt)
-        || (account.value.enforcement && account.value.enforcement.status !== 'cancelled')) return null;
+        || account.value.enforcements.some((e) => e.status !== 'cancelled')) return null;
     }
 
     submitting.value = true;
@@ -332,7 +332,7 @@ export const useInstanceOrderStore = defineStore('instance-order', () => {
           || quoteError.value || !checkedQuote.admissible || !(Date.parse(checkedQuote.expires_at) > Date.now())
           || !account.value || account.value.status !== 'active'
           || !quoteFitsAvailableCredit(checkedQuote, account.value.available_pt)
-          || (account.value.enforcement && account.value.enforcement.status !== 'cancelled')) return null;
+          || account.value.enforcements.some((e) => e.status !== 'cancelled')) return null;
         intent = snapshot({
           body: {
             ...selection.spec,

@@ -14,6 +14,7 @@ import { useAction } from '#/composables/api';
 
 import AllocatableFields from './allocatable-fields.vue';
 import ConnectionFields from './connection-fields.vue';
+import MetricsPolicySelect from './metrics-policy-select.vue';
 import { allocatableFromForm, connectionBody, emptyAllocatable, emptyConnection } from './node-forms';
 
 const emit = defineEmits<{ created: [node: Node] }>();
@@ -23,6 +24,7 @@ interface RegisterForm {
   allocatable: AllocatableForm;
   connection: NodeConnectionInput;
   defaults: { project_name: string; storage_pool: string };
+  metrics_policy_id: string | undefined;
   name: string;
 }
 
@@ -30,11 +32,13 @@ const blank = (): RegisterForm => ({
   allocatable: emptyAllocatable(),
   connection: emptyConnection(),
   defaults: { project_name: 'default', storage_pool: 'default' },
+  metrics_policy_id: undefined,
   name: '',
 });
 
 const form = ref<RegisterForm>(blank());
 const formRef = ref<FormInstance>();
+const metricsSelect = ref<InstanceType<typeof MetricsPolicySelect>>();
 const action = useAction();
 
 watch(open, (v) => {
@@ -72,6 +76,7 @@ async function submit() {
           allocatable: allocatableFromForm(f.allocatable),
           connection: connectionBody(f.connection),
           defaults: { project_name: f.defaults.project_name.trim(), storage_pool: f.defaults.storage_pool.trim() },
+          metrics_policy_id: f.metrics_policy_id!,
           name: f.name.trim(),
         },
         { key },
@@ -95,6 +100,9 @@ async function submit() {
     <Form ref="formRef" layout="vertical" :model="form">
       <FormItem label="名称" name="name" :rules="nameRules">
         <Input v-model:value="form.name" :maxlength="128" />
+      </FormItem>
+      <FormItem label="监控策略" name="metrics_policy_id" :rules="[{ required: true, validator: () => metricsSelect?.validate() }]">
+        <MetricsPolicySelect ref="metricsSelect" v-model="form.metrics_policy_id" />
       </FormItem>
       <Divider class="my-2" orientation="left" plain>连接</Divider>
       <ConnectionFields v-model="form.connection" :prefix="['connection']" />

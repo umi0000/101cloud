@@ -240,43 +240,10 @@ func policyRow(c *gin.Context, a *platform.App, lock bool) (row, error) {
 	return r, nil
 }
 
-var requiredPolicyKinds = [...]string{"pricing", "gpu-pricing", "credit", "gpu-scheduling", "gpu-idle", "metrics"}
-
-func validateBindingShape(bindings map[string]string) error {
-	if len(bindings) != len(requiredPolicyKinds) {
-		return invalid("bindings must provide the complete pricing, gpu-pricing, credit, gpu-scheduling, gpu-idle and metrics mapping")
-	}
-	for _, kind := range requiredPolicyKinds {
-		s, ok := bindings[kind]
-		if !ok {
-			return invalid("missing required policy binding: " + kind)
-		}
-		if _, e := platform.IDString(s); e != nil {
-			return e
-		}
-	}
-	return nil
-}
-func validateBindingVersion(kind string, p row, at time.Time) error {
-	effective := stamp(p["effective_at"])
-	if platform.Text(p["kind"]) != kind || platform.Text(p["status"]) != "active" || effective.IsZero() || effective.After(at) {
-		return invalid("each binding must reference an already effective active policy of the same kind")
-	}
-	return nil
-}
-
-// policyUsage describes, in Chinese, everything that still references a policy
-// profile: the platform default binding, plans and instances (policy_versions
-// JSON or legacy source FKs), and the source-row history tables. Empty means the
-// profile may be deleted without breaking a reference.
+// policyUsage describes, in Chinese, every plan, instance, node and source-row
+// history reference to a policy profile. Empty means the profile may be deleted
+// without breaking a reference.
 func policyUsage(db *gorm.DB, kind string, p row) (string, error) {
-	var bound int64
-	if e := db.Table("platform_policy_bindings").Where("policy_id = ?", p["id"]).Count(&bound).Error; e != nil {
-		return "", e
-	}
-	if bound > 0 {
-		return "该配置档是平台当前默认配置，请先切换默认配置后再删除。", nil
-	}
 	type usageCheck struct {
 		label, unit, table, where string
 		args                      []any
@@ -293,10 +260,13 @@ func policyUsage(db *gorm.DB, kind string, p row) (string, error) {
 		}
 		checks = append(checks, usageCheck{t.label, "个", t.table, where, args})
 	}
+	if kind == "metrics" {
+		checks = append(checks, usageCheck{"节点", "个", "nodes", "metrics_policy_id = ?", []any{p["id"]}})
+	}
 	if source != 0 {
 		for _, t := range map[string][]struct{ label, unit, table, column string }{
 			"pricing":     {{"计费区间", "条", "usage_sessions", "pricing_version_id"}},
-			"gpu-pricing": {{"GPU", "张", "node_gpus", "gpu_price_version_id"}, {"GPU 分配记录", "条", "gpu_allocations", "gpu_price_version_id"}, {"计费区间", "条", "usage_sessions", "gpu_price_version_id"}},
+			"gpu-pricing": {{"GPU 分配记录", "条", "gpu_allocations", "gpu_price_version_id"}, {"计费区间", "条", "usage_sessions", "gpu_price_version_id"}},
 			"credit":      {{"额度账户", "个", "credit_accounts", "credit_policy_version_id"}, {"每日发放记录", "条", "credit_daily_grants", "policy_version_id"}, {"额度耗尽事件", "条", "credit_enforcements", "policy_version_id"}},
 		}[kind] {
 			checks = append(checks, usageCheck{t.label, t.unit, t.table, t.column + " = ?", []any{source}})
@@ -394,13 +364,12 @@ func registerPolicies(a *platform.App, g *gin.RouterGroup) {
 				return nil, e
 			}
 			if previous.Model != next.Model || previous.Access != next.Access {
-				// node_gpus admission requires the price model/access mode to match the card.
-				var n int64
-				if e = platform.DB(c, a).Table("node_gpus").Where("gpu_price_version_id = ?", r["source_id"]).Count(&n).Error; e != nil {
-					return nil, e
+				usage, err := policyUsage(platform.DB(c, a), "gpu-pricing", r)
+				if err != nil {
+					return nil, err
 				}
-				if n > 0 {
-					return nil, conflict("configuration_conflict", "该配置档已用于 "+strconv.FormatInt(n, 10)+" 张 GPU，不能修改 GPU 型号或独占/共享模式；请新建配置档。")
+				if usage != "" {
+					return nil, conflict("configuration_conflict", "该配置档仍有引用，不能修改 GPU 型号或独占/共享模式；请新建配置档。"+usage)
 				}
 			}
 		}
@@ -450,66 +419,4 @@ func registerPolicies(a *platform.App, g *gin.RouterGroup) {
 		platform.Reply(c, 204, nil)
 		return nil, nil
 	}))
-	g.GET("/platform-policy-bindings", platform.Handle(func(c *gin.Context) (any, error) {
-		r, e := platform.Get(platform.DB(c, a), "policy_binding_sets", 1, false)
-		if e != nil {
-			return nil, e
-		}
-		platform.SetETag(c, r)
-		return bindingsDTO(platform.DB(c, a), r)
-	}))
-	g.PUT("/platform-policy-bindings", platform.Handle(func(c *gin.Context) (any, error) {
-		var b map[string]string
-		if e := platform.Decode(c, &b); e != nil {
-			return nil, e
-		}
-		if e := validateBindingShape(b); e != nil {
-			return nil, e
-		}
-		db := platform.DB(c, a)
-		r, e := platform.Get(db, "policy_binding_sets", 1, true)
-		if e != nil {
-			return nil, e
-		}
-		if e = platform.Revision(c, r); e != nil {
-			return nil, e
-		}
-		at := now()
-		for _, kind := range requiredPolicyKinds {
-			id, _ := platform.IDString(b[kind])
-			p, e := platform.Get(db, "policy_versions", id, true)
-			if e != nil {
-				return nil, e
-			}
-			if e = validateBindingVersion(kind, p, at); e != nil {
-				return nil, e
-			}
-		}
-		if e = db.Exec("DELETE FROM platform_policy_bindings").Error; e != nil {
-			return nil, e
-		}
-		for kind, s := range b {
-			id, _ := platform.IDString(s)
-			if e = db.Table("platform_policy_bindings").Create(&row{"kind": kind, "policy_id": id}).Error; e != nil {
-				return nil, e
-			}
-		}
-		r, e = platform.Save(c, a, "policy_binding_sets", r, row{})
-		if e != nil {
-			return nil, e
-		}
-		platform.SetETag(c, r)
-		return bindingsDTO(db, r)
-	}))
-}
-func bindingsDTO(db *gorm.DB, r row) (row, error) {
-	bs, e := rows(db, "platform_policy_bindings", "1=1")
-	if e != nil {
-		return nil, e
-	}
-	m := map[string]string{}
-	for _, b := range bs {
-		m[platform.Text(b["kind"])] = sid(b["policy_id"])
-	}
-	return row{"bindings": m, "revision": sid(r["revision"])}, nil
 }

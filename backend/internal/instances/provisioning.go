@@ -13,7 +13,6 @@ import (
 	"101cloud/backend/internal/platform"
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
-	"gorm.io/gorm"
 )
 
 type customConfigFields struct {
@@ -226,11 +225,54 @@ func registerProvisioning(a *platform.App, user, admin *gin.RouterGroup) {
 		}))
 		g.PUT("/instances/:id/gpu-policy", platform.Handle(func(c *gin.Context) (any, error) { return putGPUPolicy(c, a) }))
 	}
+	admin.PUT("/instances/:id/gpu-pricing-policy", platform.Handle(func(c *gin.Context) (any, error) {
+		r, e := owned(c, a)
+		if e != nil {
+			return nil, e
+		}
+		if e = platform.Revision(c, r); e != nil {
+			return nil, e
+		}
+		versions := map[string]string{}
+		for kind, value := range object(r["policy_versions"]) {
+			versions[kind] = platform.Text(value)
+		}
+		if platform.Text(r["product_type"]) != "custom" || versions["gpu-pricing"] != "" {
+			return nil, conflict("policy_binding_frozen", "Only custom instances without a GPU pricing binding can be configured.")
+		}
+		var count int64
+		if e = platform.DB(c, a).Table("gpu_allocations").Where("instance_id=?", r["id"]).Count(&count).Error; e != nil {
+			return nil, e
+		}
+		if count != 0 {
+			return nil, conflict("policy_binding_frozen", "Historical GPU allocations prevent changing the instance pricing binding.")
+		}
+		var input struct {
+			PolicyVersionID string `json:"policy_version_id"`
+		}
+		if e = platform.Decode(c, &input); e != nil {
+			return nil, e
+		}
+		if _, _, e = platform.PolicySource(platform.DB(c, a), "gpu-pricing", input.PolicyVersionID, true); e != nil {
+			return nil, e
+		}
+		versions["gpu-pricing"] = input.PolicyVersionID
+		r, e = platform.Save(c, a, "instances", r, platform.Row{"policy_versions": jsonText(versions)})
+		if e != nil {
+			return nil, e
+		}
+		if e = platform.Audit(c.Request.Context(), platform.DB(c, a), platform.Current(c).ID, 0, platform.Uint(r["id"]), "instance.gpu_pricing_policy.configured", platform.Row{"policy_version_id": input.PolicyVersionID}); e != nil {
+			return nil, e
+		}
+		platform.SetETag(c, r)
+		return platform.Row{"policy_versions": versions, "revision": platform.Text(r["revision"])}, nil
+	}))
 	admin.POST("/custom-instances", platform.Handle(func(c *gin.Context) (any, error) {
 		var in struct {
 			OwnerUserID    string                   `json:"owner_user_id"`
 			Name           string                   `json:"name"`
 			ApprovedConfig customProvisioningConfig `json:"approved_config"`
+			PolicyVersions map[string]string        `json:"policy_versions"`
 		}
 		if e := platform.Decode(c, &in); e != nil {
 			return nil, e
@@ -245,7 +287,7 @@ func registerProvisioning(a *platform.App, user, admin *gin.RouterGroup) {
 		if e != nil {
 			return nil, e
 		}
-		out, e := createInstance(c.Request.Context(), a, platform.DB(c, a), owner, customProvisioningSpec(in.Name, in.ApprovedConfig), true, nil)
+		out, e := createInstance(c.Request.Context(), a, platform.DB(c, a), owner, customProvisioningSpec(in.Name, in.ApprovedConfig), true, in.PolicyVersions)
 		if e != nil {
 			return nil, e
 		}
@@ -257,6 +299,7 @@ func registerProvisioning(a *platform.App, user, admin *gin.RouterGroup) {
 			IncusUUID      string                   `json:"incus_uuid"`
 			OwnerUserID    string                   `json:"owner_user_id"`
 			ApprovedConfig customProvisioningConfig `json:"approved_config"`
+			PolicyVersions map[string]string        `json:"policy_versions"`
 		}
 		if e := platform.Decode(c, &in); e != nil {
 			return nil, e
@@ -289,7 +332,10 @@ func registerProvisioning(a *platform.App, user, admin *gin.RouterGroup) {
 		// Discovery and exact native identity/config verification happen in the worker,
 		// before reserveImported adopts and reserves actual IP/GPU inventory atomically.
 		spec := customProvisioningSpec("Imported "+in.IncusUUID, in.ApprovedConfig)
-		out, e := platform.Enqueue(platform.DB(c, a), "instance.import", owner, node, 0, false, platform.Row{"owner_user_id": strconv.FormatUint(owner, 10), "incus_uuid": in.IncusUUID, "approved_config": spec})
+		if e = validateCustomVersions(c.Request.Context(), a, platform.DB(c, a), in.PolicyVersions, spec); e != nil {
+			return nil, e
+		}
+		out, e := platform.Enqueue(platform.DB(c, a), "instance.import", owner, node, 0, false, platform.Row{"owner_user_id": strconv.FormatUint(owner, 10), "incus_uuid": in.IncusUUID, "approved_config": spec, "policy_versions": in.PolicyVersions})
 		if e != nil {
 			return nil, e
 		}
@@ -363,25 +409,21 @@ type gpuPolicyBounds struct {
 	Versions   map[string]string
 }
 
-func policyBounds(c *gin.Context, a *platform.App) (gpuPolicyBounds, error) {
+func policyBounds(c *gin.Context, a *platform.App, instance platform.Row) (gpuPolicyBounds, error) {
 	out := gpuPolicyBounds{Versions: map[string]string{}}
 	for _, kind := range []string{"gpu-idle", "gpu-scheduling"} {
-		var r platform.Row
-		e := platform.DB(c, a).Table("policy_versions p").Select("p.id,p.config").Joins("JOIN platform_policy_bindings b ON b.policy_id = p.id AND b.kind = p.kind").Where("p.kind = ? AND p.status = 'active' AND p.effective_at <= ?", kind, a.Time()).Take(&r).Error
+		policy, e := a.InstancePolicy(c.Request.Context(), instance, kind)
 		if e != nil {
-			if e == gorm.ErrRecordNotFound {
-				return out, conflict("policy_not_configured", "published "+kind+" policy is required")
-			}
-			return out, platform.WrapDB(e)
+			return out, e
 		}
-		out.Versions[kind] = strconv.FormatUint(platform.Uint(r["id"]), 10)
+		out.Versions[kind] = platform.Text(object(instance["policy_versions"])[kind])
 		var dst any
 		if kind == "gpu-idle" {
 			dst = &out.Idle
 		} else {
 			dst = &out.Scheduling
 		}
-		if e = json.Unmarshal([]byte(platform.Text(r["config"])), dst); e != nil {
+		if e = json.Unmarshal([]byte(jsonText(policy)), dst); e != nil {
 			return out, platform.E(500, "invalid_stored_policy", "stored GPU policy is invalid")
 		}
 	}
@@ -418,7 +460,7 @@ func containsPolicyAction(actions []string, action string) bool {
 	return false
 }
 func gpuPolicyResponse(c *gin.Context, a *platform.App, r platform.Row) (any, error) {
-	b, e := policyBounds(c, a)
+	b, e := policyBounds(c, a, r)
 	if e != nil {
 		return nil, e
 	}
@@ -433,7 +475,7 @@ func gpuPolicyDTO(c *gin.Context, a *platform.App, r platform.Row, b gpuPolicyBo
 	blocked := []string{}
 	if !b.Idle.Enabled {
 		effective.Idle.Enabled = false
-		blocked = append(blocked, "platform_idle_disabled")
+		blocked = append(blocked, "bound_idle_disabled")
 	}
 	if cfg.Idle.TimeoutSeconds < uint64(b.Idle.Min) || cfg.Idle.TimeoutSeconds > uint64(b.Idle.Max) {
 		effective.Idle.Enabled = false
@@ -521,22 +563,22 @@ func putGPUPolicy(c *gin.Context, a *platform.App) (any, error) {
 	if input.Idle == nil || input.Rebalance == nil || input.Idle.Enabled == nil || input.Idle.TimeoutSeconds == nil || input.Rebalance.Enabled == nil || input.Rebalance.AllowLive == nil {
 		return nil, bad("idle and rebalance must contain every configuration field")
 	}
-	b, e := policyBounds(c, a)
+	b, e := policyBounds(c, a, r)
 	if e != nil {
 		return nil, e
 	}
 	cfg := instanceGPUPolicy{Idle: storedIdlePolicy{Enabled: *input.Idle.Enabled, TimeoutSeconds: *input.Idle.TimeoutSeconds, Action: input.Idle.Action}, Rebalance: storedRebalancePolicy{Enabled: *input.Rebalance.Enabled, AllowLive: *input.Rebalance.AllowLive, MaxHourlyPT: input.Rebalance.MaxHourlyPT}}
 	if cfg.Idle.TimeoutSeconds < uint64(b.Idle.Min) || cfg.Idle.TimeoutSeconds > uint64(b.Idle.Max) {
-		return nil, bad("idle.timeout_seconds is outside the active platform policy range")
+		return nil, bad("idle.timeout_seconds is outside the instance-bound policy range")
 	}
 	if cfg.Idle.Action != "detach_gpu" && cfg.Idle.Action != "stop_instance" {
 		return nil, bad("idle.action must be detach_gpu or stop_instance")
 	}
 	if !containsPolicyAction(b.Idle.Actions, cfg.Idle.Action) {
-		return nil, platform.E(403, "idle_action_not_allowed", "idle action is not allowed by the active platform policy")
+		return nil, platform.E(403, "idle_action_not_allowed", "idle action is not allowed by the instance-bound policy")
 	}
 	if cfg.Idle.Enabled && !b.Idle.Enabled {
-		return nil, platform.E(403, "idle_policy_disabled", "platform GPU idle actions are disabled")
+		return nil, platform.E(403, "idle_policy_disabled", "instance-bound GPU idle actions are disabled")
 	}
 	price, e := policyMoney(cfg.Rebalance.MaxHourlyPT)
 	if e != nil {

@@ -44,7 +44,7 @@ import { bytesToGib, formatPt, formatTime, gibToBytes, PT_PATTERN, ptToMicros } 
 
 import { CODE_PATTERN } from './rules';
 
-type PlanPolicyKind = Exclude<PolicyKind, 'metrics'>;
+type PlanPolicyKind = PolicyKind;
 type Mode = 'create' | 'edit' | 'view';
 
 interface OverrideForm {
@@ -88,7 +88,6 @@ const OVERRIDE_META: Record<OverrideKey, { gib: boolean; label: string; unit: st
   memory_bytes: { gib: true, label: '内存', unit: 'GiB' },
   vcpus: { gib: false, label: 'vCPU', unit: '核' },
 };
-const REQUIRED_POLICIES: PlanPolicyKind[] = ['pricing', 'credit', 'gpu-idle', 'gpu-scheduling'];
 
 const typeOptions = Object.entries(ENUMS.instanceType ?? {}).map(([value, l]) => ({ label: l.text, value }));
 
@@ -121,7 +120,7 @@ function emptyForm(): PlanForm {
       memory_bytes: emptyOverride(),
       vcpus: emptyOverride(),
     },
-    policy: { credit: undefined, 'gpu-idle': undefined, 'gpu-pricing': undefined, 'gpu-scheduling': undefined, pricing: undefined },
+    policy: { credit: undefined, 'gpu-idle': undefined, 'gpu-pricing': undefined, 'gpu-scheduling': undefined, metrics: undefined, pricing: undefined },
     vcpus: undefined,
     version: '1',
   };
@@ -161,6 +160,7 @@ function formFromPlan(p: Plan, copy: boolean): PlanForm {
       'gpu-idle': p.policy_versions['gpu-idle'],
       'gpu-pricing': p.policy_versions['gpu-pricing'],
       'gpu-scheduling': p.policy_versions['gpu-scheduling'],
+      metrics: p.policy_versions.metrics,
       pricing: p.policy_versions.pricing,
     },
     vcpus: p.resources.vcpus,
@@ -200,6 +200,9 @@ watch(form, () => action.resetKey(), { deep: true });
 
 const isVM = computed(() => form.value.instance_type === 'virtual-machine');
 const hasModel = computed(() => form.value.gpu_model.trim() !== '');
+const requiredPolicies = computed<PlanPolicyKind[]>(() => isVM.value
+  ? ['pricing', 'credit', 'metrics']
+  : ['pricing', 'credit', 'metrics', 'gpu-idle', 'gpu-scheduling']);
 
 // Dependent selections are pruned only after a user changes a selector, never
 // while loading/cloning a saved plan or refreshing reference data.
@@ -324,12 +327,17 @@ function policyLabel(kind: PlanPolicyKind, p: PolicyVersion): string {
   else if (p.effective_at && Date.parse(p.effective_at) > Date.now()) label += ` · ${formatTime(p.effective_at)} 生效`;
   return label;
 }
+function usablePolicy(kind: PlanPolicyKind, p: PolicyVersion): boolean {
+  if (p.status !== 'active' || (p.effective_at && Date.parse(p.effective_at) > Date.now())) return false;
+  return kind !== 'gpu-pricing' || (p.config.gpu_model === form.value.gpu_model.trim() && p.config.access_mode === form.value.access_mode);
+}
+
 
 function policyOptions(kind: PlanPolicyKind) {
   const selected = form.value.policy[kind];
   return (props.refs.policies[kind] ?? [])
-    .filter((p) => p.status === 'active' || p.id === selected)
-    .map((p) => ({ label: policyLabel(kind, p), value: p.id }));
+    .filter((p) => usablePolicy(kind, p) || p.id === selected)
+    .map((p) => ({ disabled: !usablePolicy(kind, p), label: policyLabel(kind, p), value: p.id }));
 }
 
 const gpuModelOptions = computed(() => {
@@ -426,10 +434,10 @@ const problems = computed(() => {
   for (const id of f.network_option_ids) {
     if (!networkOptions.value.some((o) => o.value === id && !o.disabled)) out.push(`网络 ${props.refs.bindingName(id)} 未启用、不属于所选节点或不兼容当前实例类型，请重新选择`);
   }
-  for (const kind of REQUIRED_POLICIES) {
-    if (!f.policy[kind]) out.push(`请选择${POLICY_KIND_NAMES[kind]}政策`);
+  for (const kind of [...requiredPolicies.value, ...(model ? ['gpu-pricing' as const] : [])]) {
+    const p = props.refs.policies[kind]?.find((p) => p.id === f.policy[kind]);
+    if (!p || !usablePolicy(kind, p)) out.push(`请选择已生效且兼容的${POLICY_KIND_NAMES[kind]}配置档`);
   }
-  if (model && !f.policy['gpu-pricing']) out.push('填写 GPU 型号时必须选择 GPU 定价政策');
   return out;
 });
 
@@ -446,7 +454,7 @@ function buildBody(): null | PlanInput {
   }
   const model = f.gpu_model.trim();
   const policies: PolicyVersions = {};
-  for (const kind of REQUIRED_POLICIES) policies[kind] = f.policy[kind];
+  for (const kind of requiredPolicies.value) policies[kind] = f.policy[kind];
   if (model) policies['gpu-pricing'] = f.policy['gpu-pricing'];
   return {
     allowed_overrides: allowed,
@@ -682,8 +690,9 @@ async function save() {
       </FormItem>
 
       <Divider orientation="left" plain>政策版本</Divider>
+      <Alert class="mb-3" type="info" show-icon message="政策随实例创建冻结；额度政策仅控制此实例的宽限与停机规则，不改变用户共享钱包的独立发放政策，也不按实例发放额度。" />
       <div class="grid grid-cols-2 gap-x-3">
-        <FormItem v-for="kind in REQUIRED_POLICIES" :key="kind" :label="POLICY_KIND_NAMES[kind]" required>
+        <FormItem v-for="kind in requiredPolicies" :key="kind" :label="POLICY_KIND_NAMES[kind]" required>
           <Select v-model:value="form.policy[kind]" :options="policyOptions(kind)" placeholder="选择配置档" />
         </FormItem>
         <FormItem v-if="hasModel" label="GPU 定价" required>

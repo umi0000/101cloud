@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import type { CreditAccount } from '#/api/types';
+import type { CreditAccount, CreditEnforcement } from '#/api/types';
 import type { ErrorText } from '#/locales/errors';
 
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
@@ -34,8 +34,12 @@ const memberUserId = computed(() =>
     ? authStore.me.user.id
     : null,
 );
-const enforcementMessage = computed(() => {
-  switch (account.value?.enforcement?.status) {
+const hasEnforcementWarning = computed(() =>
+  account.value?.enforcements.some((event) => ['grace', 'stopping', 'unknown'].includes(event.status)) ?? false,
+);
+
+function enforcementMessage(status: CreditEnforcement['status']): string {
+  switch (status) {
     case 'grace': {
       return '额度已进入宽限期，请留意服务端停机期限。';
     }
@@ -45,11 +49,17 @@ const enforcementMessage = computed(() => {
     case 'unknown': {
       return '额度停机状态待核对，请联系管理员。';
     }
+    case 'completed': {
+      return '额度停机事件已完成，请核对对应实例的状态。';
+    }
+    case 'cancelled': {
+      return '额度停机事件已取消。';
+    }
     default: {
       return '';
     }
   }
-});
+}
 
 async function refresh() {
   const userId = memberUserId.value;
@@ -133,14 +143,21 @@ onBeforeUnmount(() => {
             <ErrorFeedback :feedback="feedback" />
           </template>
         </Alert>
-        <Alert v-if="enforcementMessage" :message="enforcementMessage" show-icon type="warning">
+        <Alert
+          v-for="event in account?.enforcements ?? []"
+          :key="event.id"
+          :message="enforcementMessage(event.status)"
+          show-icon
+          :type="['grace', 'stopping', 'unknown'].includes(event.status) ? 'warning' : 'info'"
+        >
           <template #description>
             <div class="flex flex-wrap items-center gap-1">
-              <StatusTag kind="enforcement" :value="account?.enforcement?.status" />
-              <template v-if="account?.enforcement?.shutdown_deadline">
-                <span>停机期限</span>
-                <TimeText :value="account.enforcement.shutdown_deadline" />
-              </template>
+              <span class="font-mono text-xs">#{{ event.id }}</span>
+              <StatusTag kind="enforcement" :value="event.status" />
+              <span>政策 #{{ event.policy_version_id }}</span>
+              <span>停机期限</span>
+              <TimeText :value="event.shutdown_deadline" />
+              <span v-if="event.instance_ids.length">实例 #{{ event.instance_ids.join('、#') }}</span>
             </div>
           </template>
         </Alert>
@@ -154,7 +171,7 @@ onBeforeUnmount(() => {
     <Button
       type="text"
       :aria-expanded="open"
-      :aria-label="`可用额度 ${formatPt(account?.available_pt)} Pt，点击查看额度详情${account?.settlement_pending ? '，历史欠费正在后台分批抵扣' : ''}${feedback ? '，更新失败' : ''}${enforcementMessage ? '，存在额度停机提示' : ''}`"
+      :aria-label="`可用额度 ${formatPt(account?.available_pt)} Pt，点击查看额度详情${account?.settlement_pending ? '，历史欠费正在后台分批抵扣' : ''}${feedback ? '，更新失败' : ''}${hasEnforcementWarning ? '，存在额度停机提示' : ''}`"
     >
       <span class="inline-flex min-w-0 items-center gap-1.5">
         <span class="text-muted-foreground hidden sm:inline">可用额度</span>
@@ -164,7 +181,7 @@ onBeforeUnmount(() => {
           <span aria-hidden="true" class="icon-[lucide--circle-alert] size-4"></span>
           <span class="hidden text-xs sm:inline">更新失败</span>
         </span>
-        <span v-else-if="enforcementMessage" aria-hidden="true" class="text-destructive icon-[lucide--triangle-alert] size-4"></span>
+        <span v-else-if="hasEnforcementWarning" aria-hidden="true" class="text-destructive icon-[lucide--triangle-alert] size-4"></span>
         <span aria-hidden="true" class="text-muted-foreground icon-[lucide--chevron-down] size-3"></span>
       </span>
     </Button>

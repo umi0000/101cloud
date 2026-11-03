@@ -1,13 +1,13 @@
 <script lang="ts" setup>
 /** GPU 标签页（仅容器）：分配列表 + 挂载 / 移除 / 换卡。管理员可指定 fixed_uuids。 */
 import type { AttachBody } from '#/api/backend';
-import type { GPUAllocation, GPUOption, Instance, LatestGPUMetric, NodeGPU } from '#/api/types';
+import type { GPUAllocation, GPUOption, Instance, LatestGPUMetric, NodeGPU, PolicyVersion } from '#/api/types';
 
 import { computed, onMounted, ref, shallowRef, watch } from 'vue';
 
 import { Alert, Button, Card, Checkbox, Form, FormItem, Input, InputNumber, Select, Space, Switch, Table, Tag, Tooltip } from 'ant-design-vue';
 
-import { catalogApi, instancesApi, listAll, nodesApi } from '#/api/backend';
+import { catalogApi, instancesApi, listAll, nodesApi, policiesApi } from '#/api/backend';
 import ConfirmAction from '#/components/confirm-action.vue';
 import StatusTag from '#/components/status-tag.vue';
 import TimeText from '#/components/time-text.vue';
@@ -24,12 +24,14 @@ const allocations = shallowRef<GPUAllocation[]>([]);
 const live = shallowRef<Record<string, LatestGPUMetric>>({});
 const loading = ref(false);
 const showHistory = ref(false);
+const allocationsLoaded = ref(false);
 const selected = ref<string[]>([]);
 
 async function loadAllocations() {
   loading.value = true;
   try {
     allocations.value = (await instancesApi.gpuAllocations(props.instance.id)).data;
+    allocationsLoaded.value = true;
     const ids = new Set(allocations.value.map((a) => a.id));
     selected.value = selected.value.filter((id) => ids.has(id));
   } catch (error) {
@@ -83,6 +85,52 @@ const rowSelection = computed(() => ({
 
 const gpuOptions = shallowRef<GPUOption[]>([]);
 const nodeGPUs = shallowRef<NodeGPU[]>([]);
+const pricingProfiles = shallowRef<PolicyVersion[]>([]);
+const boundPricing = shallowRef<null | PolicyVersion>(null);
+const pricingLoading = ref(false);
+const pricingId = ref<string>();
+const pricingAction = useAction();
+const missingPricing = computed(() => !props.instance.policy_versions['gpu-pricing']);
+const needsPricingSetup = computed(() => props.instance.product_type === 'custom' && missingPricing.value);
+const pricingOptions = computed(() => pricingProfiles.value
+  .filter((p) => p.status === 'active' && (!p.effective_at || Date.parse(p.effective_at) <= Date.now()))
+  .map((p) => ({
+    label: `${p.code} v${p.version} · ${String(p.config.gpu_model)} · ${ACCESS_MODE_NAMES[p.config.access_mode as 'exclusive' | 'shared']} · ${formatPt(String(p.config.gpu_hourly_pt))} pt/h`,
+    value: p.id,
+  })));
+const canSetPricing = computed(() => needsPricingSetup.value && allocationsLoaded.value && allocations.value.length === 0
+  && !busy.value && !pricingLoading.value && pricingOptions.value.some((p) => p.value === pricingId.value));
+watch(pricingId, () => pricingAction.resetKey());
+let pricingSeq = 0;
+async function loadPricing() {
+  const mine = ++pricingSeq;
+  pricingLoading.value = true;
+  boundPricing.value = null;
+  try {
+    const id = props.instance.policy_versions['gpu-pricing'];
+    if (id) {
+      const r = await policiesApi.get('gpu-pricing', id);
+      if (mine === pricingSeq) boundPricing.value = r.data;
+    } else if (props.instance.product_type === 'custom') {
+      const profiles = await listAll((q) => policiesApi.list('gpu-pricing', q));
+      if (mine === pricingSeq) pricingProfiles.value = profiles;
+    }
+  } catch (error) {
+    errorToast(error);
+  } finally {
+    if (mine === pricingSeq) pricingLoading.value = false;
+  }
+}
+watch(() => props.instance.revision, loadPricing, { immediate: true });
+async function savePricing() {
+  if (!canSetPricing.value || !pricingId.value) return;
+  const id = pricingId.value;
+  const r = await pricingAction.run(
+    (key) => instancesApi.putGPUPricingPolicy(props.instance.id, { policy_version_id: id }, { ifMatch: props.etag, key }),
+    { onConflict: () => emit('changed'), success: 'GPU 定价已绑定' },
+  );
+  if (r) emit('changed');
+}
 
 async function loadChoices() {
   try {
@@ -116,12 +164,12 @@ const optionKey = (o: GPUOption) => `${o.model}\u0000${o.access_mode}`;
 const attachOption = computed(() => gpuOptions.value.find((o) => optionKey(o) === attach.value.option));
 const optionChoices = computed(() => {
   const seen = new Set<string>();
-  return gpuOptions.value.flatMap((o) => {
+  return gpuOptions.value.filter((o) => boundPricing.value && o.model === boundPricing.value.config.gpu_model && o.access_mode === boundPricing.value.config.access_mode).flatMap((o) => {
     const key = optionKey(o);
     if (seen.has(key)) return [];
     seen.add(key);
     return [{
-      label: `${o.model} · ${ACCESS_MODE_NAMES[o.access_mode]} · ${formatPt(o.gpu_hourly_pt)} pt/h · 显存 ${formatMib(o.memory_mib)} · ${o.availability === 'available' ? '有货' : '暂无'}`,
+      label: `${o.model} · ${ACCESS_MODE_NAMES[o.access_mode]} · ${formatPt(String(boundPricing.value!.config.gpu_hourly_pt))} pt/h · 显存 ${formatMib(o.memory_mib)} · ${o.availability === 'available' ? '有货' : '暂无'}`,
       value: key,
     }];
   });
@@ -136,7 +184,7 @@ function openAttach() {
 watch(
   () => attach.value.option,
   () => {
-    attach.value.max_hourly_pt = attachOption.value?.gpu_hourly_pt ?? '';
+    attach.value.max_hourly_pt = boundPricing.value ? String(boundPricing.value.config.gpu_hourly_pt) : '';
     attach.value.fixed_uuids = [];
   },
 );
@@ -144,6 +192,7 @@ watch(attach, () => attachAction.resetKey(), { deep: true });
 
 const attachProblem = computed(() => {
   const a = attach.value;
+  if (missingPricing.value || !boundPricing.value) return '请先配置并加载实例 GPU 定价';
   if (!Number.isInteger(a.count) || a.count < 1) return '数量至少为 1';
   if (!attachOption.value) return '请选择 GPU 型号';
   if (!PT_PATTERN.test(a.max_hourly_pt)) return '单价上限必须是非负数，最多 6 位小数';
@@ -236,9 +285,19 @@ function done(r: Awaited<ReturnType<typeof instancesApi.attachGPU>> | undefined,
 
 <template>
   <Card size="small">
+    <Alert v-if="needsPricingSetup" class="mb-3" show-icon type="warning" message="此自定义实例尚未绑定 GPU 定价">
+      <template #description>
+        <p>首次挂载前须显式选择定价；仅没有任何历史 GPU 分配记录的实例可设置。保存后型号、访问方式与价格来自该绑定，不修改历史费率。</p>
+        <Space wrap>
+          <Select v-model:value="pricingId" class="min-w-72" :loading="pricingLoading" :options="pricingOptions" placeholder="选择 GPU 定价配置档" />
+          <Button :disabled="!canSetPricing" :loading="pricingAction.pending.value" size="small" type="primary" @click="savePricing">绑定定价</Button>
+          <Button :loading="pricingLoading" size="small" @click="loadPricing">刷新选项</Button>
+        </Space>
+      </template>
+    </Alert>
     <div class="mb-3 flex flex-wrap items-center justify-between gap-2">
       <Space>
-        <Button v-if="instance.capabilities.gpu_attach" :disabled="busy" size="small" type="primary" @click="openAttach">
+        <Button v-if="instance.capabilities.gpu_attach" :disabled="busy || missingPricing || !boundPricing" size="small" type="primary" @click="openAttach">
           挂载 GPU
         </Button>
         <Button :disabled="busy || activeSelected.length === 0" size="small" @click="openDetach">移除所选</Button>

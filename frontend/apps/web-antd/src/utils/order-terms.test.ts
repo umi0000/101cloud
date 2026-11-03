@@ -11,7 +11,7 @@ function quote(overrides: Partial<ElasticQuote> = {}): ElasticQuote {
     expires_at: '2026-11-03T12:00:00Z',
     initial_window_pt: '1.5',
     plan_revision: 'revision-1',
-    policy_versions: { credit: 'credit-1', pricing: 'pricing-1' },
+    policy_versions: { credit: 'credit-1', metrics: 'metrics-1', pricing: 'pricing-1' },
     price_details: {
       cpu_hourly_pt: '1',
       disk_hourly_pt: '0.1',
@@ -60,9 +60,10 @@ describe('confirmed order economics', () => {
 
   it('compares revisions and policy identities independent of map insertion order', () => {
     expect(samePolicyVersions({ pricing: 'p', credit: 'c' }, { credit: 'c', pricing: 'p' })).toBe(true);
-    expect(sameOrderTerms(quote(), quote({ policy_versions: { pricing: 'pricing-1', credit: 'credit-1' } }))).toBe(true);
+    expect(sameOrderTerms(quote(), quote({ policy_versions: { pricing: 'pricing-1', metrics: 'metrics-1', credit: 'credit-1' } }))).toBe(true);
     expect(sameOrderTerms(quote(), quote({ plan_revision: 'revision-2' }))).toBe(false);
     expect(sameOrderTerms(quote(), quote({ policy_versions: { pricing: 'pricing-1', credit: 'credit-2' } }))).toBe(false);
+    expect(sameOrderTerms(quote(), quote({ policy_versions: { ...quote().policy_versions, metrics: 'metrics-2' } }))).toBe(false);
     expect(sameOrderTerms(quote(), quote({ policy_versions: { pricing: 'pricing-1' } }))).toBe(false);
     expect(sameOrderTerms(quote(), quote({ policy_versions: { ...quote().policy_versions, 'gpu-pricing': 'gpu-1' } }))).toBe(false);
   });

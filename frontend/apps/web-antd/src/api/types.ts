@@ -374,6 +374,7 @@ export interface Node {
   health: NodeHealth;
   id: ID;
   last_heartbeat_at: null | Time;
+  metrics_policy_id: ID;
   name: string;
   resources_sampled_at: null | Time;
   revision: string;
@@ -398,7 +399,6 @@ export type GPUHealth = 'error' | 'healthy' | 'missing' | 'unknown';
 export interface NodeGPU {
   allocation_count: number;
   created_at: Time;
-  gpu_price_version_id: ID | null;
   health: GPUHealth;
   id: ID;
   last_seen_at: null | Time;
@@ -572,6 +572,7 @@ export interface Instance {
   observed_state: ObservedState;
   plan_id: ID | null;
   plan_snapshot: null | PlanSnapshot;
+  policy_versions: PolicyVersions;
   product_type: 'custom' | 'elastic';
   provisioning_state: ProvisioningState;
   /** 仅后端确认创建未派发且原子释放预留后为 true；缺失不视为释放。 */
@@ -831,10 +832,6 @@ export interface PolicyVersion {
   version: string;
 }
 
-export interface PlatformBindings {
-  bindings: Record<PolicyKind, ID>;
-  revision: string;
-}
 
 export interface CreditEnforcement {
   account_id?: ID;
@@ -853,7 +850,7 @@ export interface CreditEnforcement {
 
 export interface CreditAccount {
   available_pt: Pt;
-  enforcement: CreditEnforcement | null;
+  enforcements: CreditEnforcement[];
   id: ID;
   next_grant_at: Time;
   outstanding_debt_pt: Pt;

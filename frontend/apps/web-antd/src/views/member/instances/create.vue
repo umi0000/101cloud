@@ -132,7 +132,7 @@ const accountBlock = computed(() => {
   if (accountError.value) return '额度读取失败，暂不能估算时长或创建，请重试';
   if (!account.value) return '正在获取可用额度';
   if (account.value.status !== 'active') return '额度账户当前不可用，暂不能估算时长或创建';
-  if (account.value.enforcement && account.value.enforcement.status !== 'cancelled') return '账户存在额度停机事件，请先核对额度与停机状态；暂不展示正常可用时长';
+  if (account.value.enforcements.some((e) => e.status !== 'cancelled')) return '账户存在额度停机事件，请先核对额度与停机状态；暂不展示正常可用时长';
   return '';
 });
 const spec = computed<ElasticQuoteSpec | null>(() => {

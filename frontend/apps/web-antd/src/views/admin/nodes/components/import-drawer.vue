@@ -9,6 +9,9 @@ import type {
   Image,
   NetworkOption,
   Node,
+  PolicyKind,
+  PolicyVersion,
+  PolicyVersions,
   User,
 } from '#/api/types';
 
@@ -34,7 +37,7 @@ import {
   Switch,
 } from 'ant-design-vue';
 
-import { catalogApi, listAll, nodesApi, usersApi } from '#/api/backend';
+import { catalogApi, listAll, nodesApi, policiesApi, usersApi } from '#/api/backend';
 import { CUSTOM_ACTIONS, GPU_USER_PERMISSIONS } from '#/api/types';
 import ConfirmAction from '#/components/confirm-action.vue';
 import { errorToast, trackAccepted, useAction } from '#/composables/api';
@@ -59,6 +62,7 @@ interface ImportForm {
   memory_gib: number | undefined;
   network_option_id: string | undefined;
   owner_user_id: string | undefined;
+  policy_versions: PolicyVersions;
   vcpus: number | undefined;
 }
 
@@ -71,6 +75,7 @@ const users = shallowRef<User[]>([]);
 const images = shallowRef<Image[]>([]);
 const networks = shallowRef<NetworkOption[]>([]);
 const gpuOptions = shallowRef<GPUOption[]>([]);
+const profiles = shallowRef<PolicyVersion[]>([]);
 const loading = ref(false);
 
 const action = useAction();
@@ -89,6 +94,7 @@ function blank(): ImportForm {
     memory_gib: undefined,
     network_option_id: undefined,
     owner_user_id: undefined,
+    policy_versions: {},
     vcpus: undefined,
   };
 }
@@ -135,17 +141,21 @@ async function loadOptions(item: UnmanagedView) {
   try {
     const nodeId = props.node.id;
     // network_option_id 即绑定 id；后端要求绑定所在节点等于纳管节点，按 node_id 过滤。
-    const [u, imgs, nets, gpus] = await Promise.all([
+    profiles.value = [];
+    const [u, imgs, nets, gpus, policies] = await Promise.all([
       listAll(usersApi.list, { status: 'active' }),
       listAll(catalogApi.images, { instance_type: item.instance_type, node_id: nodeId, project_name: item.project_name }),
       listAll(catalogApi.networkOptions, { instance_type: item.instance_type, node_id: nodeId }),
       item.instance_type === 'container' ? listAll(catalogApi.gpuOptions, { node_id: nodeId }) : Promise.resolve([]),
+      Promise.all((['pricing', 'credit', 'metrics', 'gpu-idle', 'gpu-scheduling', 'gpu-pricing'] as PolicyKind[])
+        .map((kind) => listAll((q) => policiesApi.list(kind, q)))),
     ]);
     if (mine !== optionsSeq) return;
     users.value = u;
     images.value = imgs.filter((i) => i.status === 'active');
     networks.value = nets.filter((n) => n.project_name === item.project_name);
     gpuOptions.value = gpus;
+    profiles.value = policies.flat();
   } catch (error) {
     if (mine === optionsSeq) errorToast(error);
   } finally {
@@ -188,6 +198,32 @@ const accessOptions = computed<Array<{ disabled: boolean; label: string; value: 
   ];
 });
 const actionOptions = CUSTOM_ACTIONS.map((a) => ({ label: CUSTOM_ACTION_NAMES[a] ?? a, value: a }));
+
+const policyKinds = computed<PolicyKind[]>(() => [
+  'pricing', 'credit', 'metrics',
+  ...(isContainer.value ? ['gpu-idle', 'gpu-scheduling'] as PolicyKind[] : []),
+  ...(isContainer.value && form.value.gpu_count > 0 ? ['gpu-pricing'] as PolicyKind[] : []),
+]);
+function policyOptions(kind: PolicyKind) {
+  return profiles.value.filter((p) =>
+    p.kind === kind && p.status === 'active' && !!p.effective_at && Date.parse(p.effective_at) <= Date.now() &&
+    (kind !== 'gpu-pricing' || (p.config.gpu_model === form.value.gpu_model && p.config.access_mode === form.value.access_mode)),
+  ).map((p) => ({ label: `${p.code} v${p.version}`, value: p.id }));
+}
+function policyRules(kind: PolicyKind) {
+  return [{ required: true, validator: async (_rule: unknown, value: unknown) => {
+    if (!policyOptions(kind).some((p) => p.value === value)) throw new Error('请选择已发布、已生效且兼容的策略');
+  } }];
+}
+function selectedPolicies(): PolicyVersions | null {
+  const result: PolicyVersions = {};
+  for (const kind of policyKinds.value) {
+    const id = form.value.policy_versions[kind];
+    if (!id || !policyOptions(kind).some((p) => p.value === id)) return null;
+    result[kind] = id;
+  }
+  return result;
+}
 
 watch(
   () => form.value.gpu_count,
@@ -264,13 +300,15 @@ async function submit() {
   const owner = form.value.owner_user_id;
   if (!item?.incus_uuid || !owner) return false;
   const config = approvedConfig(item);
+  const policyVersions = selectedPolicies();
+  if (!policyVersions) return false;
   if (!config) return false;
   const uuid = item.incus_uuid;
   const r = await action.run(
     (key) =>
       nodesApi.importInstance(
         props.node.id,
-        { approved_config: config, incus_uuid: uuid, owner_user_id: owner },
+        { approved_config: config, incus_uuid: uuid, owner_user_id: owner, policy_versions: policyVersions },
         { ifMatch: props.etag, key },
       ),
     { success: '已提交纳管' },
@@ -304,6 +342,16 @@ async function submit() {
       </Descriptions>
 
       <Form ref="formRef" layout="vertical" :model="form">
+        <FormItem
+          v-for="kind in policyKinds" :key="kind" :label="`策略 · ${kind}`"
+          :name="['policy_versions', kind]" :rules="policyRules(kind)"
+        >
+          <Select
+            v-model:value="form.policy_versions[kind]" :loading="loading" :options="policyOptions(kind)"
+            placeholder="请选择已发布且已生效的兼容策略" not-found-content="没有可用策略，请先发布"
+            show-search option-filter-prop="label"
+          />
+        </FormItem>
         <Row :gutter="12">
           <Col :span="12">
             <FormItem label="所有者" name="owner_user_id" :rules="required('请选择所有者')">

@@ -252,10 +252,10 @@ curl -f https://cloud.example.com/api/v1/health/ready
 
 建议顺序：
 
-1. 为价格、GPU价格、额度、GPU空闲、GPU调度、监控六类政策各创建配置档（创建即生效），再完整绑定平台默认配置档。配置档可直接编辑、切换默认或在无引用时删除，没有草稿/发布流程。不提供默认价格或默认业务额度。
-2. 从可信渠道导入 Agent endpoint、Token和证书指纹，执行只读探测，确认后启用节点。
+1. 创建可复用的价格、GPU价格、额度、GPU空闲、GPU调度、监控政策配置档，直接编辑或无引用时删除；没有平台默认绑定。
+2. 导入Agent endpoint、Token和证书指纹，显式选择节点metrics_policy_id（metrics通用ID），探测后启用节点。
 3. 在产品目录登记镜像和初始化模板（如需）。镜像按节点/项目配置架构、完整指纹、cloud-init和GPU兼容性，支持批量节点：local只验证已有本地镜像，remote通过所选节点发现真实官方目录并异步拉取。跟踪返回的逐节点image.prepare任务，只有ready配置才能用于该节点创建/导入；登记成功不代表下载完成。
-4. 给 GPU 配置价格、共享名额和可用状态。共享名额不等于显存隔离或算力保证。GPU 的 `gpu_price_version_id` 填 gpu-pricing 政策版本 ID（即 `/api/v1/admin/policies/gpu-pricing/versions` 返回的 id）；API 中所有政策版本引用都使用该 ID。
+4. GPU只配置共享名额和可用状态，不绑定价格；共享名额不保证显存隔离或算力。GPU价格由实例冻结的套餐gpu-pricing绑定决定，同型号可用不同套餐价格，历史分配不重定价。
 5. 登记局域网 IP 池和地址（池名称全局唯一），绑定现有 bridge 或适用的 macvlan，验证后启用。没有 NAT 或端口映射。实例所在节点由所选网络绑定决定，直接下发自定义实例时须指定 node_id。
 
 镜像源管理接口为 `GET /api/v1/admin/image-sources`、`GET /api/v1/admin/nodes/{id}/remote-images?source_id=images`；仅固定可信HTTPS源images（Ubuntu OS同样从该真实目录选择，不支持Canonical Cloud专用格式）。`POST /api/v1/admin/images` 接收 `{code?,version?,instance_type,source_type,properties,nodes:[{node_id,project_name,architecture,fingerprint,cloud_init,gpu_ready,source_id?,variant?,properties?}]}`，返回201 Image及`nodes[].task_id`。查看 `GET /api/v1/admin/images/{id}/nodes`，用带If-Match的 `POST /api/v1/admin/images/{id}/nodes` 批量管理配置，后者返回202及`{image_id,tasks}`。选择实例镜像时传 `GET /api/v1/catalog/images?node_id=...&project_name=...`，只列该节点/项目ready配置；project_name可选但须同时指定node_id，省略则为节点默认项目。GPU-ready为人工兼容性断言，不安装驱动。
@@ -263,6 +263,14 @@ curl -f https://cloud.example.com/api/v1/health/ready
 `20261102_00_node_images.sql` 在95迁移之后建立 `image_nodes`，历史 `init.sql` 保持原始checksum。现有local镜像与节点按default_project_name交叉生成pending配置和verification-only任务，未核验前绝不ready；旧remote记录不推断可信源。迁移不改现有实例冻结指纹/架构、额度或原任务（含unknown任务）。迁移任务参数仅包含字符串image_node_id；新API排队任务同时包含入队时冻结的config（image_id/node_id/project_name/architecture/fingerprint/instance_type/source_type/source_id/cloud_init/gpu_ready/variant），worker操作原生API前还会固化不可变日志。旧local镜像properties.cloud_init显式布尔值保留；仅当该属性缺失时，worker根据原生镜像properties.variant是否为cloud推断cloud-init，GPU兼容性绝不自动推断。派发结果不明须对账，不盲目重复下载；失败不删除已有原生镜像。
 
 6. 显式选择套餐node_ids，配置这些节点内网络和节点/项目镜像，设置GPU初始策略、用户动作与权限后启用。多个套餐可同时启用，任意时候可编辑或独立停用；active保存完整验证就绪性，既有实例冻结配置不变。创建用户并明确配额，新用户配额全部为0，自定义实例还需max_resident_instances。VM仅CPU；可选GPU容器提供型号及正数gpu_count范围并绑定gpu-pricing。用户可count=0，但价格上限仍受套餐约束。
+套餐及custom创建/导入必须提供policy_versions：pricing/credit/metrics始终必填，容器另需gpu-idle/gpu-scheduling，支持GPU的容器套餐（含可选GPU）及启用GPU的custom容器另需gpu-pricing。均为通用政策ID；实例准入冻结绑定，后续启动、GPU操作、空闲/均衡、监控及计费不读取当前套餐或全局默认。
+
+GPU价格配置档候选仅通过管理员`GET /admin/catalog/gpu-options`供custom下发、导入及实例GPU管理显式选择；不提供普通用户全局GPU价格目录，用户报价和GPU价格来自所选套餐及实例冻结绑定。部署历史中旧目录路径仅描述当时版本。
+
+迁移遗留custom实例若尚无gpu-pricing绑定且从未有过任何GPU分配，管理员须在首次挂载前通过`PUT /admin/instances/{id}/gpu-pricing-policy {policy_version_id}`显式选择active且已生效的GPU价格配置档；要求CSRF、Idempotency-Key及If-Match，返回policy_versions、revision和新ETag。此接口仅补齐缺失绑定，已有绑定、elastic或任何历史分配均409 policy_binding_frozen；不替换冻结价格、不重定价历史。
+
+POST /admin/users必填credit_policy_version_id，选择用户独立共享钱包政策。bootstrap管理员可无钱包；POST /admin/credit-accounts {user_id,policy_version_id}遵守标准幂等契约，为未配置用户创建钱包，不立即发放额度。后台只处理已配置账户，游标尊重实际创建时间。实例credit绑定管理各自宽限/停机/存储，选择套餐不覆盖钱包、不按实例增发。混合套餐账户返回enforcements数组，历史事件期限保留。
+
 7. 先受控验证一个实例的创建、登录、停止、磁盘保留、GPU观测和控制台，再开放给成员。
 
 客机 SSH 初始化脚本见项目根目录 [`init-openssh.sh`](../init-openssh.sh)。支持 Ubuntu/Debian（`openssh-server`）和 Arch Linux（`openssh`），以 root 执行；管理员可将脚本登记为 `cloud_init` 阶段模板并绑定套餐，先等待 cloud-init 再安装和配置 SSH。后端不自动安装 OpenSSH、不自动登记/绑定模板、不改防火墙。脚本不设置 root 密码：读取后端 cloud-init 写入的 `/etc/101cloud/ssh-login-mode`（root:root、0600），`password` 模式允许已有非空 root 密码，`ssh-key` 模式禁止 SSH 密码并允许 root 公钥；两者显式开启公钥认证。无标记保留原密码模式默认值，非法标记拒绝执行。默认确保 IPv4 TCP 22 监听；原有 Allow/Deny、来源 Match 和 PAM 策略保留，仍需在目标镜像验收登录。不要把明文密码写进模板或初始化参数。
@@ -285,7 +293,7 @@ worker 仅在内存解密，原生创建前设置带 `#cloud-config` 前缀的 J
 
 每日额度由后台任务处理，首次发放完成前账户可能尚未就绪。自定义实例的申请和沟通在平台外完成，平台只保留管理员 `POST /admin/custom-instances` 直接下发（请求字段仍为 `approved_config`）及已有实例纳管，不提供申请/审批页面或接口。自定义实例按admin_exempt记录，不受每日额度停机影响，仍受资源及max_resident_instances配额约束。当前OpenAPI包含147个操作。
 
-额度耗尽默认600秒后强停且不删盘；真实强停可能丢失未保存内存和在途写入。停机不等于 GPU 使用权已经移除：尚未释放的 GPU 分配仍保留并按持有区间记录。需要释放时走显式 GPU 移除流程。
+额度耗尽按实例冻结credit政策期限强停而不删盘，可能丢失未保存数据。停止不等于释放GPU；保留分配继续按历史持有区间记录，释放须显式移除。
 
 ## 12. 更新、备份与排错
 
@@ -368,3 +376,9 @@ HTTP监听127.0.0.1:8080，就绪检查、随机管理员登录、真实Agent固
 2026-11-03 16:38:02（+08:00）按管理员要求仅调整 `.111` 磁盘收费：`100daily` 政策10及对应来源2由retained改为running_only，其他字段及原free政策不变。账户锁内同步更新公开JSON/计费来源并写审计 `billing.storage_running_only`。已停止实例22/23/25的磁盘会话26/28/32在最后已结算边界16:38:01关闭；检查无held预留后关闭，未删除或改写任何历史账单、流水或磁盘数据，未变更10分钟宽限期。后续运行/停止沿用已有running_only生命周期，不需要后端重启。
 
 跨11秒（两个5秒结算周期）实际观察：三个已停机磁盘会话的账单笔数、历史应收总额和最新收费时间均不再变化，已停机实例的active磁盘会话为0；运行实例的磁盘会话仍active，后端服务active。变更前完整业务库备份 `/var/backups/101cloud/before-running-only-storage-20261103-163758.sql.gz`，工作区外101cloud-backups保留同名副本。历史欠款保留，未发放或扣减额度。
+
+2026-11-03 套餐唯一配置来源已仅部署 `.111`，前端目录 `/srv/101cloud/releases/20261103-plan-owned-policies`，旧二进制/前端链接及完整恢复备份均保存在 `/var/backups/101cloud/`。应用 `20261103_20_plan_owned_policies.sql`，清除平台默认绑定表、节点GPU定价列，旧明确绑定只在迁移时回填实例/套餐和节点监控策略，运行时无默认回退。用户每日额度独立绑定共享钱包；套餐额度配置仅控制实例计费窗口、宽限、停机与磁盘等规则，不按实例重复发钱。创建用户和缺失钱包初始化须显式选额度档；节点监控策略也显式选择。现有实例绑定及已分配GPU价格保留，不跟随套餐后续编辑；极少数无GPU历史且缺定价的旧custom可经受保护的一次性接口明确设置。
+
+验证：全量真实MySQL8.4 `go test -race -p 1 ./... -count=1`、go vet、前端全量Vitest、vue-tsc及生产构建通过；OpenAPI JSON无重复键且旧默认接口/成员GPU定价目录已移除。隔离真实HTTP路由、SQL准入及只读TLS存储夹具下，同一GPU由两个套餐分别报价4/7pt并返回202，两笔gpu_allocations持久化对应费率且共享同一gpu_id；钱包仍1个、额度桶仍1个、daily_grants为0。低于4pt的用户上限只返回gpu_price_exceeds_limit，不产生伪库存错误。未运行原生交付worker，不将queued验收称为硬件实例交付成功。
+
+真实线上数据副本和正式停服迁移前后均比较全部账单/流水/额度桶金额及GPU分配费率、实例状态/资源，完全一致。切换窗口最新业务库备份 `business-at-plan-owned-cutover.sql.gz` 已gzip校验，全库备份 `all-databases-before-plan-owned-20261103-185805.sql.gz` 本机/服务器SHA256匹配。线上登录只读确认GPU DTO无定价字段、旧默认接口404、套餐2拥有metrics及GPU定价绑定，就绪200、节点在线持续采样、账本差异0、停机磁盘active会话0。线上只请求报价，未创建测试实例或修改资金；共享套餐GPU报价4pt且不再出现定价绑定造成的GPU库存错误。既有套餐1的独占/共享定价冲突保留，需管理员选择兼容配置，不擅改商业价格。

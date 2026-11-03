@@ -21,7 +21,7 @@ func AdmitInstance(ctx context.Context, db *gorm.DB, instance row, action string
 	if platform.Text(instance["billing_mode"]) == "admin_exempt" {
 		return nil
 	}
-	ac, e := account(db.WithContext(ctx), platform.Uint(instance["user_id"]), true)
+	ac, e := account(db.WithContext(ctx), platform.Uint(instance["user_id"]))
 	if e != nil {
 		return e
 	}
@@ -35,7 +35,7 @@ func AdmitInstance(ctx context.Context, db *gorm.DB, instance row, action string
 	if n > 0 {
 		return conflict("credit_exhausted", "a credit exhaustion deadline is active; new paid resources are blocked")
 	}
-	p, e := accountPolicy(db, ac)
+	p, e := instanceCreditPolicy(db, instance)
 	if e != nil {
 		return e
 	}
@@ -78,8 +78,8 @@ func AdmitInstance(ctx context.Context, db *gorm.DB, instance row, action string
 // it never settles, refunds, deletes history or treats a running guest as stopped.
 func CancelUnprovisionedInstance(ctx context.Context, db *gorm.DB, instance row) error {
 	db = db.WithContext(ctx)
-	ac, e := account(db, platform.Uint(instance["user_id"]), false)
-	if e != nil {
+	ac, e := usageAccount(db, instance)
+	if e != nil || ac == nil {
 		return e
 	}
 	ss, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id"), "usage_sessions", "instance_id = ?", instance["id"])
@@ -130,11 +130,11 @@ func InstanceUsage(ctx context.Context, db *gorm.DB, instance row, event string,
 		return invalid("unsupported usage lifecycle event")
 	}
 	db = db.WithContext(ctx)
-	ac, e := account(db, platform.Uint(instance["user_id"]), true)
-	if e != nil {
+	ac, e := usageAccount(db, instance)
+	if e != nil || ac == nil {
 		return e
 	}
-	p, e := accountPolicy(db, ac)
+	p, e := instanceCreditPolicy(db, instance)
 	if e != nil {
 		return e
 	}
@@ -591,7 +591,7 @@ func settleSession(db *gorm.DB, ac, p, s row, t time.Time) error {
 	billable := true
 	deferred := false
 	var event row
-	er := db.Table("credit_enforcements").Where("account_id = ? AND status IN ('grace','stopping','unknown')", ac["id"]).Take(&event).Error
+	er := db.Table("credit_enforcements e").Select("e.*").Joins("JOIN credit_enforcement_instances m ON m.enforcement_id=e.id").Where("e.account_id = ? AND m.instance_id = ? AND e.status IN ('grace','stopping','unknown')", ac["id"], s["instance_id"]).Take(&event).Error
 	if er != nil && er != gorm.ErrRecordNotFound {
 		return er
 	}
@@ -674,17 +674,13 @@ func cycleAt(p row, t time.Time) (time.Time, error) {
 	return cycle, nil
 }
 func dailyGrants(ctx context.Context, a *platform.App) error {
-	_, e := activePolicy(a.DB.WithContext(ctx), "credit")
-	if e != nil {
-		return e
-	}
 	var users []uint64
-	if e = a.DB.WithContext(ctx).Table("users").Where("status = 'active'").Order("id").Pluck("id", &users).Error; e != nil {
+	if e := a.DB.WithContext(ctx).Table("credit_accounts c").Joins("JOIN users u ON u.id=c.user_id").Where("u.status = 'active' AND c.status = 'active'").Order("c.id").Pluck("c.user_id", &users).Error; e != nil {
 		return e
 	}
 	for _, uid := range users {
-		if e = a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
-			ac, e := account(db, uid, true)
+		if e := a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+			ac, e := account(db, uid)
 			if e != nil {
 				return e
 			}
@@ -701,9 +697,13 @@ func dailyGrants(ctx context.Context, a *platform.App) error {
 			}
 			start := stamp(ac["grant_cursor_at"])
 			if start.IsZero() {
-				start, e = cycleAt(cfg, stamp(ac["created_at"]))
+				created := stamp(ac["created_at"])
+				start, e = cycleAt(cfg, created)
 				if e != nil {
 					return e
+				}
+				if start.Before(created) {
+					start = start.AddDate(0, 0, 1)
 				}
 			} else {
 				start = start.In(last.Location()).AddDate(0, 0, 1)
@@ -774,16 +774,16 @@ func settleAll(ctx context.Context, a *platform.App) error {
 				if err != nil {
 					return err
 				}
-				p, err := accountPolicy(db, ac)
-				if err != nil {
-					return err
-				}
 				s, err := platform.Get(db, "usage_sessions", sessionID, true)
 				if err != nil {
 					return err
 				}
 				if platform.Text(s["status"]) != "active" {
 					return nil
+				}
+				p, err := sessionCreditPolicy(db, s)
+				if err != nil {
+					return err
 				}
 				t := now()
 				if err = settleSession(db, ac, p, s, t); err != nil {
@@ -799,10 +799,6 @@ func settleAll(ctx context.Context, a *platform.App) error {
 			if err != nil {
 				return err
 			}
-			p, err := accountPolicy(db, ac)
-			if err != nil {
-				return err
-			}
 			t := now()
 			if err = expireBuckets(db, ac, t); err != nil {
 				return err
@@ -813,7 +809,7 @@ func settleAll(ctx context.Context, a *platform.App) error {
 			if err = restore(db, ac, t); err != nil {
 				return err
 			}
-			return detectExhaustion(db, ac, p, t)
+			return detectExhaustion(db, ac, t)
 		}); e != nil {
 			return e
 		}
@@ -874,19 +870,11 @@ func settlePending(ctx context.Context, a *platform.App) error {
 }
 
 func restoreEnforcement(db *gorm.DB, ac row, t time.Time) error {
-	var event row
-	er := db.Table("credit_enforcements").Clauses(clause.Locking{Strength: "UPDATE"}).Where("account_id = ? AND status IN ('grace','stopping','unknown')", ac["id"]).Take(&event).Error
-	if er == gorm.ErrRecordNotFound {
-		return nil
-	}
-	if er != nil {
-		return er
-	}
-	var p row
-	if e := json.Unmarshal([]byte(platform.Text(event["policy_snapshot"])), &p); e != nil {
+	events, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id"), "credit_enforcements", "account_id = ? AND status IN ('grace','stopping','unknown')", ac["id"])
+	if e != nil {
 		return e
 	}
-	if platform.Text(p["restore_action"]) != "cancel_pending_stop" {
+	if len(events) == 0 {
 		return nil
 	}
 	left, _, e := balances(db, platform.Uint(ac["id"]))
@@ -907,13 +895,29 @@ func restoreEnforcement(db *gorm.DB, ac row, t time.Time) error {
 	}
 	need := decimal.Zero
 	for _, s := range sessions {
+		p, e := sessionCreditPolicy(db, s)
+		if e != nil {
+			return e
+		}
 		need = need.Add(expected(s, platform.Uint(p["billing_window_seconds"])*1000000))
 	}
 	if left.LessThan(need) {
 		return nil
 	}
-	if e = db.Table("credit_enforcements").Where("id = ?", event["id"]).Updates(row{"status": "cancelled", "revision": gorm.Expr("revision + 1")}).Error; e != nil {
-		return e
+	for _, event := range events {
+		var p row
+		if e = json.Unmarshal([]byte(platform.Text(event["policy_snapshot"])), &p); e != nil {
+			return e
+		}
+		if platform.Text(p["restore_action"]) != "cancel_pending_stop" {
+			continue
+		}
+		if e = db.Table("credit_enforcements").Where("id = ?", event["id"]).Updates(row{"status": "cancelled", "revision": gorm.Expr("revision + 1")}).Error; e != nil {
+			return e
+		}
+		if e = notify(db, platform.Uint(ac["user_id"]), "credit_restored", "Credit has been restored. Pending credit shutdown is cancelled; stopped instances are not restarted automatically.", "credit_enforcement", platform.Uint(event["id"])); e != nil {
+			return e
+		}
 	}
-	return notify(db, platform.Uint(ac["user_id"]), "credit_restored", "Credit has been restored. Pending credit shutdown is cancelled; stopped instances are not restarted automatically.", "credit_enforcement", platform.Uint(event["id"]))
+	return nil
 }

@@ -1,47 +1,29 @@
 <script lang="ts" setup>
-import type { Node, NodeGPU, PolicyVersion } from '#/api/types';
+import type { Node, NodeGPU } from '#/api/types';
 
-import { computed, onMounted, ref, shallowRef, watch } from 'vue';
+import { onMounted, ref, watch } from 'vue';
 
 import { Button, Table, Tooltip } from 'ant-design-vue';
 
-import { listAll, nodesApi, policiesApi } from '#/api/backend';
+import { nodesApi } from '#/api/backend';
 import CursorPager from '#/components/cursor-pager.vue';
 import StatusTag from '#/components/status-tag.vue';
 import TimeText from '#/components/time-text.vue';
-import { errorToast, useCursorList } from '#/composables/api';
+import { useCursorList } from '#/composables/api';
 import { formatMib, formatPercent, shortId } from '#/utils/format';
 
 import GpuEditDrawer from './gpu-edit-drawer.vue';
-import { gpuPriceLabel } from './node-forms';
 
 const props = defineProps<{ epoch: number; node: Node }>();
 
 const filters = ref({});
 const list = useCursorList<NodeGPU>((q) => nodesApi.gpus(props.node.id, q), filters);
 
-const prices = shallowRef<PolicyVersion[]>([]);
-const priceById = computed(() => new Map(prices.value.map((p) => [p.id, p])));
-
-async function loadPrices() {
-  try {
-    prices.value = await listAll((q) => policiesApi.list('gpu-pricing', q));
-  } catch (error) {
-    errorToast(error);
-  }
-}
-
 onMounted(() => {
   void list.load();
-  void loadPrices();
 });
 watch(() => props.epoch, () => list.load());
 
-function priceText(id: null | string) {
-  if (!id) return '未定价';
-  const p = priceById.value.get(id);
-  return p ? gpuPriceLabel(p) : `#${id}`;
-}
 
 function memoryUse(g: NodeGPU) {
   const o = g.observation;
@@ -57,7 +39,6 @@ const columns = [
   { key: 'health', title: '健康', width: 80 },
   { key: 'usage', title: 'SM / 显存占用' },
   { key: 'alloc', title: '分配 / 名额', width: 110 },
-  { key: 'price', title: '定价' },
   { key: 'quality', title: '观测', width: 150 },
   { key: 'op', title: '', width: 70 },
 ];
@@ -105,11 +86,6 @@ function edit(id: string) {
           <span class="tabular-nums">{{ record.allocation_count }} / {{ record.max_allocations }}</span>
           <div v-if="record.reservation_count > 0" class="text-muted-foreground text-xs">预留 {{ record.reservation_count }}</div>
         </template>
-        <template v-else-if="column.key === 'price'">
-          <span :class="record.gpu_price_version_id ? 'font-mono text-xs' : 'text-muted-foreground'">
-            {{ priceText(record.gpu_price_version_id) }}
-          </span>
-        </template>
         <template v-else-if="column.key === 'quality'">
           <StatusTag kind="quality" :value="record.quality" />
           <TimeText class="ml-1" :value="record.observed_at" />
@@ -128,6 +104,6 @@ function edit(id: string) {
       @prev="list.prevPage"
       @refresh="list.load"
     />
-    <GpuEditDrawer v-model:open="editOpen" :gpu-id="editId" :node="node" :prices="prices" @saved="list.load" />
+    <GpuEditDrawer v-model:open="editOpen" :gpu-id="editId" :node="node" @saved="list.load" />
   </div>
 </template>

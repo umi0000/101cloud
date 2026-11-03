@@ -64,11 +64,14 @@ onMounted(() => list.load());
           <span class="font-mono">{{ policyLabel(versions, record.policy_version_id) }}</span>
         </template>
         <template v-else-if="column.key === 'enforcement'">
-          <Space v-if="record.enforcement" :size="4">
-            <StatusTag kind="enforcement" :value="record.enforcement.status" />
-            <TimeText :value="record.enforcement.shutdown_deadline" />
+          <span v-if="!record.enforcements.length">—</span>
+          <Space v-else direction="vertical" :size="4">
+            <Space v-for="event in record.enforcements" :key="event.id" :size="4" wrap>
+              <span class="font-mono text-xs">#{{ event.id }}</span>
+              <StatusTag kind="enforcement" :value="event.status" />
+              <TimeText :value="event.shutdown_deadline" />
+            </Space>
           </Space>
-          <span v-else>—</span>
         </template>
       </template>
     </Table>

@@ -115,20 +115,45 @@ func RandomToken() string {
 	}
 	return base64.RawURLEncoding.EncodeToString(b)
 }
-func (a *App) Policy(ctx context.Context, kind string) (Row, error) {
-	var rows []Row
-	e := a.DB.WithContext(ctx).Raw("SELECT p.* FROM policy_versions p JOIN platform_policy_bindings b ON b.policy_id=p.id WHERE b.kind=? AND p.status='active' AND p.effective_at<=?", kind, a.Time()).Scan(&rows).Error
+
+// Policy resolves an explicitly bound profile. Disabled published versions remain
+// readable for existing bindings; admission validates publication separately.
+func (a *App) Policy(ctx context.Context, kind, id string) (Row, error) {
+	policyID, e := IDString(id)
 	if e != nil {
+		return nil, E(409, "policy_not_configured", "explicit policy required: "+kind)
+	}
+	var rows []Row
+	if e = a.DB.WithContext(ctx).Table("policy_versions").Where("id=? AND kind=?", policyID, kind).Find(&rows).Error; e != nil {
 		return nil, WrapDB(e)
 	}
 	if len(rows) != 1 {
-		return nil, E(409, "policy_not_configured", "published policy required: "+kind)
+		return nil, E(409, "policy_not_configured", "explicit policy required: "+kind)
 	}
 	var cfg Row
-	if e = json.Unmarshal([]byte(Text(rows[0]["config"])), &cfg); e != nil {
+	if e = json.Unmarshal([]byte(Text(rows[0]["config"])), &cfg); e != nil || cfg == nil {
 		return nil, E(500, "internal_error", "invalid stored policy")
 	}
 	return cfg, nil
+}
+
+// InstancePolicy reads only the instance's frozen public policy-version binding.
+func (a *App) InstancePolicy(ctx context.Context, instance Row, kind string) (Row, error) {
+	var versions map[string]string
+	switch value := instance["policy_versions"].(type) {
+	case map[string]string:
+		versions = value
+	case map[string]any:
+		versions = make(map[string]string, len(value))
+		for key, id := range value {
+			versions[key] = Text(id)
+		}
+	default:
+		if e := json.Unmarshal([]byte(Text(value)), &versions); e != nil {
+			return nil, E(500, "internal_error", "invalid instance policy bindings")
+		}
+	}
+	return a.Policy(ctx, kind, versions[kind])
 }
 func Audit(ctx context.Context, db *gorm.DB, actor, taskID, instanceID uint64, action string, details any) error {
 	b, e := json.Marshal(details)

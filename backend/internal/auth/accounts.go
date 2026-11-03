@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"101cloud/backend/internal/billing"
 	"101cloud/backend/internal/platform"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -137,10 +138,11 @@ func registerAdmin(a *platform.App, admin *gin.RouterGroup) {
 	}))
 	admin.POST("/users", platform.Handle(func(c *gin.Context) (any, error) {
 		var input struct {
-			Username        string  `json:"username"`
-			Email           *string `json:"email"`
-			InitialPassword string  `json:"initial_password"`
-			Role            string  `json:"role"`
+			Username              string  `json:"username"`
+			Email                 *string `json:"email"`
+			InitialPassword       string  `json:"initial_password"`
+			Role                  string  `json:"role"`
+			CreditPolicyVersionID string  `json:"credit_policy_version_id"`
 		}
 		if err := platform.Decode(c, &input); err != nil {
 			return nil, err
@@ -153,6 +155,9 @@ func registerAdmin(a *platform.App, admin *gin.RouterGroup) {
 		}
 		if input.Email != nil && !validEmail(*input.Email) {
 			return nil, validation("Invalid email address")
+		}
+		if _, err := platform.IDString(input.CreditPolicyVersionID); err != nil {
+			return nil, err
 		}
 		hash, err := hashPassword(input.InitialPassword)
 		if err != nil {
@@ -172,6 +177,9 @@ func registerAdmin(a *platform.App, admin *gin.RouterGroup) {
 		}
 		if err := db.Table("user_limits").Create(zeroLimits(created.ID)).Error; err != nil {
 			return nil, platform.WrapDB(err)
+		}
+		if _, err := billing.CreateAccount(db, created.ID, input.CreditPolicyVersionID); err != nil {
+			return nil, err
 		}
 		result, err := platform.Get(db, "users", created.ID, false)
 		if err != nil {

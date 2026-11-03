@@ -2,9 +2,9 @@
  * 节点表单的共享规则与换算。规则照抄后端 catalog/nodes.go 的
  * nodeConnectionChanges / nodeCapacityChanges，提前在前端拦截明显错误。
  */
-import type { Allocatable, NodeConnectionInput, PolicyVersion, UnmanagedInstance } from '#/api/types';
+import type { Allocatable, NodeConnectionInput, UnmanagedInstance } from '#/api/types';
 
-import { bytesToGib, formatPt, gibToBytes } from '#/utils/format';
+import { bytesToGib, gibToBytes } from '#/utils/format';
 
 /** 后端快照中 incus_uuid 可能为 null（Incus 未报告 volatile.uuid），此时不能纳管。 */
 export type UnmanagedView = Omit<UnmanagedInstance, 'incus_uuid'> & { incus_uuid: null | string };
@@ -125,20 +125,3 @@ export function allocatableRules(form: () => AllocatableForm): Record<keyof Allo
   };
 }
 
-/** gpu-pricing 版本 config：{gpu_model, access_mode, gpu_hourly_pt}。 */
-export function priceConfig(p: PolicyVersion) {
-  const text = (k: string) => {
-    const v = p.config[k];
-    return typeof v === 'string' ? v : null;
-  };
-  return { accessMode: text('access_mode'), hourlyPt: text('gpu_hourly_pt'), model: text('gpu_model') };
-}
-
-export function gpuPriceLabel(p: PolicyVersion): string {
-  return `${p.code} v${p.version} · ${formatPt(priceConfig(p).hourlyPt)} pt/小时`;
-}
-
-/** 已发布且已生效。 */
-export function priceEffective(p: PolicyVersion): boolean {
-  return p.status === 'active' && !!p.effective_at && Date.parse(p.effective_at) <= Date.now();
-}

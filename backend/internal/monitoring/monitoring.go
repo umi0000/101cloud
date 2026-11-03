@@ -102,71 +102,76 @@ type metricCheckpoint struct {
 
 var collectionState = struct {
 	sync.Mutex
-	next time.Time
-}{}
+	next map[gpuPollKey]time.Time
+}{next: map[gpuPollKey]time.Time{}}
 
 func collectMetrics(ctx context.Context, a *platform.App) error {
-	p, err := a.Policy(ctx, "metrics")
-	if err != nil {
+	var nodes []struct {
+		ID              uint64
+		MetricsPolicyID string
+	}
+	if err := a.DB.WithContext(ctx).Table("nodes").Select("id,metrics_policy_id").Where("EXISTS (SELECT 1 FROM instances i WHERE i.node_id=nodes.id AND i.deleted_at IS NULL)").Find(&nodes).Error; err != nil {
 		return err
 	}
-	interval := platform.Uint(p["collection_interval_seconds"])
-	if interval == 0 {
-		return platform.E(422, "invalid_policy", "Metrics collection interval is required")
-	}
-	collectionState.Lock()
-	if a.Time().Before(collectionState.next) {
-		collectionState.Unlock()
-		return nil
-	}
-	collectionState.next = a.Time().Add(time.Duration(interval) * time.Second)
-	collectionState.Unlock()
-	var nodes []struct{ ID uint64 }
-	if err = a.DB.WithContext(ctx).Table("nodes").Select("id").Where("EXISTS (SELECT 1 FROM instances i WHERE i.node_id=nodes.id AND i.deleted_at IS NULL)").Find(&nodes).Error; err != nil {
-		return err
-	}
-	timeout := platform.Uint(p["collection_timeout_seconds"])
-	if timeout == 0 {
-		timeout = 30
-	}
-	concurrency := platform.Uint(p["max_concurrent_nodes"])
-	if concurrency == 0 {
-		concurrency = 4
-	}
-	if concurrency > 32 || timeout > 120 {
-		return platform.E(422, "invalid_policy", "Metrics worker bounds exceeded")
-	}
-	jobs := make(chan uint64)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-	var failures []error
-	for range int(concurrency) {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for id := range jobs {
-				c, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
-				e := collectNode(c, a, id)
-				cancel()
-				if e != nil {
-					mu.Lock()
-					failures = append(failures, e)
-					mu.Unlock()
-				}
-			}
-		}()
-	}
+	groups := map[string][]uint64{}
 	for _, node := range nodes {
-		select {
-		case jobs <- node.ID:
-		case <-ctx.Done():
-			close(jobs)
-			wg.Wait()
-			return ctx.Err()
-		}
+		groups[node.MetricsPolicyID] = append(groups[node.MetricsPolicyID], node.ID)
 	}
-	close(jobs)
-	wg.Wait()
+	var failures []error
+	for id, group := range groups {
+		p, err := a.Policy(ctx, "metrics", id)
+		if err != nil {
+			failures = append(failures, err)
+			continue
+		}
+		interval := platform.Uint(p["collection_interval_seconds"])
+		timeout := platform.Uint(p["collection_timeout_seconds"])
+		concurrency := platform.Uint(p["max_concurrent_nodes"])
+		if interval == 0 || timeout == 0 || timeout > 120 || concurrency == 0 || concurrency > 32 {
+			failures = append(failures, platform.E(422, "invalid_policy", "Explicit metrics worker bounds are required"))
+			continue
+		}
+		jobs := make(chan uint64)
+		var wg sync.WaitGroup
+		var mu sync.Mutex
+		for range int(concurrency) {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for node := range jobs {
+					call, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+					err := collectNode(call, a, node)
+					cancel()
+					if err != nil {
+						mu.Lock()
+						failures = append(failures, err)
+						mu.Unlock()
+					}
+				}
+			}()
+		}
+		for _, node := range group {
+			key := gpuPollKey{Node: node, Policy: id}
+			collectionState.Lock()
+			due := !a.Time().Before(collectionState.next[key])
+			if due {
+				collectionState.next[key] = a.Time().Add(time.Duration(interval) * time.Second)
+			}
+			collectionState.Unlock()
+			if !due {
+				continue
+			}
+			select {
+			case jobs <- node:
+			case <-ctx.Done():
+				close(jobs)
+				wg.Wait()
+				return ctx.Err()
+			}
+		}
+		close(jobs)
+		wg.Wait()
+	}
 	return errors.Join(failures...)
 }
 
@@ -252,13 +257,13 @@ func collectNode(ctx context.Context, a *platform.App, node uint64) error {
 	if b.Next > b.Newest || len(b.Samples) > 120 {
 		return fmt.Errorf("invalid metric batch cursor")
 	}
-	policy, err := a.Policy(ctx, "metrics")
+	policies, err := nodeMetricPolicies(ctx, a, node)
 	if err != nil {
 		return err
 	}
-	days := platform.Uint(policy["raw_retention_days"])
-	if days == 0 {
-		return platform.E(422, "invalid_policy", "Raw metric retention is required")
+	days := policies.Node.RawDays
+	for _, policy := range policies.Instances {
+		days = max(days, policy.RawDays)
 	}
 	cutoff := a.Time().AddDate(0, 0, -int(days))
 	return a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -274,7 +279,10 @@ func collectNode(ctx context.Context, a *platform.App, node uint64) error {
 		if e := tx.Table("metric_rollup_progress").Where("node_id=?", node).Pluck("bucket_seconds", &sizes).Error; e != nil {
 			return e
 		}
-		sizes = append(sizes, int64(platform.Uint(policy["bucket_seconds"])))
+		sizes = append(sizes, policies.Node.Seconds)
+		for _, policy := range policies.Instances {
+			sizes = append(sizes, policy.Seconds)
+		}
 		for _, size := range sizes {
 			if size <= 0 {
 				return fmt.Errorf("invalid metrics bucket size")

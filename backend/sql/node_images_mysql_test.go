@@ -122,6 +122,7 @@ func TestMySQLNodeImagesMigration(t *testing.T) {
 					"UPDATE instances SET product_type='custom',instance_plan_id=NULL WHERE id=7",
 					"SET FOREIGN_KEY_CHECKS=1",
 					"INSERT INTO tasks(id,task_type,idempotency_scope,idempotency_key,user_id,node_id,instance_id,is_instance_mutation,status,parameters_redacted,result_redacted,revision) VALUES(43,'instance.create','existing','unknown43',1,1,7,1,'unknown',JSON_OBJECT('preserve',TRUE),JSON_OBJECT('operation','preserve'),9)")
+				seedLegacyExplicitPolicies(t, db)
 			}
 			if err := Up(ctx, db); err != nil {
 				t.Fatal(err)

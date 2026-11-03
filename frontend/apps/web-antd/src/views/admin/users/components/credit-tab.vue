@@ -1,21 +1,58 @@
 <script lang="ts" setup>
-import type { CreditAccount } from '#/api/types';
+import type { CreditAccount, PolicyVersion } from '#/api/types';
 
-import { onMounted, ref, shallowRef } from 'vue';
+import { computed, onMounted, ref, shallowRef, watch } from 'vue';
 
-import { Alert, Button, Descriptions, DescriptionsItem, Skeleton, Space } from 'ant-design-vue';
+import { Alert, Button, Descriptions, DescriptionsItem, Form, FormItem, Select, Skeleton, Space } from 'ant-design-vue';
 
-import { financeApi } from '#/api/backend';
+import { financeApi, listAll, policiesApi } from '#/api/backend';
 import StatusTag from '#/components/status-tag.vue';
 import TimeText from '#/components/time-text.vue';
-import { errorToast } from '#/composables/api';
+import { errorToast, useAction } from '#/composables/api';
 import { formatPt } from '#/utils/format';
+
+import { isEffective } from '../../finance/components/credit-policy';
 
 const props = defineProps<{ userId: string }>();
 
 const account = shallowRef<CreditAccount | null>(null);
 const loaded = ref(false);
 const loading = ref(true);
+const creditVersions = ref<PolicyVersion[]>([]);
+const policiesLoading = ref(false);
+const policiesFailed = ref(false);
+const policyId = ref<string | undefined>();
+const setup = useAction();
+const policyOptions = computed(() =>
+  creditVersions.value.filter((v) => isEffective(v)).map((v) => ({ label: `${v.code} v${v.version}`, value: v.id })),
+);
+const canSetup = computed(() =>
+  !policiesLoading.value && !policiesFailed.value && policyOptions.value.some((p) => p.value === policyId.value),
+);
+watch(policyId, () => setup.resetKey());
+
+async function loadPolicies() {
+  policiesLoading.value = true;
+  policiesFailed.value = false;
+  try {
+    creditVersions.value = await listAll((q) => policiesApi.list('credit', q));
+  } catch (error) {
+    policiesFailed.value = true;
+    errorToast(error);
+  } finally {
+    policiesLoading.value = false;
+  }
+}
+
+async function submitSetup() {
+  const selectedPolicy = policyId.value;
+  if (!selectedPolicy || !canSetup.value) return;
+  const r = await setup.run(
+    (key) => financeApi.createAccount({ user_id: props.userId, policy_version_id: selectedPolicy }, { key }),
+    { success: '共享钱包已配置' },
+  );
+  if (r) account.value = r.data;
+}
 
 async function load() {
   loading.value = true;
@@ -23,6 +60,7 @@ async function load() {
     const r = await financeApi.accounts({ limit: 1, user_id: props.userId });
     account.value = r.data.items[0] ?? null;
     loaded.value = true;
+    if (!account.value) await loadPolicies();
   } catch (error) {
     errorToast(error);
   } finally {
@@ -36,15 +74,47 @@ onMounted(load);
 <template>
   <div class="max-w-2xl">
     <Skeleton v-if="!loaded && loading" active />
-    <Alert
-      v-else-if="loaded && !account"
-      description="额度账户由后台每分钟的发放任务自动创建，新用户约 1 分钟后可见。"
-      message="额度账户初始化中"
-      show-icon
-      type="info"
-    >
-      <template #action><Button :loading="loading" size="small" @click="load">刷新</Button></template>
-    </Alert>
+    <template v-else-if="loaded && !account">
+      <Alert
+        class="mb-3"
+        description="请选择已生效的额度政策并创建共享钱包。创建账户本身不发放额度；后续每日额度按所选政策执行，选择实例套餐不会发放额度或切换钱包政策。"
+        message="该用户尚未配置共享钱包"
+        show-icon
+        type="info"
+      />
+      <Form layout="vertical" @finish="submitSetup">
+        <FormItem label="共享钱包额度政策" required>
+          <Select
+            v-model:value="policyId"
+            class="w-full"
+            :disabled="setup.pending.value || policiesLoading || policiesFailed"
+            :loading="policiesLoading"
+            option-filter-prop="label"
+            :options="policyOptions"
+            placeholder="请选择已生效的额度政策"
+            show-search
+          />
+        </FormItem>
+        <Alert v-if="policiesFailed" class="mb-3" message="额度政策加载失败" show-icon type="error">
+          <template #action><Button size="small" @click="loadPolicies">重试</Button></template>
+        </Alert>
+        <Alert
+          v-else-if="!policiesLoading && !policyOptions.length"
+          class="mb-3"
+          message="暂无已生效的额度政策，请先在政策配置中发布，再刷新选项。"
+          show-icon
+          type="warning"
+        >
+          <template #action><Button size="small" @click="loadPolicies">刷新</Button></template>
+        </Alert>
+        <Space>
+          <Button :disabled="!canSetup" html-type="submit" :loading="setup.pending.value" type="primary">
+            创建共享钱包
+          </Button>
+          <Button :disabled="setup.pending.value" :loading="loading" @click="load">刷新</Button>
+        </Space>
+      </Form>
+    </template>
     <template v-else-if="account">
       <Alert
         v-if="account.settlement_pending"
@@ -75,14 +145,18 @@ onMounted(load);
         </DescriptionsItem>
         <DescriptionsItem label="下次发放"><TimeText :value="account.next_grant_at" /></DescriptionsItem>
         <DescriptionsItem label="额度事件">
-          <span v-if="!account.enforcement" class="text-muted-foreground">无</span>
-          <Space v-else>
-            <StatusTag kind="enforcement" :value="account.enforcement.status" />
-            <span class="font-mono text-xs">#{{ account.enforcement.id }}</span>
-            <span>停机期限 <TimeText :value="account.enforcement.shutdown_deadline" /></span>
+          <span v-if="!account.enforcements.length" class="text-muted-foreground">无</span>
+          <Space v-else direction="vertical">
+            <Space v-for="event in account.enforcements" :key="event.id" wrap>
+              <StatusTag kind="enforcement" :value="event.status" />
+              <span class="font-mono text-xs">#{{ event.id }}</span>
+              <span>政策 #{{ event.policy_version_id }}</span>
+              <span>停机期限 <TimeText :value="event.shutdown_deadline" /></span>
+            </Space>
           </Space>
         </DescriptionsItem>
       </Descriptions>
+      <p class="text-muted-foreground mt-3 text-xs">这是用户共享钱包，独立于实例套餐。套餐的额度政策仅控制实例的宽限、停机与磁盘规则，不会重复发放每日额度或更改钱包政策。</p>
       <p class="text-muted-foreground mt-3 text-xs">剩余与可用已扣除欠款，可用还扣除预留；欠款未还清时可能为负数。未偿欠款总额不应从净余额中再次扣除，无待处理任务不代表欠款已还清。</p>
       <Space class="mt-3">
         <Button :loading="loading" @click="load">刷新</Button>

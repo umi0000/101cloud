@@ -122,6 +122,7 @@ func TestMySQLAvailabilityZoneRemoval(t *testing.T) {
 					"INSERT INTO network_pools(id,availability_zone_id,name,address_family,network_address,prefix_length,range_start,range_end,dns_servers,status,revision) VALUES(1,1,'lan',4,INET6_ATON('192.0.2.0'),24,INET6_ATON('192.0.2.10'),INET6_ATON('192.0.2.20'),JSON_ARRAY(),'active',5)",
 					"INSERT INTO instance_plans(id,availability_zone_id,code,version,name,image_type,vcpus,memory_bytes,disk_bytes,gpu_count,pricing_version_id,credit_policy_version_id,idle_policy_version_id,init_parameters,allow_residency,status,revision) VALUES(1,1,'basic','1','Basic','container',1,1,1,0,1,1,1,JSON_OBJECT(),FALSE,'draft',3)",
 				)
+				seedLegacyExplicitPolicies(t, db)
 				if err := Up(ctx, db); err != nil {
 					t.Fatal(err)
 				}
