@@ -235,10 +235,9 @@ export interface Plan {
 }
 
 /** 仅用于最终创建请求；不得放入报价、普通配置快照或持久化状态。 */
-export interface CreateLogin {
-  root_password?: string;
-  ssh_public_keys?: string[];
-}
+export type CreateLogin =
+  | { root_password: string; ssh_public_keys?: never }
+  | { root_password?: never; ssh_public_keys: string[] };
 
 /** 普通用户弹性实例：节点由网络选项确定，报价及创建绑定套餐 revision。 */
 export interface CreateElasticSpec {

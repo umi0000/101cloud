@@ -314,7 +314,7 @@ func Public(r Row, fields ...string) Row {
 }
 
 func privateLoginField(key string) bool {
-	return key == "login_config_ciphertext" || key == "root_password" || key == "password_hash"
+	return key == "login_config_ciphertext" || key == "root_password" || key == "password_hash" || key == "ssh_public_keys" || key == "ssh_authorized_keys"
 }
 func publicValue(k string, x any) any {
 	if x == nil {

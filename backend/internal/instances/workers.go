@@ -565,9 +565,11 @@ func workerCreateBody(ctx context.Context, a *platform.App, r platform.Row) (pla
 	eth["nameservers"] = platform.Row{"addresses": dns}
 	network := jsonText(platform.Row{"version": 2, "ethernets": platform.Row{"eth0": eth}})
 	cfg := platform.Row{"limits.cpu": platform.Text(r["vcpus"]), "limits.memory": platform.Text(r["memory_bytes"]), "user.101cloud.instance_id": platform.Text(r["id"]), "cloud-init.network-config": network}
-	if data, e := loginUserData(a, r); e != nil {
-		return nil, e
-	} else if data != "" {
+	if platform.Text(r["login_config_ciphertext"]) != "" || platform.Bool(object(object(r["incus_config_snapshot"])["creation"])["cloud_init_capable"]) {
+		data, e := loginUserData(a, r)
+		if e != nil {
+			return nil, e
+		}
 		cfg["cloud-init.user-data"] = data
 	}
 	if platform.Text(r["image_type"]) == "container" {

@@ -177,7 +177,7 @@ describe('initialization route recovery and isolation', () => {
     await flush();
     const feedback = [...root.querySelectorAll('[data-error-feedback]')];
     expect(feedback).toHaveLength(2);
-    expect(feedback.some((entry) => entry.textContent?.includes('登录配置初始化检查'))).toBe(true);
+    expect(feedback.some((entry) => entry.textContent?.includes('网络与 root 账号凭据检查'))).toBe(true);
     expect(feedback.some((entry) => entry.textContent?.includes('实例初始化完成检查'))).toBe(true);
   });
   it.each(['failed', 'unknown'] as const)('restores a hidden %s creation using the safe task name without fetching its instance', async (status) => {

@@ -1,12 +1,9 @@
 import type { InstanceOrderSelection } from './instance-order';
 
-import { Buffer } from 'node:buffer';
-import { generateKeyPairSync, webcrypto } from 'node:crypto';
-
 import { reactive } from 'vue';
 
 import { createPinia, setActivePinia } from 'pinia';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '#/api/request';
 import { emptyLoginDraft } from '#/utils/instance-login';
@@ -88,12 +85,15 @@ function selection(): InstanceOrderSelection & { account: NonNullable<InstanceOr
 }
 
 const password = '  private root password🙂  ';
-const draft = () => ({ ...emptyLoginDraft(), mode: 'password' as const, rootPassword: password, rootPasswordConfirmation: password });
-const failure = (status = 0) => new ApiError(status, { code: status === 401 ? 'unauthenticated' : 'validation_failed', details: { root_password: password }, message: `错误回显 ${password}` }, 'request-1', null);
+const publicKey = `ssh-ed25519 ${btoa('\0\0\0\x0bssh-ed25519\0\0\0\x20' + String.fromCharCode(...'d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a'.match(/../gu)!.map((byte) => Number.parseInt(byte, 16))))}`;
+const keyText = `${publicKey} private-laptop-comment`;
+const draft = () => ({ mode: 'ssh-key' as const, rootPassword: password, rootPasswordConfirmation: password, sshPublicKeyText: keyText });
+const passwordDraft = () => ({ ...draft(), mode: 'password' as const });
+const login = (mode: 'password' | 'ssh-key' = 'ssh-key') => mode === 'password' ? { root_password: password } : { ssh_public_keys: [publicKey] };
+const failure = (status = 0) => new ApiError(status, { code: status === 401 ? 'unauthenticated' : 'validation_failed', details: { ...login() }, message: `错误回显 ${password} ${keyText}` }, 'request-1', null);
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.stubGlobal('crypto', webcrypto);
   runtime.key = 0;
   runtime.auth = reactive({ me: { user: { id: 'user-a', role: 'user' } } });
   runtime.access = reactive({ loginExpired: false });
@@ -102,7 +102,6 @@ beforeEach(() => {
   runtime.credit.mockImplementation(async () => ({ data: selection().account }));
   runtime.create.mockResolvedValue({ data: { task_id: 'task-a' } });
 });
-afterEach(() => vi.unstubAllGlobals());
 
 async function prepared() {
   const store = useInstanceOrderStore();
@@ -161,28 +160,33 @@ describe('shared wallet enforcement guards', () => {
 });
 
 describe('private instance credential boundaries', () => {
-  it('exposes only public-key type/fingerprint and sends key material only with final creation', async () => {
+  it('requires valid credentials for the selected mode before confirmation or creation', async () => {
     const store = useInstanceOrderStore();
     const memory = useInstanceLoginDraft();
-    const key = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' });
-    const fields = [Buffer.from('ssh-ed25519'), Buffer.from(key.x!, 'base64url')];
-    const encoded = Buffer.concat(fields.map((field) => {
-      const length = Buffer.alloc(4);
-      length.writeUInt32BE(field.length);
-      return Buffer.concat([length, field]);
-    })).toString('base64');
-    const raw = `ssh-ed25519 ${encoded}`;
-    memory.save({ ...emptyLoginDraft(), sshPublicKeys: `${raw} workstation` });
-    expect(await store.prepare(selection())).toBe(true);
-    expect(store.loginSummary?.passwordSet).toBe(false);
-    expect(store.loginSummary?.sshKeys[0]?.type).toBe('ssh-ed25519');
-    expect(store.loginSummary?.sshKeys[0]?.fingerprint).toMatch(/^SHA256:/);
-    expect(JSON.stringify(store.$state)).not.toContain(encoded);
+    for (const invalid of [emptyLoginDraft(), { ...passwordDraft(), rootPassword: '', rootPasswordConfirmation: '' }, { ...passwordDraft(), rootPasswordConfirmation: '' }, { ...passwordDraft(), rootPassword: 'short', rootPasswordConfirmation: 'short' }, { ...draft(), sshPublicKeyText: '' }, { ...draft(), sshPublicKeyText: 'private-invalid-key' }]) {
+      memory.save(invalid);
+      expect(await store.prepare(selection())).toBe(false);
+      expect(store.order).toBeNull();
+      expect(await store.submit()).toBeNull();
+    }
+    expect(runtime.create).not.toHaveBeenCalled();
+  });
+
+  it('does not invalidate or request quotes when private password/key drafts change or clear', async () => {
+    const { store, memory } = await prepared();
+    const quote = store.quote;
+    memory.save({ ...draft(), rootPassword: 'replacement-password', rootPasswordConfirmation: 'replacement-password', sshPublicKeyText: 'edited-public-key' });
+    memory.save(emptyLoginDraft());
+    expect(store.quote).toBe(quote);
+    expect(runtime.quote).not.toHaveBeenCalled();
     await store.refreshQuote();
-    for (const [body] of runtime.quote.mock.calls) expect(JSON.stringify(body)).not.toContain(encoded);
-    await store.submit();
-    expect(runtime.create.mock.calls[0]![0].login).toEqual({ ssh_public_keys: [raw] });
-    expect(memory.read()).toEqual(emptyLoginDraft());
+    for (const [body] of runtime.quote.mock.calls) {
+      expect(body).not.toHaveProperty('login');
+      expect(JSON.stringify(body)).not.toContain(password);
+      expect(JSON.stringify(body)).not.toContain('replacement-password');
+      expect(JSON.stringify(body)).not.toContain(publicKey);
+      expect(JSON.stringify(body)).not.toContain('edited-public-key');
+    }
   });
 
   it('does not send credentials if authentication expires during final preflight', async () => {
@@ -204,56 +208,70 @@ describe('private instance credential boundaries', () => {
 
   it('keeps the confirmed login immutable when a draft is edited before browser-forward navigation', async () => {
     const { store, memory } = await prepared();
-    memory.save({ ...draft(), rootPassword: 'edited-password', rootPasswordConfirmation: 'edited-password' });
+    memory.save({ ...passwordDraft(), rootPassword: 'edited-password', rootPasswordConfirmation: 'edited-password', sshPublicKeyText: '' });
     expect(memory.read().rootPassword).toBe('edited-password');
-    expect(store.loginSummary).toEqual({ passwordSet: true, sshKeys: [] });
+    expect(memory.read().sshPublicKeyText).toBe('');
+    expect(store.loginSummary).toEqual({ mode: 'ssh-key', sshKeyCount: 1 });
     await store.submit();
-    expect(runtime.create.mock.calls[0]![0].login).toEqual({ root_password: password });
+    expect(runtime.create.mock.calls[0]![0].login).toEqual(login());
   });
 
   it('keeps credentials out of Pinia state, public forms, order snapshots and every quote', async () => {
     const { store, memory } = await prepared();
-    store.saveForm({ name: 'my-instance', gpuCount: 0, gpuCap: '0', resources: selection().spec.resources, rootPassword: password } as Parameters<typeof store.saveForm>[0]);
+    store.saveForm({ name: 'my-instance', gpuCount: 0, gpuCap: '0', resources: selection().spec.resources, rootPassword: password, sshPublicKeyText: keyText } as Parameters<typeof store.saveForm>[0]);
     const injected = selection();
-    Object.assign(injected.spec, { login: { root_password: password } });
+    Object.assign(injected.spec, { login: login() });
     expect(await store.prepare(injected)).toBe(true);
-    expect(store.loginSummary).toEqual({ passwordSet: true, sshKeys: [] });
+    expect(store.loginSummary).toEqual({ mode: 'ssh-key', sshKeyCount: 1 });
     expect(JSON.stringify(store.$state)).not.toContain(password);
+    expect(JSON.stringify(store.$state)).not.toContain(publicKey);
+    expect(JSON.stringify(store.$state)).not.toContain('private-laptop-comment');
     expect(store.order?.spec).not.toHaveProperty('login');
     expect(store.form).not.toHaveProperty('rootPassword');
+    expect(store.form).not.toHaveProperty('sshPublicKeyText');
     expect(store).not.toHaveProperty('pendingIntent');
     const changed = memory.read();
     changed.rootPassword = 'changed-copy';
+    changed.sshPublicKeyText = 'changed-copy';
     expect(memory.read().rootPassword).toBe(password);
+    expect(memory.read().sshPublicKeyText).toBe(keyText);
     await store.refreshQuote();
     await store.submit();
     expect(runtime.create).toHaveBeenCalledTimes(1);
-    expect(runtime.create.mock.calls[0]![0].login).toEqual({ root_password: password });
+    expect(runtime.create.mock.calls[0]![0].login).toEqual(login());
     expect(runtime.quote.mock.calls.length).toBeGreaterThanOrEqual(2);
     for (const [body] of runtime.quote.mock.calls) {
       expect(body).not.toHaveProperty('login');
       expect(body).not.toHaveProperty('name');
       expect(JSON.stringify(body)).not.toContain(password);
+      expect(JSON.stringify(body)).not.toContain(publicKey);
+      expect(JSON.stringify(body)).not.toContain('private-laptop-comment');
     }
     expect(memory.read()).toEqual(emptyLoginDraft());
     expect(store.loginSummary).toBeNull();
     expect(runtime.track).toHaveBeenCalledWith('task-a', '创建实例 my-instance');
   });
 
-  it('retries the exact private body/key after uncertainty, including same-user reauthentication', async () => {
-    const { store, memory } = await prepared();
+  it.each(['password', 'ssh-key'] as const)('retries the exact private %s body/key after uncertainty and reauthentication', async (mode) => {
+    const store = useInstanceOrderStore();
+    const memory = useInstanceLoginDraft();
+    memory.save({ ...draft(), mode });
+    expect(await store.prepare(selection())).toBe(true);
     runtime.create.mockRejectedValueOnce(failure());
     expect(await store.submit()).toBeNull();
     expect(store.hasPendingIntent).toBe(true);
     expect(store.locked).toBe(true);
     expect(JSON.stringify(store.$state)).not.toContain(password);
     expect(JSON.stringify(store.submitError)).not.toContain(password);
+    expect(JSON.stringify(store.$state)).not.toContain(publicKey);
+    expect(JSON.stringify(store.submitError)).not.toContain(publicKey);
+    expect(JSON.stringify(store.submitError)).not.toContain('private-laptop-comment');
     const original = runtime.create.mock.calls[0]!;
     const quotes = runtime.quote.mock.calls.length;
     runtime.access!.loginExpired = true;
     expect(await store.submit()).toBeNull();
     runtime.access!.loginExpired = false;
-    memory.save({ ...draft(), rootPassword: 'replacement', rootPasswordConfirmation: 'replacement' });
+    memory.save({ ...draft(), mode: mode === 'password' ? 'ssh-key' : 'password', rootPassword: 'replacement', rootPasswordConfirmation: 'replacement', sshPublicKeyText: '' });
     expect(await store.prepare(selection())).toBe(false);
     runtime.create.mockRejectedValueOnce(failure(401));
     expect(await store.submit()).toBeNull();
@@ -264,7 +282,8 @@ describe('private instance credential boundaries', () => {
     for (const [body, options] of runtime.create.mock.calls) {
       expect(body).toBe(original[0]);
       expect(options.key).toBe(original[1].key);
-      expect(body.login.root_password).toBe(password);
+      expect(body.login).toEqual(login(mode));
+      if (mode === 'ssh-key') expect(Object.isFrozen(body.login.ssh_public_keys)).toBe(true);
     }
     expect(memory.read()).toEqual(emptyLoginDraft());
     expect(store.hasPendingIntent).toBe(false);
@@ -279,7 +298,27 @@ describe('private instance credential boundaries', () => {
     expect(store.quote).toBeNull();
     expect(memory.read()).toEqual(draft());
     expect(JSON.stringify(store.submitError)).not.toContain(password);
+    expect(JSON.stringify(store.submitError)).not.toContain(publicKey);
+    expect(JSON.stringify(store.submitError)).not.toContain('private-laptop-comment');
     expect(await store.prepare(selection())).toBe(true);
+  });
+
+  it('creates password-only instances while ignoring inactive public-key text', async () => {
+    const store = useInstanceOrderStore();
+    useInstanceLoginDraft().save(passwordDraft());
+    expect(await store.prepare(selection())).toBe(true);
+    expect(store.loginSummary).toEqual({ mode: 'password', passwordSet: true });
+    await store.submit();
+    expect(runtime.create.mock.calls[0]![0].login).toEqual({ root_password: password });
+  });
+
+  it('creates key-only instances without a password and freezes only the key-count summary', async () => {
+    const store = useInstanceOrderStore();
+    useInstanceLoginDraft().save({ ...draft(), rootPassword: '', rootPasswordConfirmation: '' });
+    expect(await store.prepare(selection())).toBe(true);
+    expect(store.loginSummary).toEqual({ mode: 'ssh-key', sshKeyCount: 1 });
+    await store.submit();
+    expect(runtime.create.mock.calls[0]![0].login).toEqual({ ssh_public_keys: [publicKey] });
   });
 
   it('clears all private references on account switch/logout and ignores old responses', async () => {

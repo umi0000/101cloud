@@ -4,6 +4,8 @@
 
 当前版本开放管理员与普通用户共用登录。管理员进入 `/admin/dashboard`；普通用户进入 `/instances`，侧栏仅“实例管理”，支持卡片首页及创建弹性容器（`/instances/create`，隐藏菜单入口）。后端对 `/api/v1/admin/*` 继续强制 admin 角色。
 
+2026-11-04 已部署 `.111`（`/srv/101cloud/releases/20261104-stopped-resources-free`）：管理端磁盘计费仅可选“仅运行时计费”或“磁盘免费”。表单说明确认停机后CPU、内存、磁盘、GPU全部免费，GPU可保持绑定且继续占用容量、不自动释放，再次确认运行后恢复应计费资源。停止失败/状态未知不能提前免计费；节点离线并非已停止，离线政策不覆盖确认停机免费规则。历史停机前费用不追溯退款，未交付创建失败退款规则保持。健康接口及真实umi停机计费稳定性验证通过，已发布前端配合隔离管理响应验证策略选项和说明，未提交配置修改。
+
 管理员操作不填写、提交或新增记录操作理由；基础审计仍保留操作者、动作、时间，历史记录不删除。确认弹窗使用无参回调，保留危险操作提示、删除名称确认及强制操作风险确认；CSRF、幂等键和 If-Match 不变。控制台选择适用类型后连接，无理由输入。自定义实例需求在平台外沟通，平台仅保留管理员在实例页直接下发；不提供成员申请、管理员审批、申请说明或审批意见界面，旧申请地址不保留兼容跳转。
 
 控制台（终端、串口、VGA）没有固定会话时长上限，标题仅显示类型和实例名称，不显示到期倒计时。登录会话到期（12 小时）、退出登录、用户停用、权限撤销或实例停止仍会断开连接；每个用户最多同时打开 4 个控制台。断线后重新连接会创建新的单次使用会话，不复用旧会话。准备等待保持有界，网络心跳、帧/输入限制、终端尺寸调整及关闭时先 GET 取 ETag 再 DELETE 的流程不变。
@@ -41,7 +43,7 @@ apps/web-antd/src/
 
 确认页只读展示配置、费用明细、额度、首窗口预留和报价倒计时，最终提交前复核报价/账户；条款变化只更新展示，必须再次确认。返回修改保留选择。冻结快照仅当前会话持有，无快照或刷新后提示重新选配，不生成虚构订单号/支付记录。不确定结果锁定原payload/key重试；受理后使用任务 ID 跳转 `/instances/initialization/:taskId`，换号不会泄露前一账号配置。
 
-报价和预计时长只依赖资源等配置，不要求也不发送名称或 `login`；输入、清空名称或修改密码/公钥不重新报价、不清空时长。前往确认和真正创建要求有效名称及登录凭据。可用余额不重复扣预留，估时不包含其他实例消耗及未来额度变化，也不承诺实际到期时间。
+报价和预计时长只依赖资源等配置，不要求也不发送名称或 `login`；输入、清空名称或修改、清空 root 密码不重新报价、不清空时长。前往确认和真正创建要求有效名称及 root 密码。可用余额不重复扣预留，估时不包含其他实例消耗及未来额度变化，也不承诺实际到期时间。
 
 初始化窗口：居中最大 720px，三点仅为标题栏装饰；显示实例名称、任务 ID 和真实时间戳耗时，不再显示系统/资源/安全登录摘要。通过本人 `GET /tasks/{id}` 的 `creation_progress.stages` 展示真实阶段；GPU 不适用时省略，脚本不适用明确跳过。底部细线只表示活动，不表示百分比；不展示日志、脚本输出或模拟命令。精简及失败弹窗改动已部署 `.111`。
 
@@ -49,11 +51,13 @@ apps/web-antd/src/
 
 ### 创建时的 root 登录凭据
 
-- 沿用两步创建与现有布局，默认推荐 SSH 公钥，也可选择 root 密码并再次确认。密码按 8–128 个 Unicode 字符校验、保留首尾空格且禁止所有控制字符；公钥每行一条，最多 10 条、每条最多 8192 字节，仅接受 ed25519、RSA（至少 2048 位）、ECDSA nistp256/384/521 的 OpenSSH 公钥。禁止私钥、authorized_keys 选项及脚本；同一公钥按 SHA-256 指纹去重。
-- 只在最终 `POST /instances` 附加 `login: {root_password? , ssh_public_keys?}`。所有 `POST /quotes` 均显式排除 `login`，未填写/无效凭据以及不支持 cloud-init 的所选节点镜像不影响资源报价，但阻止进入确认与创建。确认页只展示“密码已设置”或公钥类型/指纹，不展示密码和公钥原文。
-- 敏感草稿、与确认摘要一致的冻结登录配置、以及冻结的创建意图留在按 Pinia 实例隔离的私有闭包内，普通 `form/order/$state` 不保存凭据；公开状态仅有非敏感摘要与 `hasPendingIntent` 布尔值。不写 local/session storage、URL、日志，不在 Pinia action 参数中传递密码。返回修改可恢复私有草稿；编辑草稿后浏览器前进至旧确认页不会悄悄替换已确认凭据，必须重新进入确认才能变更。结果不确定时仍用同一原始 body/key，不因重报价或同账号重新登录而替换。受理、退出、换账号、角色切换及显式重置清空敏感引用；刷新页面丢失草稿。
-- 凭据下发依赖所选节点/项目就绪镜像的 cloud-init 能力；OpenSSH 软件仍由管理员初始化脚本安装，前端不会绑定模板或承诺服务已安装。仅公钥模式提示禁用 SSH 密码认证。最终创建错误不回显服务端输入内容，仅保留安全错误码说明及请求 ID。
-- 新增 `instance-login.test.ts`（密码 Unicode/控制符、真实 SSH key 格式、私钥/选项/弱 RSA、字节/数量、节点镜像能力）及 `instance-order.test.ts`（公开状态/报价隔离、返回修改、同体同键重试、账号清理与旧响应隔离）。本次未执行检查；在 `frontend` 下统一验收：`pnpm exec vitest run apps/web-antd/src/utils/instance-login.test.ts apps/web-antd/src/store/instance-order.test.ts`、`pnpm --dir apps/web-antd typecheck`、`pnpm --dir apps/web-antd build`，并浏览器验收两步流程及网络 payload。
+- 两步创建沿用现有布局；登录方式二选一：默认“root 密码”或“SSH 公钥”，仅显示所选方式的输入框。密码方式要求两次输入一致，8–128 个 Unicode 字符，保留首尾空格并禁止控制字符；公钥方式不要求密码。面板仅保留简短限制、错误提示及“SSH 服务需自行安装。”，确认页仅展示所选方式的密码掩码或公钥数量。
+- 公钥方式每行一条，忽略空行；1–10 条（去重前），每条最多 8192 UTF-8 字节（含注释）。支持标准 Ed25519、RSA（至少 2048 位）及 ECDSA nistp256/384/521，拒绝私钥、authorized_keys 选项、证书及无效内容。前端检查语法、wire 结构与长度，移除注释并按规范化公钥去重；服务端负责最终密码学公钥校验。
+- 最终 `POST /instances` 只发送所选方式：`login: {root_password}` **或** `login: {ssh_public_keys: string[]}`，绝不同时发送；未选方式即使留有无效草稿也不参与校验或提交。所有 `POST /quotes` 显式排除 `login`，登录方式及凭据不影响资源报价。确认页不展示密码、公钥、注释或指纹原文。
+- 私有草稿记录登录方式、密码及公钥文本，确认时仅冻结所选登录配置；公开状态仅有所选方式的密码是否设置或公钥数量，以及 `hasPendingIntent`。不写 local/session storage、URL、日志或 Pinia action 参数，普通 `form/order/$state` 不保存凭据。返回修改恢复模式及敏感草稿；修改草稿或模式后前进到旧确认页不会替换已冻结凭据。结果不确定时使用同一原始 body/key；受理、退出、换账号、角色切换及显式重置清空敏感引用。
+- 凭据配置依赖所选节点/项目就绪镜像的 cloud-init 能力。密码方式设置 root 密码；公钥方式写入 root 的 `authorized_keys` 并禁用密码认证凭据。用户公钥不同于 SSH 主机密钥；此流程不生成用户密钥或主机密钥，不安装、配置或重启 SSH 服务。管理员初始化脚本保持独立，管理员自定义创建继续不传 `login`，导入不接收登录配置。最终创建错误不回显服务端输入内容。
+- `instance-login.test.ts` 覆盖两种方式、忽略非所选输入、密码校验、公钥规范化/去重/数量/字节限制及节点镜像能力；`instance-order.test.ts` 覆盖两种互斥 payload、确认模式冻结、公开状态/报价隔离、两种方式原体原键重试、账号清理与旧响应隔离。本次未执行检查；统一验收 login/order/locales/initialization 测试、前端 typecheck/build 及浏览器两步流程。选择器：`#creation-login-mode`、`#creation-root-password`、`#creation-root-password-confirmation`、`#creation-ssh-public-keys`；确认摘要：`[data-testid="root-password-summary"]` 或 `[data-testid="ssh-public-key-summary"]`。
+- root 密码或请求的公钥实际核验失败沿用 `initialization_password_not_ready` / `root_password_not_ready`，文案明确可能是密码未正确设置（包括首次登录强制改密）或所提供公钥未正确写入；不把 cloud-init done 等同于凭据就绪，也不把凭据就绪等同于 SSH 可登录。仍可能出现的 `initialization_marker_missing` / `completion_marker_missing` 只指 cloud-init 启动完成标记，不是旧 SSH 登录模式标记；历史错误保持可读，不触发重放。
 
 
 ## 可读错误与任务失败
@@ -67,7 +71,7 @@ apps/web-antd/src/
 - 初始化窗口只在 failed/unknown 时提供“查看失败信息”按钮；点击弹窗查看去重后的任务/步骤安全错误及必要的核对说明，主页面不展开失败原因或技术详情。成功、执行中、排队或仅网络查询异常不显示此按钮。账号/任务切换或离开失败状态会关闭弹窗，不改变后端状态或重试规则。
 - 行为边界测试：`apps/web-antd/src/locales/errors.test.ts` 覆盖八类固定码、降级但 done、整数退出码、未知/原型键过滤、敏感文本不泄露与 unknown 文案；`views/member/instances/initialization.test.ts` 覆盖 failed/unknown 步骤原因与禁止进入。统一验收建议：`pnpm exec vitest run apps/web-antd/src/locales/errors.test.ts apps/web-antd/src/views/member/instances/initialization.test.ts`，以及应用 typecheck/lint/build。
 - `command_terminated` 仅表示命令被终止：退出码 137 不直接判定超时，提示管理员核对超时/资源限制等原因；`template_timeout_invalid` 表示模板超时配置无效，两者仍归初始化脚本失败。对应边界测试保留原整数退出码，不混同已确认 timeout。
-- degraded 明确显示“cloud-init 已带警告完成”，与 cloud-init 错误失败区分。`ssh_host_key_generation_missing_tool` 固定说明 SSH 主机密钥生成失败、缺少 ssh-keygen，建议检查并安装 OpenSSH，不武断断言软件未安装；普通缺工具仍使用 `required_tool_missing`。该特定原因有独立白名单/敏感文本过滤测试。
+- degraded 明确显示“cloud-init 已带警告完成”，与 cloud-init 错误失败区分。历史 `ssh_host_key_generation_missing_tool` 仍说明缺少 ssh-keygen，但提示检查镜像 cloud-init SSH 模块配置，不再将安装 OpenSSH 作为网络/root 密码配置前提；普通缺工具仍使用 `required_tool_missing`。该特定原因有独立白名单/敏感文本过滤测试。
 - 后端任务 unknown 仍保留待核对及禁止自动重放语义，但初始化页面标题与对应阶段统一显示“初始化失败”/“失败”；核对说明仅在失败弹窗中显示。错误按安全格式化后的 code、中文 stage、标题及说明去重，不合并不同阶段的诊断。
 - 未交付创建失败清理契约（已部署 `.111`）：任务可包含 `creation_cleanup: {status: pending|cleaning|unknown|completed, billing_status: pending|refunded, instance_name: string}`。schema 校验固定状态和安全名称，保留原 `instance_id`、`creation_progress`、任务/步骤错误及原 unknown 结果；前端不把待核对改成已知失败。
 - 存在清理标记时，初始化页只从任务读取安全 `instance_name`，清空旧实例摘要并停止请求实例详情；实例 API 隐藏后的 404 是预期，不再显示“实例摘要读取失败”。未标记任务遇到非预期摘要查询错误仍正常报错。清理状态与退款状态、未交付及等待清理期间不收费说明仅在“初始化失败信息”弹窗呈现，不堆放在主页面；原阶段和原错误继续可读。
@@ -320,3 +324,7 @@ vue-tsc、变更文件oxlint及生产构建通过。线上只读核查真实账�
 vue-tsc、十个变更文件oxlint及生产构建通过。真实浏览器以1440px/390px遍历上述十个列表：间距12px，有数据的表头/首行单元格横坐标及宽度差0px、无页面横向溢出；空列表不虚报单元格测量。审计筛选无结果→清空恢复、窄屏表格滚动160px后表头与内容仍对齐，无运行时错误。仅GET列表及登录/退出操作，没有业务数据变更，不重启后端。原套餐配置版本及r1链接分别保存在 `/var/backups/101cloud/frontend-before-20261103-list-toolbar-alignment.link` 与 `frontend-before-20261103-list-toolbar-alignment-r2.link`。
 
 2026-11-04 管理员卡住实例清理入口已仅发布 `.111`，目录 `/srv/101cloud/releases/20261104-admin-stuck-cleanup`。实例详情在操作中、状态过期或未ready时也可打开“强制清理删除”，须精确名称及风险勾选，发送cleanup_stuck=true并强制删除确认；普通ready删除保持原行为。仅受理202不宣称完成，任务确认已删除/详情404后返回列表；普通离线错误不当成已删除。真实隔离后端浏览器走通unknown任务接管至缺席清理成功，线上仅打开实例15确认后取消，没有真实删除。新增8条行为回归及完整49文件483条测试、vue-tsc、变更文件oxlint和生产构建通过；历史账单/审计保留。后端竞态及备份证据见backend README。
+
+2026-11-04 密码唯一创建入口已仅发布 `.111`，目录 `/srv/101cloud/releases/20261104-password-network-cloudinit`。移除SSH公钥模式/解析/请求字段；新建仅输入root密码与确认，确认页固定掩码，密码仍只存账号会话内存并保留未知请求的原体/幂等键。文案明确root账号密码可用不等于SSH服务就绪，管理员脚本单独执行；旧实例登录模式仅只读展示，不重置密码。50文件483条测试、vue-tsc、生产构建通过；真实浏览器验证无公钥输入、密码确认掩码、报价无凭据及390px布局，未提交创建。后端使用没有ssh-keygen/sshd的真实Arch容器验证网络与密码成功，证据及备份见backend README。模板和既有实例未修改。
+
+2026-11-04 登录方式最终改为root密码或SSH公钥二选一，已发布`.111` `/srv/101cloud/releases/20261104-password-or-public-key`。仅显示/提交所选凭据；公钥模式1–10条、每条最多8192字节，支持标准Ed25519/RSA≥2048/ECDSA并去重，确认页只显示数量。删除登录区域/确认页长说明，保留简短限制和错误提示。秘密仍只存私有会话内存，未知请求冻结原体/幂等键；旧实例不改。前端50文件491条测试、类型检查及构建通过，实际浏览器390px验证公钥模式不要求或显示密码，未提交创建；无SSH工具真实镜像公钥文件及权限验证见backend README。

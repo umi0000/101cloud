@@ -94,8 +94,9 @@ const MESSAGES: Record<string, string> = {
 const INITIALIZATION_MESSAGES: Record<string, string> = {
   initialization_cloud_init_degraded: 'cloud-init 已带警告完成',
   initialization_cloud_init_failed: 'cloud-init 初始化失败',
+  initialization_password_not_ready: 'root 账号密码或所提供的 SSH 公钥尚未就绪，请联系管理员核对',
   initialization_tool_missing: '初始化所需工具缺失',
-  initialization_marker_missing: '初始化完成标记缺失，尚不能确认完成',
+  initialization_marker_missing: 'cloud-init 启动完成标记缺失，尚不能确认完成',
   initialization_script_failed: '初始化脚本执行失败',
   initialization_timeout: '等待初始化结果超时，请联系管理员核对；不要重复创建',
   initialization_result_unknown: '初始化结果尚未确认，请联系管理员核对；不会自动重新执行',
@@ -104,9 +105,10 @@ const INITIALIZATION_MESSAGES: Record<string, string> = {
 const INITIALIZATION_REASONS: Record<string, string> = {
   cloud_init_degraded: 'cloud-init 已完成，但报告可恢复警告',
   cloud_init_errors: 'cloud-init 报告初始化错误',
+  root_password_not_ready: '未能核验 root 账号密码已正确设置且无需首次登录强制改密，或所提供的 SSH 公钥未正确写入；不表示 SSH 服务是否就绪',
   required_tool_missing: '缺少初始化必需工具',
-  ssh_host_key_generation_missing_tool: 'SSH 主机密钥生成失败：缺少 ssh-keygen，请检查并安装 OpenSSH',
-  completion_marker_missing: '未找到预期的初始化完成标记',
+  ssh_host_key_generation_missing_tool: 'SSH 主机密钥生成失败：缺少 ssh-keygen。请检查镜像的 cloud-init SSH 模块配置；网络与 root 账号凭据配置不要求 SSH 服务',
+  completion_marker_missing: '未找到 cloud-init 启动完成标记',
   script_exit_nonzero: '初始化脚本以非零退出码结束',
   command_terminated: '初始化命令被终止，请核对是否存在超时或资源限制等原因',
   template_timeout_invalid: '初始化模板超时配置无效',
@@ -117,7 +119,7 @@ const INITIALIZATION_REASONS: Record<string, string> = {
   template_status_mismatch: '初始化模板状态不一致',
 };
 const INITIALIZATION_STAGES: Record<string, string> = {
-  'login.cloud-ready': '登录配置初始化检查',
+  'login.cloud-ready': '网络与 root 账号凭据检查',
   'init.cloud-ready': '实例初始化完成检查',
   'init.template': '初始化模板执行',
 };

@@ -12,7 +12,7 @@ import { useRouter } from 'vue-router';
 import { Page } from '@vben/common-ui';
 import { useAccessStore } from '@vben/stores';
 
-import { Alert, Button, Card, Empty, Input, InputNumber, InputPassword, Radio, RadioGroup, Select, Skeleton, Tag, Textarea } from 'ant-design-vue';
+import { Alert, Button, Card, Empty, Input, InputNumber, InputPassword, RadioButton, RadioGroup, Select, Skeleton, Tag, Textarea } from 'ant-design-vue';
 
 import { listAll, memberApi } from '#/api/backend';
 import { ApiError, newIdempotencyKey } from '#/api/request';
@@ -35,7 +35,7 @@ const orders = useInstanceOrderStore();
 const loginMemory = useInstanceLoginDraft();
 // Credentials stay separate from resource/name form snapshots and URL state.
 const loginDraft = ref<LoginDraft>(loginMemory.read());
-const loginError = ref('请设置登录凭据。');
+const loginError = ref('请设置 root 密码。');
 const loginValidating = ref(false);
 const preparingOrder = ref(false);
 let loginSequence = 0;
@@ -91,7 +91,7 @@ const availableImages = computed(() => {
 });
 const selectedImage = computed(() => availableImages.value.find((item) => item.id === imageId.value && (!gpuCount.value || item.gpu_ready)) ?? null);
 const loginImageError = computed(() => selectedImage.value && selectedNetwork.value && !imageSupportsLogin(selectedImage.value, selectedNetwork.value)
-  ? '此节点、项目下的所选镜像不支持 cloud-init，无法下发登录凭据。请更换支持 cloud-init 的镜像；资源报价仍可查看。' : '');
+  ? '所选镜像不支持 cloud-init，请更换镜像。' : '');
 const nameError = computed(() => {
   if (!name.value.trim()) return '请填写实例名称';
   return Array.from(name.value.trim()).length > 128 ? '实例名称不能超过 128 个字符' : '';
@@ -382,15 +382,6 @@ async function proceedToOrder() {
   }
 }
 
-watch(() => loginDraft.value.mode, () => {
-  // Discard the inactive mode rather than retaining an invisible password.
-  if (loginDraft.value.mode === 'ssh-key') {
-    loginDraft.value.rootPassword = '';
-    loginDraft.value.rootPasswordConfirmation = '';
-  } else {
-    loginDraft.value.sshPublicKeys = '';
-  }
-}, { flush: 'sync' });
 watch(loginDraft, async (value) => {
   if (disposed) return;
   loginMemory.save(value);
@@ -535,30 +526,29 @@ onBeforeUnmount(() => {
               </div>
             </div>
             <label class="field-label"><span>实例名称</span><Input v-model:value="name" :disabled="locked" :maxlength="128" placeholder="为此容器起一个便于识别的名称" aria-label="实例名称" /><span v-if="name && nameError" class="text-destructive text-xs">{{ nameError }}</span><span class="text-muted-foreground text-xs">创建时必填，1–128 个字符；不影响报价与时长估算。</span></label>
-            <Alert v-if="selectedPlan?.init_template_version_id" message="此套餐使用管理员预设的初始化模板" description="创建时使用预设模板，初始参数为 {}；登录凭据由 cloud-init 单独下发，不自动安装 OpenSSH 或绑定额外模板。" show-icon type="info" />
+            <Alert v-if="selectedPlan?.init_template_version_id" message="此套餐使用管理员预设的初始化模板" description="初始化参数为 {}。" show-icon type="info" />
           </div>
         </Card>
 
-        <Card title="root 登录方式" size="small">
+        <Card title="登录方式" size="small">
           <div class="space-y-4">
-            <RadioGroup v-model:value="loginDraft.mode" :disabled="locked || preparingOrder" aria-label="root 登录方式" class="flex flex-wrap gap-2">
-              <Radio value="ssh-key">SSH 公钥（推荐）</Radio>
-              <Radio value="password">root 密码</Radio>
+            <RadioGroup id="creation-login-mode" v-model:value="loginDraft.mode" :disabled="locked || preparingOrder" aria-label="登录方式">
+              <RadioButton value="password">root 密码</RadioButton>
+              <RadioButton value="ssh-key">SSH 公钥</RadioButton>
             </RadioGroup>
-            <template v-if="loginDraft.mode === 'ssh-key'">
-              <label class="field-label" for="creation-ssh-keys"><span>SSH 公钥</span></label>
-              <Textarea id="creation-ssh-keys" v-model:value="loginDraft.sshPublicKeys" :disabled="locked || preparingOrder" :auto-size="{ minRows: 4, maxRows: 10 }" class="font-mono text-xs" autocomplete="off" spellcheck="false" aria-describedby="creation-ssh-help creation-login-error" placeholder="ssh-ed25519 AAAA..." />
-              <p id="creation-ssh-help" class="text-muted-foreground mb-0 text-xs leading-relaxed">每行一条，最多 10 条、每条不超过 8192 字节。支持 ed25519、RSA（至少 2048 位）、ECDSA nistp256/384/521。仅上传公钥，禁止私钥、authorized_keys 选项或脚本。请妥善保存对应私钥；仅公钥模式会禁用 SSH 密码认证。</p>
+            <template v-if="loginDraft.mode === 'password'">
+              <label class="field-label"><span>root 密码</span><InputPassword id="creation-root-password" v-model:value="loginDraft.rootPassword" :disabled="locked || preparingOrder" autocomplete="new-password" aria-label="root 密码" aria-describedby="creation-password-help creation-login-error" /></label>
+              <label class="field-label"><span>确认 root 密码</span><InputPassword id="creation-root-password-confirmation" v-model:value="loginDraft.rootPasswordConfirmation" :disabled="locked || preparingOrder" autocomplete="new-password" aria-label="确认 root 密码" aria-describedby="creation-login-error" /></label>
+              <p id="creation-password-help" class="text-muted-foreground mb-0 text-xs">8–128 个字符，不含控制字符；空格原样保留。</p>
             </template>
             <template v-else>
-              <label class="field-label"><span>root 密码</span><InputPassword v-model:value="loginDraft.rootPassword" :disabled="locked || preparingOrder" autocomplete="new-password" aria-label="root 密码" aria-describedby="creation-password-help creation-login-error" /></label>
-              <label class="field-label"><span>确认 root 密码</span><InputPassword v-model:value="loginDraft.rootPasswordConfirmation" :disabled="locked || preparingOrder" autocomplete="new-password" aria-label="确认 root 密码" aria-describedby="creation-login-error" /></label>
-              <p id="creation-password-help" class="text-muted-foreground mb-0 text-xs">8–128 个 Unicode 字符，不能包含控制字符；空格会原样保留。请使用独立强密码，勿复用平台登录密码。</p>
+              <label class="field-label" for="creation-ssh-public-keys"><span>SSH 公钥</span><Textarea id="creation-ssh-public-keys" v-model:value="loginDraft.sshPublicKeyText" :disabled="locked || preparingOrder" :auto-size="{ minRows: 3, maxRows: 8 }" class="font-mono text-xs" autocomplete="off" :spellcheck="false" placeholder="ssh-ed25519 AAAA…" aria-label="SSH 公钥" aria-describedby="creation-ssh-keys-help creation-login-error" /></label>
+              <p id="creation-ssh-keys-help" class="text-muted-foreground mb-0 text-xs">每行一条，1–10 条，每条最多 8192 字节；支持 Ed25519、RSA ≥2048 位、ECDSA nistp256/384/521。</p>
             </template>
             <p v-if="loginValidating" class="text-muted-foreground mb-0 text-xs" role="status">正在校验登录凭据…</p>
             <p v-else-if="loginError" id="creation-login-error" class="text-destructive mb-0 text-xs" role="alert">{{ loginError }}</p>
             <Alert v-if="loginImageError" :message="loginImageError" show-icon type="warning" />
-            <p class="text-muted-foreground mb-0 text-xs leading-relaxed">凭据只在当前账号会话内存中保留，仅最终确认创建时发送，不参与报价；刷新页面会清空。镜像必须支持 cloud-init，SSH 服务仍由管理员初始化脚本安装。</p>
+            <p class="text-muted-foreground mb-0 text-xs">SSH 服务需自行安装。</p>
           </div>
         </Card>
 

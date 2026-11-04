@@ -12,7 +12,7 @@ describe('initialization diagnostic public boundary', () => {
       error: error({ stage: 'login.cloud-ready', exit_code: 2, reason: 'cloud_init_degraded', cloud_init_status: 'done' }),
     }, 'request-1')!;
     expect(result.text).toBe('cloud-init 已带警告完成');
-    expect(result.stage).toBe('登录配置初始化检查');
+    expect(result.stage).toBe('网络与 root 账号凭据检查');
     expect(result.details).toContain('原因：cloud-init 已完成，但报告可恢复警告');
     expect(result.details).toContain('cloud-init 状态：已完成');
     expect(result.details).toContain('退出码：2');
@@ -20,15 +20,32 @@ describe('initialization diagnostic public boundary', () => {
     expect(JSON.stringify(result)).not.toContain('secret-user-data');
   });
 
-  it('explains confirmed host-key generation tool failure without raw diagnostics', () => {
+  it('preserves historical host-key failures without making SSH installation a password prerequisite', () => {
     const result = describeError(error({ stage: 'login.cloud-ready', exit_code: 2,
       reason: 'ssh_host_key_generation_missing_tool', cloud_init_status: 'degraded',
       raw: 'sensitive output', action: '任意上游文本',
     }, 'initialization_tool_missing'));
-    expect(result.details).toContain('原因：SSH 主机密钥生成失败：缺少 ssh-keygen，请检查并安装 OpenSSH');
+    expect(result.details.some((line) => line.includes('缺少 ssh-keygen'))).toBe(true);
+    expect(result.details.some((line) => line.includes('网络与 root 账号凭据配置不要求 SSH 服务'))).toBe(true);
+    expect(result.details.join('')).not.toContain('安装 OpenSSH');
     expect(result.details).toContain('退出码：2');
     expect(JSON.stringify(result)).not.toContain('sensitive output');
     expect(JSON.stringify(result)).not.toContain('任意上游文本');
+  });
+
+  it('explains password/public-key verification separately from SSH readiness and never echoes credential data', () => {
+    const result = describeError(error({ stage: 'login.cloud-ready', reason: 'root_password_not_ready',
+      root_password: 'secret-user-data', hashed_passwd: '$6$secret-hash', shadow: '$6$secret-shadow',
+      ssh_public_keys: ['ssh-ed25519 secret-public-key'], authorized_keys: 'secret-authorized-key',
+    }, 'initialization_password_not_ready'));
+    expect(result.code).toBe('initialization_password_not_ready');
+    expect(result.text).toContain('root 账号密码');
+    expect(result.text).toContain('所提供的 SSH 公钥');
+    expect(result.details.some((line) => line.includes('所提供的 SSH 公钥未正确写入'))).toBe(true);
+    expect(result.details.some((line) => line.includes('不表示 SSH 服务是否就绪'))).toBe(true);
+    for (const secret of ['secret-user-data', '$6$secret-hash', '$6$secret-shadow', 'secret-public-key', 'secret-authorized-key']) {
+      expect(JSON.stringify(result)).not.toContain(secret);
+    }
   });
 
   it.each(['secret-user-data', '__proto__', 'constructor', 'toString'])('does not print unrecognized values: %s', (value) => {
@@ -47,7 +64,8 @@ describe('initialization diagnostic public boundary', () => {
   it.each([
     ['initialization_cloud_init_failed', 'cloud-init 初始化失败'],
     ['initialization_tool_missing', '初始化所需工具缺失'],
-    ['initialization_marker_missing', '初始化完成标记缺失'],
+    ['initialization_password_not_ready', 'root 账号密码或所提供的 SSH 公钥尚未就绪'],
+    ['initialization_marker_missing', 'cloud-init 启动完成标记缺失'],
     ['initialization_script_failed', '初始化脚本执行失败'],
     ['initialization_timeout', '等待初始化结果超时'],
     ['initialization_result_unknown', '初始化结果尚未确认'],

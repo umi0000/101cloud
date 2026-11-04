@@ -92,8 +92,8 @@ export const POLICY_FIELDS: Record<PolicyKind, PolicyField[]> = {
     {
       key: 'storage_charge_mode',
       label: '磁盘计费',
+      hint: '确认停止后 CPU、内存、磁盘、GPU 全部停止计费；GPU 可保持绑定并继续占用容量，不会自动释放。确认再次运行后恢复应计费资源。停止失败或状态未知不会提前免计费。',
       options: [
-        { hint: '实例停止后，只要磁盘保留就继续计费', label: '保留磁盘期间计费', value: 'retained' },
         { hint: '只在实例运行时对磁盘计费', label: '仅运行时计费', value: 'running_only' },
         { hint: '磁盘不计费', label: '磁盘免费', value: 'free' },
       ],
@@ -102,6 +102,7 @@ export const POLICY_FIELDS: Record<PolicyKind, PolicyField[]> = {
     {
       key: 'offline_charge_mode',
       label: '节点离线时',
+      hint: '节点离线不等于实例已停止；此项只处理尚未确认停止的离线区间，不覆盖确认停机后全部资源免费规则。',
       options: [
         { hint: '节点不在线期间产生的费用暂缓计费', label: '节点离线时暂缓计费', value: 'defer' },
         { hint: '节点离线不影响计费', label: '照常计费', value: 'continue' },
@@ -258,7 +259,9 @@ function fieldError(field: PolicyField, s: FormState): null | string {
       return null;
     }
     case 'choice': {
-      return s.texts[field.key] ? null : '请选择';
+      const value = s.texts[field.key];
+      if (!value) return '请选择';
+      return field.options?.some((option) => option.value === value) ? null : '请选择有效选项';
     }
     case 'decimal': {
       const v = (s.texts[field.key] ?? '').trim();

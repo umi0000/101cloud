@@ -17,7 +17,7 @@ import (
 // never leaves the guest, and is never recorded by the exec API.
 // It is deliberately separate from the original wait operation: old journals
 // retain their original exit-code meaning and can never authorize a replay.
-const CloudInitDiagnosticScript = `import json, os, shutil, subprocess, sys
+const CloudInitDiagnosticScript = CloudInitPasswordReadyScript + `import json, os, shutil, subprocess, sys
 statuses = ("not_run", "running", "done", "degraded", "error", "disabled", "unknown")
 status = "unknown"
 reason = 5
@@ -58,8 +58,11 @@ try:
         warning = warning or any(host_warning(item) for item in errors)
     if reason in (0, 1) and warning and shutil.which("ssh-keygen") is None:
         reason = 2
-    elif reason == 6 and status not in ("running", "unknown") and (not os.path.isfile("/var/lib/cloud/instance/boot-finished") or (sys.argv[1:] == ["login"] and not os.path.isfile("/etc/101cloud/ssh-login-mode"))):
-        reason = 4
+    elif reason == 6 and status not in ("running", "unknown"):
+        if not os.path.isfile("/var/lib/cloud/instance/boot-finished"):
+            reason = 4
+        elif sys.argv[1:] == ["login"] and not root_password_ready():
+            reason = 7
 except (OSError, ValueError, TypeError, AttributeError, subprocess.SubprocessError):
     status, reason = "unknown", 5
 sys.exit(32 + statuses.index(status)*8 + reason)
@@ -83,6 +86,8 @@ func initializationError(stage, code, reason, status string, exit *int64) error 
 		message, action = "初始化所需工具缺失。", "请管理员检查镜像内所需工具及软件包；修复后核对原任务，勿重复执行初始化。"
 	case "initialization_marker_missing":
 		message, action = "未找到初始化完成标记。", "请管理员检查 cloud-init 是否启用及首次启动是否完整；勿仅凭进程退出成功放行或重跑初始化。"
+	case "initialization_password_not_ready":
+		message, action = "root 密码或 SSH 公钥尚未正确应用。", "请管理员在实例内安全核对 cloud-init 账户配置、root 密码及请求的 authorized_keys 状态；系统不会输出凭据或自动重放初始化。"
 	case "initialization_timeout":
 		message, action = "初始化等待超时，执行结果仍需确认。", "请管理员核对原生操作和实例当前状态；超时不代表脚本已停止，勿重复执行初始化。"
 	case "initialization_result_unknown":
@@ -163,6 +168,8 @@ func cloudInitDiagnosticError(stage string, original int64, diagnostic int64) er
 		code, category = "initialization_marker_missing", "completion_marker_missing"
 	case 6:
 		code, category = "initialization_result_unknown", "result_unknown"
+	case 7:
+		code, category = "initialization_password_not_ready", "root_password_not_ready"
 	}
 	err := initializationError(stage, code, category, status, &original)
 	if reason == 2 || reason == 3 {
@@ -170,7 +177,7 @@ func cloudInitDiagnosticError(stage string, original int64, diagnostic int64) er
 		if reason == 2 {
 			err.(*platform.HTTPError).Message = "缺少 ssh-keygen 导致 SSH 主机密钥生成失败。"
 			details["missing_tool"], details["host_key_generation_failed"] = "ssh-keygen", true
-			details["action"] = "请管理员为镜像安装提供 ssh-keygen 的 OpenSSH 软件包，并核对 SSH host-key 生成警告；系统不会重跑 cloud-init，请安全处理原实例和任务。"
+			details["action"] = "请管理员检查镜像 cloud-init 的 SSH 主机密钥生成配置；平台新建配置已禁用该动作，不需要安装 SSH 工具来完成网络和 root 密码初始化。系统不会重跑 cloud-init，请安全处理原实例和任务。"
 		} else {
 			details["missing_tool"] = "cloud-init"
 		}
@@ -193,7 +200,10 @@ func workerCloudInitDiagnostic(ctx context.Context, a *platform.App, j platform.
 	}
 	mode := "template"
 	if stage == "login.cloud-ready" {
-		mode = "login"
+		mode = "network"
+		if platform.Text(r["login_config_ciphertext"]) != "" {
+			mode = "login"
+		}
 	}
 	// A recovery may run a fresh read-only diagnostic, never replay a prior exec.
 	// Give each probe its own fenced journal rather than reusing its dispatch marker.

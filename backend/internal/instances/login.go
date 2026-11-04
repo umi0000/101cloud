@@ -29,7 +29,7 @@ type LoginRequest struct {
 // loginConfig contains no plaintext password. Even the salted password hash is
 // sensitive: persist this structure only through App.Encrypt, not as a snapshot.
 type loginConfig struct {
-	PasswordHash  string   `json:"password_hash,omitempty"`
+	PasswordHash  string   `json:"password_hash"`
 	SSHPublicKeys []string `json:"ssh_public_keys,omitempty"`
 }
 
@@ -37,59 +37,73 @@ func normalizeLogin(in *LoginRequest) (*LoginRequest, error) {
 	if in == nil {
 		return nil, nil
 	}
+	if (in.RootPassword != "") == (len(in.SSHPublicKeys) != 0) {
+		return nil, bad("root 密码和 SSH 公钥必须二选一。")
+	}
 	if in.RootPassword != "" {
 		n := utf8.RuneCountInString(in.RootPassword)
 		if !utf8.ValidString(in.RootPassword) || n < 8 || n > 128 || strings.IndexFunc(in.RootPassword, unicode.IsControl) >= 0 {
 			return nil, bad("root 密码必须为 8–128 个 Unicode 字符，且不能包含控制字符。")
 		}
 	}
-	if len(in.SSHPublicKeys) > 10 {
-		return nil, bad("最多可提供 10 条 SSH 公钥。")
-	}
 	out := &LoginRequest{RootPassword: in.RootPassword}
-	seen := make(map[string]bool, len(in.SSHPublicKeys))
-	for _, input := range in.SSHPublicKeys {
-		if len(input) > 8192 || strings.ContainsAny(input, "\r\n") || strings.IndexFunc(input, unicode.IsControl) >= 0 || !utf8.ValidString(input) {
-			return nil, bad("SSH 公钥必须为不超过 8192 字节的单行 OpenSSH 公钥。")
+	keys, err := normalizeSSHPublicKeys(in.SSHPublicKeys)
+	if err != nil {
+		return nil, err
+	}
+	out.SSHPublicKeys = keys
+	return out, nil
+}
+
+func normalizeSSHPublicKeys(entries []string) ([]string, error) {
+	invalid := func() error {
+		return bad("SSH 公钥最多 10 条，每条最多 8192 字节；仅支持 Ed25519、RSA（至少 2048 位）及 ECDSA nistp256/384/521 公钥，不接受私钥、证书或选项。")
+	}
+	if len(entries) > 10 {
+		return nil, invalid()
+	}
+	var keys []string
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		if len(entry) > 8192 || !utf8.ValidString(entry) || strings.ContainsAny(entry, "\r\n\x00") {
+			return nil, invalid()
 		}
-		text := strings.TrimSpace(input)
-		fields := strings.Fields(text)
-		if len(fields) < 2 || (fields[0] != "ssh-ed25519" && fields[0] != "ssh-rsa" && fields[0] != "ecdsa-sha2-nistp256" && fields[0] != "ecdsa-sha2-nistp384" && fields[0] != "ecdsa-sha2-nistp521") {
-			return nil, bad("仅支持 Ed25519、RSA（至少 2048 位）和 ECDSA nistp256/384/521 公钥；不能包含私钥或 authorized_keys 选项。")
+		key, _, options, rest, err := ssh.ParseAuthorizedKey([]byte(entry))
+		if err != nil || len(options) != 0 || len(rest) != 0 {
+			return nil, invalid()
 		}
-		key, _, options, rest, err := ssh.ParseAuthorizedKey([]byte(text))
-		if err != nil || len(options) != 0 || len(strings.TrimSpace(string(rest))) != 0 || key.Type() != fields[0] {
-			return nil, bad("SSH 公钥格式无效；不能包含私钥、登录选项或多行内容。")
+		trimmed := strings.TrimSpace(entry)
+		separator := strings.IndexAny(trimmed, " \t")
+		if separator < 0 || trimmed[:separator] != key.Type() {
+			return nil, invalid()
 		}
 		cryptoKey, ok := key.(ssh.CryptoPublicKey)
 		if !ok {
-			return nil, bad("不支持该 SSH 公钥类型。")
+			return nil, invalid()
 		}
 		switch public := cryptoKey.CryptoPublicKey().(type) {
 		case ed25519.PublicKey:
+			if key.Type() != ssh.KeyAlgoED25519 {
+				return nil, invalid()
+			}
 		case *rsa.PublicKey:
-			if public.N.BitLen() < 2048 {
-				return nil, bad("RSA 公钥必须至少为 2048 位。")
+			if key.Type() != ssh.KeyAlgoRSA || public.N.BitLen() < 2048 || public.N.Bit(0) != 1 || public.E < 3 || public.E%2 == 0 {
+				return nil, invalid()
 			}
 		case *ecdsa.PublicKey:
-			if public.Curve.Params().Name != "P-256" && public.Curve.Params().Name != "P-384" && public.Curve.Params().Name != "P-521" {
-				return nil, bad("不支持该 ECDSA 曲线。")
+			if key.Type() != ssh.KeyAlgoECDSA256 && key.Type() != ssh.KeyAlgoECDSA384 && key.Type() != ssh.KeyAlgoECDSA521 {
+				return nil, invalid()
 			}
 		default:
-			return nil, bad("不支持该 SSH 公钥类型。")
+			return nil, invalid()
 		}
-		// Drop comments, including YAML-looking text: only a parsed canonical key
-		// can reach cloud-init. Duplicate keys with different comments collapse.
 		canonical := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(key)))
 		if !seen[canonical] {
-			out.SSHPublicKeys = append(out.SSHPublicKeys, canonical)
 			seen[canonical] = true
+			keys = append(keys, canonical)
 		}
 	}
-	if out.RootPassword == "" && len(out.SSHPublicKeys) == 0 {
-		return nil, bad("login 至少需要一种非空 root 密码或 SSH 公钥。")
-	}
-	return out, nil
+	return keys, nil
 }
 
 func sealLogin(a *platform.App, in *LoginRequest) ([]byte, error) {
@@ -114,42 +128,114 @@ func sealLogin(a *platform.App, in *LoginRequest) ([]byte, error) {
 }
 
 func loginUserData(a *platform.App, r platform.Row) (string, error) {
-	if platform.Text(r["login_config_ciphertext"]) == "" {
-		return "", nil
-	}
-	raw, err := a.Decrypt([]byte(platform.Text(r["login_config_ciphertext"])))
-	if err != nil {
-		return "", errors.New("cannot decrypt instance login configuration")
-	}
-	defer clear(raw)
-	var cfg loginConfig
-	if json.Unmarshal(raw, &cfg) != nil || (cfg.PasswordHash == "" && len(cfg.SSHPublicKeys) == 0) {
-		return "", errors.New("invalid encrypted instance login configuration")
-	}
-	password := cfg.PasswordHash != ""
-	// '*' is an unusable password without the leading '!' account lock that
-	// rejects public-key login in OpenSSH with UsePAM=no on some images.
-	hash, mode := cfg.PasswordHash, "password\n"
-	if !password {
-		hash, mode = "*", "ssh-key\n"
-	}
-	root := platform.Row{"name": "root", "hashed_passwd": hash, "lock_passwd": false}
-	if len(cfg.SSHPublicKeys) > 0 {
-		root["ssh_authorized_keys"] = cfg.SSHPublicKeys
-	}
+	// Even network-only creates must override the image's default SSH modules.
+	// Preserve embedded host keys; neither generate, publish nor fingerprint keys.
+	// An explicit empty ssh_keys mapping selects cc_ssh's non-generation branch.
+	// ssh_genkeytypes: [] is rejected by supported cloud-init schemas as minItems=1.
 	cloud := platform.Row{
-		"users": []platform.Row{root}, "disable_root": false, "ssh_pwauth": password,
-		"chpasswd":    platform.Row{"expire": false},
-		"write_files": []platform.Row{{"path": "/etc/101cloud/ssh-login-mode", "owner": "root:root", "permissions": "0600", "content": mode}},
+		"ssh_deletekeys": false, "ssh_keys": platform.Row{},
+		"ssh":                 platform.Row{"emit_keys_to_console": false},
+		"no_ssh_fingerprints": true, "allow_public_ssh_keys": false,
+		"ssh_publish_hostkeys": platform.Row{"enabled": false},
+	}
+	if platform.Text(r["login_config_ciphertext"]) != "" {
+		raw, err := a.Decrypt([]byte(platform.Text(r["login_config_ciphertext"])))
+		if err != nil {
+			return "", errors.New("cannot decrypt instance login configuration")
+		}
+		defer clear(raw)
+		var cfg loginConfig
+		if json.Unmarshal(raw, &cfg) != nil {
+			return "", errors.New("invalid encrypted instance login configuration")
+		}
+		if cfg.PasswordHash == "" && len(cfg.SSHPublicKeys) == 0 {
+			return "", errors.New("empty encrypted instance login configuration")
+		}
+		hash := cfg.PasswordHash
+		if hash == "" {
+			hash = "*"
+		} else if !strings.HasPrefix(hash, "$6$") {
+			return "", errors.New("invalid encrypted instance password hash")
+		}
+		cloud["users"] = []platform.Row{{"name": "root", "hashed_passwd": hash, "lock_passwd": false}}
+		if len(cfg.SSHPublicKeys) != 0 {
+			keys, err := normalizeSSHPublicKeys(cfg.SSHPublicKeys)
+			if err != nil {
+				return "", errors.New("invalid encrypted instance public keys")
+			}
+			cloud["users"].([]platform.Row)[0]["ssh_authorized_keys"] = keys
+			// cc_ssh must not add forced-command restrictions to supplied root keys.
+			cloud["disable_root"] = false
+		}
+		cloud["chpasswd"] = platform.Row{"expire": false}
 	}
 	// JSON is YAML-compatible. Never interpolate user strings into YAML or a shell.
 	return "#cloud-config\n" + jsonText(cloud) + "\n", nil
 }
 
+// CloudInitPasswordReadyScript reads only guest-local state and returns a bool.
+// Hashes stay in guest memory, never in command arguments, output or journals.
+const CloudInitPasswordReadyScript = `def root_password_ready():
+    try:
+        import base64, hmac, os, pwd, yaml
+        with open("/var/lib/cloud/instance/cloud-config.txt", encoding="utf-8") as stream:
+            config = yaml.safe_load(stream)
+        users = config.get("users", [])
+        roots = [user for user in users if isinstance(user, dict) and user.get("name") == "root"]
+        if len(roots) != 1 or roots[0].get("lock_passwd") is not False:
+            return False
+        expected = roots[0].get("hashed_passwd")
+        if not isinstance(expected, str) or not (expected.startswith("$6$") or expected == "*"):
+            return False
+        keys = roots[0].get("ssh_authorized_keys", [])
+        if not isinstance(keys, list) or any(not isinstance(key, str) for key in keys):
+            return False
+        if expected == "*" and not keys:
+            return False
+        if keys:
+            def identity(line):
+                fields = line.split()
+                if len(fields) < 2 or fields[0] not in ("ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521"):
+                    return None
+                blob = base64.b64decode(fields[1], validate=True)
+                return (fields[0], blob)
+            expected_keys = {identity(key) for key in keys}
+            if None in expected_keys:
+                return False
+            with open(os.path.join(pwd.getpwnam("root").pw_dir, ".ssh", "authorized_keys"), encoding="utf-8") as stream:
+                applied = set()
+                for line in stream:
+                    try:
+                        parsed = identity(line)
+                    except (ValueError, TypeError):
+                        continue
+                    if parsed is not None:
+                        applied.add(parsed)
+            if not expected_keys.issubset(applied):
+                return False
+        with open("/etc/shadow", encoding="utf-8") as stream:
+            for line in stream:
+                fields = line.rstrip("\n").split(":")
+                if fields[0] == "root":
+                    return len(fields) >= 8 and (expected == "*" or fields[2] != "0") and hmac.compare_digest(fields[1], expected)
+        return False
+    except Exception:
+        # YAML parser errors can include source lines containing a password hash.
+        # Fail closed without printing parser details or any guest-local content.
+        return False
+`
+
+// $1 is a fixed mode, never user input. Preserve cloud-init failures, including
+// degraded status, and reject disabled/incomplete boots or unapplied passwords.
+const CloudInitReadyCommand = `/usr/bin/cloud-init status --wait >/dev/null 2>&1 && test -f /var/lib/cloud/instance/boot-finished && /usr/bin/python3 -c '` + CloudInitPasswordReadyScript + `
+import sys
+sys.exit(0 if sys.argv[1:] == ["network"] or (sys.argv[1:] == ["login"] and root_password_ready()) else 1)
+' "$1" >/dev/null 2>&1`
+
 // Login completion has its own durable checkpoint, independent of an optional
 // administrator template. Reboots neither reset passwords nor rerun cloud-init.
 func workerLoginInitialize(ctx context.Context, a *platform.App, j platform.Job, r platform.Row) error {
-	if platform.Text(r["login_config_ciphertext"]) == "" || !platform.Stamp(r["login_initialized_at"]).IsZero() {
+	if (platform.Text(r["login_config_ciphertext"]) == "" && !platform.Bool(object(object(r["incus_config_snapshot"])["creation"])["cloud_init_capable"])) || !platform.Stamp(r["login_initialized_at"]).IsZero() {
 		return nil
 	}
 	timeout, cancel := context.WithTimeout(ctx, 610*time.Second)
@@ -165,11 +251,14 @@ func workerLoginInitialize(ctx context.Context, a *platform.App, j platform.Job,
 		if _, _, e = workerObserve(timeout, a, r); e != nil {
 			return nil, e
 		}
+		mode := "network"
+		if platform.Text(r["login_config_ciphertext"]) != "" {
+			mode = "login"
+		}
 		return a.Agent(platform.WithTaskDispatch(timeout, j, "login.cloud-ready"), j.NodeID, http.MethodPost, workerPath(r, "/exec"), platform.Row{
-			// A disabled cloud-init can exit zero. Require the first-boot
-			// completion file and our non-sensitive marker as well. This fixed
-			// command contains no caller input, password, key or user-data.
-			"command":     []string{"/usr/bin/timeout", "--signal=KILL", "600", "/bin/sh", "-c", "/usr/bin/cloud-init status --wait >/dev/null 2>&1 && test -f /var/lib/cloud/instance/boot-finished && test -f /etc/101cloud/ssh-login-mode"},
+			// Fixed read-only checks compare guest-cached configuration and shadow;
+			// no password/hash, caller input or guest output enters the journal.
+			"command":     []string{"/usr/bin/timeout", "--signal=KILL", "600", "/bin/sh", "-c", CloudInitReadyCommand, "cloud-init-ready", mode},
 			"environment": platform.Row{"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
 			"interactive": false, "wait-for-websocket": false, "record-output": false,
 		})

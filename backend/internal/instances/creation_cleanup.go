@@ -65,7 +65,7 @@ func creationDefiniteError(cause error) bool {
 		return true
 	}
 	switch platform.Text(details["reason"]) {
-	case "script_exit_nonzero", "cloud_init_errors", "ssh_host_key_generation_missing_tool", "required_tool_missing", "completion_marker_missing", "cloud_init_degraded", "command_terminated", "template_status_mismatch", "template_hash_mismatch", "template_timeout_invalid":
+	case "script_exit_nonzero", "cloud_init_errors", "ssh_host_key_generation_missing_tool", "required_tool_missing", "completion_marker_missing", "root_password_not_ready", "cloud_init_degraded", "command_terminated", "template_status_mismatch", "template_hash_mismatch", "template_timeout_invalid":
 		return true
 	}
 	return false

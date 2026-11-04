@@ -4,6 +4,14 @@
 
 后端自身提供 **HTTP**，默认 `127.0.0.1:8080`。浏览器入口的 HTTPS 交给 Nginx/Caddy；Host Agent 仍使用独立的 HTTPS 和证书指纹认证。当前不提供 NAT 或端口映射。
 
+2026-11-04 已部署 `.111`：确认实例停止后，CPU、内存、磁盘、GPU全部停止计费；GPU保持绑定并继续占用容量，不自动解绑或释放。再次确认运行后恢复全部应计费资源，磁盘free和admin_exempt仍豁免。停止失败、状态未知及节点离线不能提前视为停止；offline政策只处理未确认停止的离线区间。停机前费用保留、不追溯退款，未交付创建失败退款规则不变。
+
+新增前向迁移 `20261104_10_stopped_resources_free.sql`：将credit来源和公开credit config中旧存储模式转换为running_only，并收窄数据库CHECK为running_only/free（旧宽松CHECK无需删除）；活动宽限事件快照只同步存储模式，原deadline与其他选择保持。套餐/实例持有政策ID，plan_snapshot与usage_sessions.config_snapshot只存资源，不嵌入存储规则，无须改写。历史完成事件、账单/流水、价格和账户余额不修改。旧历史迁移保持原样。
+
+结算前按持久观测对齐计费：近期且节点在线的 stopped 结束全部实际计费会话；running 恢复计算、非free磁盘及仍为active/configured的GPU。旧会话已结算部分不倒扣。观测过期但节点在线时，先在财务事务外只读查询原生实例，以项目/name/UUID核对身份；事务内复核版本、归属、更新时序及无在途变更，才刷新状态。查询失败、异UUID、未知状态、离线或并发变更都不冒充停止。独立MySQL实跑验证三类运行会话、停机0活跃计费且跨后台周期余额不变、GPU仍绑定、恢复及重复running无重复会话；完整MySQL回归、相关竞态测试、vet与编译通过。前端政策编辑器实查无保留磁盘收费选项，当前仅running_only/free。
+
+本次发布目录 `/srv/101cloud/releases/20261104-stopped-resources-free`，数据库、配置、程序与原前端链接备份位于 `/var/backups/101cloud/20261104-stopped-resources-free/`。停服备份后使用新版内嵌 migrate 执行数据转换，健康接口ready且发布二进制SHA256与构建一致。真实账户umi已停止实例27/28无active计费会话，跨12秒多个结算周期的六类历史会话账单笔数、累计应收、last_to完全不变；未改旧账、未解绑资源或操作实例启停。运行自定义实例24仍admin_exempt。原qwe在本次发布前已不在未删除实例中。
+
 实例调整容量预览：`GET /api/v1/instances/:id/resize-limits`（管理员使用 `/api/v1/admin/instances/:id/resize-limits`）按所属用户配额、节点可分配容量和 custom 常驻预算返回此实例可调整到的总资源上限。响应 `data.max_resources` 的 `vcpus` 为整数，`memory_bytes`、`disk_bytes` 为十进制字符串。聚合排除此实例；与正式准入共用预留统计，保留未知状态占用，仅释放有明确安全标记的创建失败预留；停止的 elastic 实例只在节点层释放 CPU/内存，不释放磁盘。接口只读、不查询 Agent、不报价、不预留或修改配置；所属用户未启用、配额缺失、实例数量超额或节点未验证/离线/资源观测过期时返回错误，不能视作无限容量。套餐范围和磁盘不可缩小约束仍适用，最终 POST 在原有锁下重新准入。MySQL 回归使用 `CLOUD_TEST_MYSQL_ADMIN_DSN`（需要创建/删除隔离测试数据库权限）；未设置时跳过。
 
 实例 resize/delete 由后端单个持久化任务编排，客户端不得串联 stop/resize/start 或 stop/delete。resize 的 `confirm_restart` 可选，但运行中必须为 `true`；所有非管理员elastic/custom实例须拥有resize权限，运行中还须stop/start权限。运行中正常关机确认后改配置、确认配置后启动，原已停止实例保持停止。任务保存 `restart_after_resize:true`、`previous_resources` 和期望 running，步骤为 `state.stop → resize.native → resize.confirmed → state.start`；进入启动意图后恢复不得重放早先停机或配置步骤。套餐、配额、节点/常驻预算、resize-limits 和磁盘禁止缩容约束不变。
@@ -281,7 +289,7 @@ POST /admin/users必填credit_policy_version_id，选择用户独立共享钱包
 
 7. 先受控验证一个实例的创建、登录、停止、磁盘保留、GPU观测和控制台，再开放给成员。
 
-客机 SSH 初始化脚本见项目根目录 [`init-openssh.sh`](../init-openssh.sh)。支持 Ubuntu/Debian（`openssh-server`）和 Arch Linux（`openssh`），以 root 执行；管理员可将脚本登记为 `cloud_init` 阶段模板并绑定套餐，先等待 cloud-init 再安装和配置 SSH。后端不自动安装 OpenSSH、不自动登记/绑定模板、不改防火墙。脚本不设置 root 密码：读取后端 cloud-init 写入的 `/etc/101cloud/ssh-login-mode`（root:root、0600），`password` 模式允许已有非空 root 密码，`ssh-key` 模式禁止 SSH 密码并允许 root 公钥；两者显式开启公钥认证。无标记保留原密码模式默认值，非法标记拒绝执行。默认确保 IPv4 TCP 22 监听；原有 Allow/Deny、来源 Match 和 PAM 策略保留，仍需在目标镜像验收登录。不要把明文密码写进模板或初始化参数。
+客机 SSH 初始化脚本见项目根目录 [`init-openssh.sh`](../init-openssh.sh)。支持 Ubuntu/Debian（`openssh-server`）和 Arch Linux（`openssh`），以 root 执行；管理员可将脚本登记为 `cloud_init` 阶段模板并绑定套餐，先等待 cloud-init 再安装和配置 SSH。这是独立、显式的管理员脚本阶段，不属于平台基础 cloud-init 网络和 root 密码配置。后端不自动安装 OpenSSH、不自动登记/绑定模板、不改防火墙。脚本不设置 root 密码；新建实例不再写 SSH 登录模式文件，脚本按已有默认密码模式处理。历史模式文件和已发布模板保持原样。默认确保 IPv4 TCP 22 监听；原有 Allow/Deny、来源 Match 和 PAM 策略保留，仍需在目标镜像验收登录。不要把明文密码写进模板或初始化参数。
 
 脚本支持 systemd，以及 Debian/Ubuntu 的 SysV；Ubuntu 存在 `ssh.socket` 时切换为 SSH 服务直接监听。改动前备份到 `/etc/ssh/101cloud-backup.*/sshd_config`，用 `sshd -t` 和 root 上下文的 `sshd -T` 检查配置；生效后失败会尝试恢复配置并重启服务，但不会卸载软件包或还原所有服务启用状态。重复执行不会叠加平台配置块。需能访问软件源；Arch 使用现有同步数据库执行 `pacman -S --needed`，不单独刷新数据库或隐式全系统升级。
 
@@ -289,15 +297,15 @@ Fedora 使用 `dnf install -y openssh-server` 和 systemd 的 `sshd.service`；�
 
 ### 实例首次登录凭据（仅创建时）
 
-普通用户最终 `POST /api/v1/instances` 可增加 `login:{root_password?:string,ssh_public_keys?:string[]}`，可同时提供两种方式，推荐公钥。省略 `login` 完全保持旧行为；提供对象时至少一种非空。密码原样保留（不 trim），8–128 个 Unicode 字符，禁止控制字符。公钥最多 10 条，每条至多 8192 UTF-8 字节，服务端真实解析单行 OpenSSH 格式：Ed25519、RSA≥2048、ECDSA nistp256/384/521；拒绝私钥、authorized_keys 选项、控制字符和多行脚本，规范化后去重并丢弃注释。报价 `/quotes` 不接受 `login`。
+最终 `POST /api/v1/instances` 的只写 `login` 二选一：`{root_password:string}` 或 `{ssh_public_keys:string[]}`。两者都非空或都为空返回 422；省略 login 仍支持无凭据创建。密码为 8–128 个 Unicode 字符、禁止控制字符、保留空格。公钥最多 10 条（去重前）、每条最多 8192 UTF-8 字节；接受 Ed25519、RSA >=2048 位、ECDSA P-256/384/521，拒绝私钥、证书、选项、多行和畸形键，去注释并规范化去重。报价拒绝 login；新建摘要 none/password/ssh_key。
 
-只有所选节点/项目的 ready 镜像配置 `cloud_init=true` 才能携带 `login`，否则 409 `image_login_unsupported`；不回退逻辑镜像的全局属性。管理员须确认镜像支持 `cloud-init.user-data`（旧式只支持 `user.user-data` 的镜像不适用），且 VM 已提供可工作的 incus-agent。后端不会偷偷装软件或补挂 cloud-init 盘。密码使用成熟 `go-crypt/sha512` 库生成随机盐 SHA-512 crypt，再连同规范化公钥经既有 MasterKey 的 AES-GCM 加密，仅落 `instances.login_config_ciphertext`。新增前向迁移 `20261103_00_instance_login.sql` 同时加入 `login_initialized_at`；历史实例两列为 NULL，不改历史 init.sql、不改实例状态或 revision。升级先停服备份数据库与主密钥，再按既有 migrate 流程执行；本变更本身不表示已部署线上。
+镜像须在所选节点/项目标记 ready、cloud_init=true，否则 409 image_login_unsupported；VM 需可用 incus-agent。密码先生成随机盐 SHA-512 crypt，或规范公钥，均仅存既有 MasterKey AES-GCM login_config_ciphertext，无新迁移。已完成实例不重置；历史待创建混合凭据按原密文应用，不允许新建混合请求。
 
-worker 仅在内存解密，原生创建前设置带 `#cloud-config` 前缀的 JSON/YAML `cloud-init.user-data`，使用标准 root `hashed_passwd`、`lock_passwd:false`、`ssh_authorized_keys`、`disable_root:false`、`ssh_pwauth` 和 `chpasswd.expire:false`。仅公钥时写不可用密码 `*`，不使用可能阻止 UsePAM=no 公钥登录的 `!` 账号锁。首次启动独立等待 `cloud-init status --wait`（600 秒界限），成功后持久化非敏感完成时间；即使套餐没有管理员模板，也不会在 cloud-init 未成功时宣告 ready。等待失败/结果不确定保留 existing unknown/reconcile 语义，不盲目重派；后续启动尊重首次完成标记，不重设密码、不重跑 cloud-init。
+所有新建 cloud-init-capable 实例保留 `ssh_deletekeys:false`、`ssh_keys:{}`、`ssh.emit_keys_to_console:false`、`no_ssh_fingerprints:true`、`allow_public_ssh_keys:false`、`ssh_publish_hostkeys.enabled:false`，不生成/发布 host keys。禁止 schema 非法的 `ssh_genkeytypes:[]`。密码模式设置 root 哈希、lock_passwd:false、chpasswd.expire:false；公钥模式设置 root ssh_authorized_keys、hashed_passwd:"*"、lock_passwd:false、disable_root:false，密码不可用且不锁住公钥账户。不设置 ssh_pwauth、模式文件或安装/启停 SSH；网络与管理员脚本不变。
 
-初始化失败现提供受控诊断：保留原 `cloud-init status --wait`/脚本退出码，失败后仅追加固定、有界、只读且 `record-output=false` 的状态探测。探测在 guest 内解析 `cloud-init status --format json`、检查完成标记与工具存在性，仅通过有限退出码回传分类；不读取或持久化原始日志，不把状态 JSON、stderr、密码、哈希、user-data、环境变量写进任务结果。Arch 的 `ssh-keygen` 缺失只有与当前 cloud-init 的特定 host-key 生成警告同时存在，才报告“缺少 ssh-keygen 导致 SSH 主机密钥生成失败”；仅缺工具不推断因果。无 Python/无 JSON/无法探测为 `initialization_diagnostic_unavailable`，原始失败退出码不变。退出 137 只表示命令被终止，不假称已证实超时。
+固定只读等待要求 cloud-init status --wait 成功且 boot-finished 存在。密码模式比较 guest 缓存配置和 shadow 并拒绝锁定/强制过期；公钥模式要求 shadow 为 "*" 且 root authorized_keys 包含所有请求的无选项 type/blob。检查不输出凭据、不调用外部密钥工具；失败沿用 initialization_password_not_ready/root_password_not_ready 安全凭据分类。成功才写 login_initialized_at，错误/降级/超时仍阻止 ready，后续启动不重跑初始化。
 
-公开错误为 `initialization_cloud_init_degraded/cloud_init_failed/tool_missing/marker_missing/script_failed/timeout/result_unknown/diagnostic_unavailable`（每项均带 `initialization_` 前缀），`details` 仅含固定 `stage/reason/cloud_init_status/action`、可选整数原始 `exit_code` 与白名单工具/host-key 证据。模板未发布、摘要不符、无效超时分别明确归因，未执行脚本；脚本非零退出只报告实际退出码和检查建议，不声称掌握 stderr。原任务 `unknown`、资源保留及禁止重放策略不变，旧 operation 不按新协议重解码。当前 attempt/phase 已置 failed 的步骤仅补缺失安全错误，保留原 failed 终态与时间；不改其他历史步骤。
+公开错误为 `initialization_cloud_init_degraded/cloud_init_failed/tool_missing/marker_missing/password_not_ready/script_failed/timeout/result_unknown/diagnostic_unavailable`（均带 initialization_ 前缀）。details 仅含固定安全分类、建议与可选原始 exit_code；root_password_not_ready 表示所选登录凭据未通过只读验证，completion_marker_missing 仅指 boot-finished。原 unknown、安全回收及禁止重放策略不变，历史 operation 不按新协议重解码。
 
 
 凭据明文、密码哈希和解密 user-data 不进入任务参数/结果、审计、幂等明文、普通 DTO 或 incus_config_snapshot；原生观测和 resize 的 writable 配置只在内存保留 user-data，以免 PUT 删除已有首次启动配置。幂等层只存 MasterKey-HMAC 请求摘要和不含秘密的响应：结果不确定时必须保留完全相同的原始 body/key 重试，不可换 key 重建实例。前端敏感输入仅保存在内存，受理/注销/换账号清空，报价和持久化草稿中不得包含凭据。
@@ -388,7 +396,7 @@ HTTP监听127.0.0.1:8080，就绪检查、随机管理员登录、真实Agent固
 
 线上仅登录、读取就绪接口和真实欠费账户详情，未测试发放或免债。发布前后既有实例配置/状态和全部管理员实际发放金额一致，线上账单已付金额与流水差异0、锁等待0、后端active。发布目录 `/srv/101cloud/releases/20261103-async-credit-settlement`；数据库完整备份及旧前后端保存在 `/var/backups/101cloud/`，全库备份本机副本在工作区外 `101cloud-backups/`，gzip与SHA256一致并保留binlog恢复坐标。未改Host Agent、网络或数据库运行配置。
 
-2026-11-03 16:38:02（+08:00）按管理员要求仅调整 `.111` 磁盘收费：`100daily` 政策10及对应来源2由retained改为running_only，其他字段及原free政策不变。账户锁内同步更新公开JSON/计费来源并写审计 `billing.storage_running_only`。已停止实例22/23/25的磁盘会话26/28/32在最后已结算边界16:38:01关闭；检查无held预留后关闭，未删除或改写任何历史账单、流水或磁盘数据，未变更10分钟宽限期。后续运行/停止沿用已有running_only生命周期，不需要后端重启。
+2026-11-03 16:38:02（+08:00）历史发布仅调整 `.111` 磁盘收费：`100daily` 政策10及对应来源2切换为running_only，其他字段及原free政策不变。账户锁内同步更新公开JSON/计费来源并写审计 `billing.storage_running_only`。已停止实例22/23/25的磁盘会话26/28/32在最后已结算边界16:38:01关闭；检查无held预留后关闭，未删除或改写任何历史账单、流水或磁盘数据，未变更10分钟宽限期。当时后续运行/停止沿用已有running_only生命周期，不需要后端重启；当前全部资源停机免费源码规则见本文开头。
 
 跨11秒（两个5秒结算周期）实际观察：三个已停机磁盘会话的账单笔数、历史应收总额和最新收费时间均不再变化，已停机实例的active磁盘会话为0；运行实例的磁盘会话仍active，后端服务active。变更前完整业务库备份 `/var/backups/101cloud/before-running-only-storage-20261103-163758.sql.gz`，工作区外101cloud-backups保留同名副本。历史欠款保留，未发放或扣减额度。
 
@@ -405,3 +413,13 @@ HTTP监听127.0.0.1:8080，就绪检查、随机管理员登录、真实Agent固
 实际独立HTTP后端+原生TLS协议夹具+浏览器构造unknown创建任务，管理员DELETE返回202，旧create变cancelled/superseded_by_cleanup，worker确认不存在后delete任务succeeded并跳回实例列表；原生停止/删除请求0次，GPUreleased、IPavailable、active使用会话0、10000pt本金完整及预留0。仅协议夹具，不是线上真实实例删除。线上只打开实例15的清理确认后取消，未删除任何真实实例、未变更原卡住任务或管理员发放；发布前后实例配置/状态、活动任务及发放基线一致，就绪200、账本差异0、停机磁盘active会话0。
 
 备份位于 `/var/backups/101cloud/`：`backend-before-20261104-admin-stuck-cleanup`、`frontend-before-20261104-admin-stuck-cleanup.link`、`all-databases-before-stuck-cleanup-20261104-202151.sql.gz`。全库副本保留在工作区外101cloud-backups，gzip及双端SHA256校验通过。若旧请求完全丢失原生操作编号且仍有提交歧义，清理任务保留unknown/cleanup_native_submission_unknown，需依据可信原生日志恢复操作编号后协调，不把瞬间查无实例冒充不存在晚到CREATE的证明；离线、权限或超时均不判成功。
+
+2026-11-04 仅网络/root密码cloud-init已仅发布 `.111`，目录 `/srv/101cloud/releases/20261104-password-network-cloudinit`，无需数据库迁移。新建请求仅接受login.root_password，删除SSH公钥请求/注入及ssh_pwauth、SSH模式标记；已标记cloud-init能力的镜像即使省略login也下发禁止SSH自动动作的基础配置。使用schema合法ssh_keys:{}选择cc_ssh不生成主机密钥分支（ssh_genkeytypes:[]会被真实Arch schema拒绝），保留原有hostkeys并关闭公钥导入、指纹/控制台输出及发布；不安装、配置或重启SSH服务。网络仍为eth0静态IP/路由/DNS。密码完成检查固定读取客机缓存cloud-config与shadow，在内存比较哈希、拒绝锁定/强制过期，不把凭据放进exec参数或输出，cloud-init非零/超时仍失败。管理员模板独立执行，未改脚本或既有实例密码/初始化checkpoint。
+
+真实验收：隔离Incus项目ci-cloudinit-20261104214610使用本地Archlinux/cloud镜像，profiles为空、1CPU/256MiB/2GiB磁盘、无GPU、p2p网卡及测试网192.0.2.2/24，不使用业务网桥/IP池。首次验证发现空ssh_genkeytypes导致schema降级，修正后用全新容器和实际Go生成配置启动：实际cloud-init及平台完成判定均exit0、done、errors[]、recoverable_errors{}，root shadow哈希匹配且未锁，eth0=192.0.2.2/defaultgw192.0.2.1，ssh-keygen/sshd均不存在、无主机密钥文件及旧模式标记。两只带专用标记的临时容器、项目和远端临时文件已清理，default项目实例/状态与验收前一致。没有重跑既有实例cloud-init。
+
+完整真实MySQL go test -race -p 1 ./... -count=1、go vet、前端50文件483条测试、vue-tsc及生产构建通过。浏览器创建页仅密码/确认，确认页固定掩码；实际报价请求体无login/root_password等凭据，未提交创建。oxlint在errors.ts现有initializationLabel非空断言报1项，未为本次功能改写该无关断言；未宣称该检查通过。线上就绪200，旧ssh_public_keys字段422（未创建实例），实例状态/资源/凭据密文/初始化checkpoint、模板内容、原卡住任务和管理员发放基线前后一致。全库备份all-databases-before-password-network-20261104-220740.sql.gz及旧前后端位于/var/backups/101cloud/，全库本机副本保留工作区外101cloud-backups，gzip和双端SHA256一致。
+
+2026-11-04 已仅发布`.111` `/srv/101cloud/releases/20261104-password-or-public-key`：新建login必须在root_password与ssh_public_keys中选择一种非空方式；两者同时提供或均为空拒绝。公钥经标准密码学解析、类型/长度/数量限制、移除注释及去重后加密保存并写入root authorized_keys。仅公钥模式使用不可用密码`*`且不锁公钥登录，readiness检查实际shadow及所有请求公钥；主机密钥生成仍禁用，不安装/启动SSH，旧实例不改。管理员脚本独立原样保留。
+
+实际Arch/cloud隔离容器验证仅公钥：cloud-init及实际完成判定exit0，done/errors[]/warnings{}；root密码`*`，唯一去重公钥内容匹配，root所有者、目录700/文件600，ssh-keygen/sshd均不存在，无主机密钥。专用临时容器/项目已清理。完整MySQL race回归、go vet、前端50文件491条测试、vue-tsc和生产构建通过；浏览器验证二选一、公钥模式无密码输入和确认项，确认仅显示1条公钥，未提交平台创建。线上就绪200，发布窗口既有实例状态/资源/凭据checkpoint、模板脚本、原任务及管理员发放基线一致。备份all-databases-before-user-public-keys-20261104-223703.sql.gz及旧前后端在/var/backups/101cloud，本机全库副本在工作区外101cloud-backups，gzip及双端SHA256校验通过。

@@ -153,7 +153,7 @@ func validatePolicy(kind string, raw json.RawMessage) (any, error) {
 		if _, e := time.Parse("15:04:05", p.GrantTime); e != nil {
 			return nil, invalid("grant_time must use HH:MM:SS")
 		}
-		if p.Validity == 0 || p.Validity > 315360000 || p.Window == 0 || p.Window > 86400 || p.Grace == 0 || p.Grace > 86400 || !in(p.GraceMode, "waived", "accrue") || !in(p.Restore, "cancel_pending_stop", "keep_deadline") || !in(p.Storage, "retained", "running_only", "free") || !in(p.Offline, "defer", "continue") {
+		if p.Validity == 0 || p.Validity > 315360000 || p.Window == 0 || p.Window > 86400 || p.Grace == 0 || p.Grace > 86400 || !in(p.GraceMode, "waived", "accrue") || !in(p.Restore, "cancel_pending_stop", "keep_deadline") || !in(p.Storage, "running_only", "free") || !in(p.Offline, "defer", "continue") {
 			return nil, invalid("credit policy requires explicit economic choices and a shutdown grace between 1 and 86400 seconds")
 		}
 		return p, nil

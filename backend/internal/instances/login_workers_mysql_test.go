@@ -14,6 +14,7 @@ import (
 func TestMySQLLoginInitializationWaitsOnceWithoutAdminTemplateOrSecretSnapshots(t *testing.T) {
 	var execs atomic.Int64
 	var observedData string
+	var passwordHash string
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -23,11 +24,11 @@ func TestMySQLLoginInitializationWaitsOnceWithoutAdminTemplateOrSecretSnapshots(
 			if json.NewDecoder(r.Body).Decode(&body) != nil {
 				t.Error("invalid wait request")
 			}
-			want := []any{"/usr/bin/timeout", "--signal=KILL", "600", "/bin/sh", "-c", "/usr/bin/cloud-init status --wait >/dev/null 2>&1 && test -f /var/lib/cloud/instance/boot-finished && test -f /etc/101cloud/ssh-login-mode"}
+			want := []any{"/usr/bin/timeout", "--signal=KILL", "600", "/bin/sh", "-c", CloudInitReadyCommand, "cloud-init-ready", "login"}
 			if !reflect.DeepEqual(rows(body["command"]), want) || platform.Bool(body["record-output"]) || platform.Bool(body["interactive"]) {
 				t.Error("login did not execute a bounded output-disabled cloud-init wait")
 			}
-			if strings.Contains(jsonText(body), "user-data") || strings.Contains(jsonText(body), "$6$") {
+			if strings.Contains(jsonText(body), "user-data") || strings.Contains(jsonText(body), passwordHash) {
 				t.Error("wait command transmitted credential configuration")
 			}
 			_ = json.NewEncoder(w).Encode(platform.Row{"operation": "/1.0/operations/login-wait"})
@@ -43,7 +44,7 @@ func TestMySQLLoginInitializationWaitsOnceWithoutAdminTemplateOrSecretSnapshots(
 		}
 	})
 	db, a, job, r, _ := creationCleanupDB(t, handler)
-	sealed, err := sealLogin(a, &LoginRequest{SSHPublicKeys: []string{loginTestKey(t)}})
+	sealed, err := sealLogin(a, &LoginRequest{RootPassword: "valid root password"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,6 +57,11 @@ func TestMySQLLoginInitializationWaitsOnceWithoutAdminTemplateOrSecretSnapshots(
 		t.Fatal(err)
 	}
 	observedData = platform.Text(object(body["config"])["cloud-init.user-data"])
+	var cloud platform.Row
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(observedData, "#cloud-config\n")), &cloud); err != nil {
+		t.Fatal(err)
+	}
+	passwordHash = platform.Text(object(rows(cloud["users"])[0])["hashed_passwd"])
 	if !strings.HasPrefix(observedData, "#cloud-config\n") {
 		t.Fatal("native create omitted decrypted cloud-config")
 	}
@@ -87,7 +93,7 @@ func TestMySQLLoginInitializationWaitsOnceWithoutAdminTemplateOrSecretSnapshots(
 		if err = db.Table(table).Find(&records).Error; err != nil {
 			t.Fatal(err)
 		}
-		if strings.Contains(jsonText(records), "cloud-init.user-data") || strings.Contains(jsonText(records), "ssh-ed25519 ") || strings.Contains(jsonText(records), "$6$") {
+		if strings.Contains(jsonText(records), "cloud-init.user-data") || strings.Contains(jsonText(records), passwordHash) {
 			t.Fatalf("observed or writable user-data leaked into %s", table)
 		}
 	}
@@ -112,65 +118,137 @@ func TestMySQLLoginUnknownWaitDoesNotRedispatch(t *testing.T) {
 }
 
 func TestMySQLLoginFailedCloudInitDoesNotMarkInitialized(t *testing.T) {
+	for _, tc := range []struct {
+		name, code, reason string
+		diagnostic         int
+	}{
+		{"legacy-host-key-failure", "initialization_tool_missing", "ssh_host_key_generation_missing_tool", 58},
+		{"network-module-failure", "initialization_cloud_init_failed", "cloud_init_errors", 65},
+		{"password-not-applied", "initialization_password_not_ready", "root_password_not_ready", 55},
+		{"unrelated-degraded-module", "initialization_cloud_init_degraded", "cloud_init_degraded", 56},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var execs atomic.Int64
+			var probes atomic.Int64
+			handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/exec"):
+					var body platform.Row
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Error(err)
+						return
+					}
+					if strings.Contains(jsonText(body["command"]), "statuses =") {
+						probes.Add(1)
+						command := rows(body["command"])
+						want := []any{"/usr/bin/timeout", "--signal=KILL", "15", "/usr/bin/python3", "-c", CloudInitDiagnosticScript, "login"}
+						if !reflect.DeepEqual(command, want) || platform.Bool(body["record-output"]) || platform.Bool(body["interactive"]) || len(object(body["environment"])) != 1 {
+							t.Error("diagnostic was not fixed, output-disabled and credential-free")
+						}
+						_ = json.NewEncoder(w).Encode(platform.Row{"operation": "/1.0/operations/read-only-diagnostic"})
+					} else {
+						execs.Add(1)
+						_ = json.NewEncoder(w).Encode(platform.Row{"operation": "/1.0/operations/failed-login-wait"})
+					}
+				case r.Method == http.MethodGet && r.URL.Path == "/1.0/operations/read-only-diagnostic/wait":
+					if r.URL.Query().Get("project") == "" {
+						t.Error("diagnostic operation lost project scope")
+					}
+					_ = json.NewEncoder(w).Encode(platform.Row{"metadata": platform.Row{"status_code": 200, "metadata": platform.Row{"return": tc.diagnostic}}})
+				case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/wait"):
+					_ = json.NewEncoder(w).Encode(platform.Row{"metadata": platform.Row{"status_code": 200, "metadata": platform.Row{"return": 1}}})
+				case r.Method == http.MethodGet && r.URL.Path == "/1.0/instances/test-pending":
+					_ = json.NewEncoder(w).Encode(platform.Row{"metadata": platform.Row{"name": "test-pending", "config": platform.Row{"volatile.uuid": "login-uuid"}}})
+				default:
+					t.Errorf("unexpected native request: %s %s", r.Method, r.URL.Path)
+					http.Error(w, "unexpected request", http.StatusInternalServerError)
+				}
+			})
+			db, a, job, r, _ := creationCleanupDB(t, handler)
+			r["login_config_ciphertext"] = []byte("wait-does-not-decrypt-credentials")
+			if err := db.Table("instances").Where("id=?", job.InstanceID).Update("login_config_ciphertext", r["login_config_ciphertext"]).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := workerInitialize(t.Context(), a, job, r); err == nil {
+				t.Fatal("failed cloud-init was accepted as completed")
+			} else {
+				public := platform.PublicError(err, true)
+				if public["code"] != tc.code || public["details"].(map[string]any)["reason"] != tc.reason {
+					t.Fatalf("safe root cause was lost: %+v", public)
+				}
+			}
+			if err := workerInitialize(t.Context(), a, job, r); err == nil || execs.Load() != 1 {
+				t.Fatal("failed recorded cloud-init wait was blindly redispatched")
+			}
+			if probes.Load() != 2 {
+				t.Fatal("recovery must inspect the original operation without replaying it; only the read-only diagnostic may be repeated")
+			}
+			current, err := workerInstance(t.Context(), a, job)
+			if err != nil || !platform.Stamp(current["login_initialized_at"]).IsZero() {
+				t.Fatal("failed cloud-init wrote successful initialization checkpoint")
+			}
+			step, err := workerStep(t.Context(), a, job, "login.cloud-ready")
+			if err != nil || platform.Text(step["status"]) != "failed" {
+				t.Fatal("failed exec was persisted as successful stage")
+			}
+		})
+	}
+}
+
+func TestMySQLNetworkOnlyCreateSuppressesSSHAndWaitsOnce(t *testing.T) {
 	var execs atomic.Int64
-	var probes atomic.Int64
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/exec"):
+			execs.Add(1)
 			var body platform.Row
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Error(err)
-				return
 			}
-			if strings.Contains(jsonText(body["command"]), "statuses =") {
-				probes.Add(1)
-				command := rows(body["command"])
-				want := []any{"/usr/bin/timeout", "--signal=KILL", "15", "/usr/bin/python3", "-c", CloudInitDiagnosticScript, "login"}
-				if !reflect.DeepEqual(command, want) || platform.Bool(body["record-output"]) || platform.Bool(body["interactive"]) || len(object(body["environment"])) != 1 {
-					t.Error("diagnostic was not fixed, output-disabled and credential-free")
-				}
-				_ = json.NewEncoder(w).Encode(platform.Row{"operation": "/1.0/operations/read-only-diagnostic"})
-			} else {
-				execs.Add(1)
-				_ = json.NewEncoder(w).Encode(platform.Row{"operation": "/1.0/operations/failed-login-wait"})
+			want := []any{"/usr/bin/timeout", "--signal=KILL", "600", "/bin/sh", "-c", CloudInitReadyCommand, "cloud-init-ready", "network"}
+			if !reflect.DeepEqual(rows(body["command"]), want) || platform.Bool(body["record-output"]) {
+				t.Error("network-only initialization did not use strict bounded wait")
 			}
-		case r.Method == http.MethodGet && r.URL.Path == "/1.0/operations/read-only-diagnostic/wait":
-			if r.URL.Query().Get("project") == "" {
-				t.Error("diagnostic operation lost project scope")
-			}
-			_ = json.NewEncoder(w).Encode(platform.Row{"metadata": platform.Row{"status_code": 200, "metadata": platform.Row{"return": 58}}})
+			_ = json.NewEncoder(w).Encode(platform.Row{"operation": "/1.0/operations/network-wait"})
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/wait"):
-			_ = json.NewEncoder(w).Encode(platform.Row{"metadata": platform.Row{"status_code": 200, "metadata": platform.Row{"return": 1}}})
+			_ = json.NewEncoder(w).Encode(platform.Row{"metadata": platform.Row{"status_code": 200, "metadata": platform.Row{"return": 0}}})
 		case r.Method == http.MethodGet && r.URL.Path == "/1.0/instances/test-pending":
-			_ = json.NewEncoder(w).Encode(platform.Row{"metadata": platform.Row{"name": "test-pending", "config": platform.Row{"volatile.uuid": "login-uuid"}}})
+			_ = json.NewEncoder(w).Encode(platform.Row{"metadata": platform.Row{"name": "test-pending", "config": platform.Row{"volatile.uuid": "network-uuid"}}})
 		default:
 			t.Errorf("unexpected native request: %s %s", r.Method, r.URL.Path)
 			http.Error(w, "unexpected request", http.StatusInternalServerError)
 		}
 	})
-	_, a, job, r, _ := creationCleanupDB(t, handler)
-	r["login_config_ciphertext"] = []byte("wait-does-not-decrypt-credentials")
-	if err := workerInitialize(t.Context(), a, job, r); err == nil {
-		t.Fatal("failed cloud-init was accepted as completed")
-	} else {
-		public := platform.PublicError(err, true)
-		if public["code"] != "initialization_tool_missing" || public["details"].(map[string]any)["reason"] != "ssh_host_key_generation_missing_tool" {
-			t.Fatalf("safe root cause was lost: %+v", public)
-		}
+	db, a, job, r, _ := creationCleanupDB(t, handler)
+	legacy, err := workerCreateBody(t.Context(), a, r)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := workerInitialize(t.Context(), a, job, r); err == nil || execs.Load() != 1 {
-		t.Fatal("failed recorded cloud-init wait was blindly redispatched")
+	if _, exists := object(legacy["config"])["cloud-init.user-data"]; exists {
+		t.Fatal("historical creation without frozen capability gained new user-data")
 	}
-	if probes.Load() != 2 {
-		t.Fatal("recovery must inspect the original operation without replaying it; only the read-only diagnostic may be repeated")
+	r["incus_config_snapshot"] = jsonText(platform.Row{"creation": platform.Row{"cloud_init_capable": true, "cloud_init": true, "login_mode": "none"}})
+	if err := db.Table("instances").Where("id=?", job.InstanceID).Update("incus_config_snapshot", r["incus_config_snapshot"]).Error; err != nil {
+		t.Fatal(err)
+	}
+	body, err := workerCreateBody(t.Context(), a, r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMinimalCloudConfig(t, platform.Text(object(body["config"])["cloud-init.user-data"]), false)
+	if object(body["config"])["cloud-init.network-config"] != object(legacy["config"])["cloud-init.network-config"] {
+		t.Fatal("base cloud-config changed static network addressing/routes/DNS")
+	}
+	if err := workerInitialize(t.Context(), a, job, r); err != nil {
+		t.Fatal(err)
 	}
 	current, err := workerInstance(t.Context(), a, job)
-	if err != nil || !platform.Stamp(current["login_initialized_at"]).IsZero() {
-		t.Fatal("failed cloud-init wrote successful initialization checkpoint")
+	if err != nil || platform.Stamp(current["login_initialized_at"]).IsZero() {
+		t.Fatal("network-only completion was not checkpointed")
 	}
-	step, err := workerStep(t.Context(), a, job, "login.cloud-ready")
-	if err != nil || platform.Text(step["status"]) != "failed" {
-		t.Fatal("failed exec was persisted as successful stage")
+	if err := workerInitialize(t.Context(), a, job, current); err != nil || execs.Load() != 1 {
+		t.Fatal("network-only initialization repeated after completion")
 	}
 }

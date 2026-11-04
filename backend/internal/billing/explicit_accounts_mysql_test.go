@@ -137,14 +137,14 @@ func TestMySQLStorageLifecycleUsesInstanceCreditNotAllowance(t *testing.T) {
 	for _, tc := range []struct {
 		mode                       string
 		reserved, running, stopped int64
-	}{{"retained", 1, 1, 1}, {"running_only", 0, 1, 0}, {"free", 0, 0, 0}} {
+	}{{"running_only", 0, 1, 0}, {"free", 0, 0, 0}} {
 		t.Run(tc.mode, func(t *testing.T) {
 			f := newAdjustmentMySQLFixture(t)
 			profile := validCreditPolicy()
 			profile["storage_charge_mode"] = tc.mode
 			addAllowanceProfile(t, f, 2, 102, profile)
 			wantAllowance := "1"
-			if tc.mode == "retained" {
+			if tc.mode == "running_only" {
 				allowance := validCreditPolicy()
 				allowance["storage_charge_mode"] = "free"
 				addAllowanceProfile(t, f, 3, 103, allowance)
@@ -173,7 +173,7 @@ func TestMySQLStorageLifecycleUsesInstanceCreditNotAllowance(t *testing.T) {
 				}); err != nil {
 					t.Fatal(err)
 				}
-				if got := f.count(t, "usage_sessions", "instance_id=1 AND charge_kind='storage' AND status='active'"); got != step.want {
+				if got := f.count(t, "usage_sessions", "instance_id=1 AND charge_kind='storage' AND status='active' AND metering_state='running'"); got != step.want {
 					t.Fatalf("%s storage=%d want=%d", step.event, got, step.want)
 				}
 			}

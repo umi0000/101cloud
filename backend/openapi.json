@@ -11541,7 +11541,7 @@
       },
       "InstanceLogin": {
         "type": "object",
-        "description": "Write-only first-boot root login configuration. Omit for legacy behavior. Supply a nonempty password, at least one valid public key, or both. Only final POST /instances accepts this object. Public keys are parsed, canonicalized, deduplicated and stripped of comments; private keys, authorized_keys options and scripts are rejected. Never store login in browser persistence or send it to quotes.",
+        "description": "Write-only root password OR SSH public keys; exactly one nonempty credential mode. Final POST /instances only.",
         "writeOnly": true,
         "additionalProperties": false,
         "properties": {
@@ -11550,19 +11550,19 @@
             "writeOnly": true,
             "maxLength": 128,
             "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]*$",
-            "description": "Nonempty values require 8–128 Unicode characters without control characters. Preserved verbatim, including leading/trailing spaces; never trimmed. An empty value supplies no password.",
-            "anyOf": [{"const": ""}, {"minLength": 8}]
+            "description": "8–128 Unicode characters, no controls; whitespace preserved. Mutually exclusive with nonempty ssh_public_keys."
           },
           "ssh_public_keys": {
             "type": "array",
+            "writeOnly": true,
             "maxItems": 10,
-            "items": {"type": "string", "minLength": 1, "maxLength": 8192},
-            "description": "Up to 10 single-line OpenSSH public keys, each at most 8192 UTF-8 bytes. Ed25519, RSA at least 2048 bits, ECDSA nistp256/384/521 only. No CR/LF, control characters, private keys, authorized_keys options or scripts. Key comments are discarded. Key-only root uses an unusable password, not a locked account; SSH password authentication is disabled."
+            "items": {"type": "string", "maxLength": 8192},
+            "description": "At most 10 entries before dedup, each <=8192 UTF-8 bytes including comments. Ed25519, RSA >=2048 bits, ECDSA P-256/384/521. Reject private keys, certificates, options and malformed keys; strip comments and deduplicate canonical keys. Mutually exclusive with nonempty root_password."
           }
         },
-        "anyOf": [
-          {"required": ["root_password"], "properties": {"root_password": {"minLength": 8}}},
-          {"required": ["ssh_public_keys"], "properties": {"ssh_public_keys": {"minItems": 1}}}
+        "oneOf": [
+          {"required": ["root_password"], "properties": {"root_password": {"minLength": 8}, "ssh_public_keys": {"maxItems": 0}}},
+          {"required": ["ssh_public_keys"], "properties": {"ssh_public_keys": {"minItems": 1}, "root_password": {"maxLength": 0}}}
         ]
       },
       "CustomConfig": {
@@ -11661,7 +11661,7 @@
         "type": "object",
         "properties": {
           "stage": {"type": "string", "enum": ["login.cloud-ready", "init.cloud-ready", "init.template"]},
-          "reason": {"type": "string", "enum": ["cloud_init_degraded", "cloud_init_errors", "required_tool_missing", "ssh_host_key_generation_missing_tool", "completion_marker_missing", "script_exit_nonzero", "command_terminated", "timeout", "result_unknown", "diagnostic_unavailable", "template_hash_mismatch", "template_status_mismatch", "template_timeout_invalid"]},
+          "reason": {"type": "string", "enum": ["cloud_init_degraded", "cloud_init_errors", "required_tool_missing", "ssh_host_key_generation_missing_tool", "completion_marker_missing", "root_password_not_ready", "script_exit_nonzero", "command_terminated", "timeout", "result_unknown", "diagnostic_unavailable", "template_hash_mismatch", "template_status_mismatch", "template_timeout_invalid"]},
           "cloud_init_status": {"type": "string", "enum": ["not_run", "running", "done", "degraded", "error", "disabled", "unknown"]},
           "exit_code": {"type": "integer", "minimum": 0, "maximum": 255},
           "action": {"type": "string", "description": "Fixed safe Chinese administrator guidance; never raw script output."},
@@ -11677,7 +11677,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Initialization codes: initialization_cloud_init_degraded, initialization_cloud_init_failed, initialization_tool_missing, initialization_marker_missing, initialization_script_failed, initialization_timeout, initialization_result_unknown, initialization_diagnostic_unavailable. Task status remains unknown when outcome/resource release is uncertain."
+            "description": "Initialization codes: initialization_cloud_init_degraded, initialization_cloud_init_failed, initialization_tool_missing, initialization_marker_missing, initialization_password_not_ready, initialization_script_failed, initialization_timeout, initialization_result_unknown, initialization_diagnostic_unavailable. Task status remains unknown when outcome/resource release is uncertain."
           },
           "message": {
             "type": "string"
@@ -12756,6 +12756,7 @@
       },
       "CreditPolicy": {
         "type": "object",
+        "description": "Confirmed stop suspends CPU, memory, storage, and GPU charges. GPU bindings and capacity reservations remain until an explicit release; confirmed running resumes all applicable charges. Failed stop requests and unknown state do not imply stopped. Historical charges remain; undelivered-creation refunds are unchanged.",
         "properties": {
           "daily_allowance_pt": {
             "type": "string",
@@ -12798,14 +12799,15 @@
           },
           "storage_charge_mode": {
             "type": "string",
+            "description": "running_only charges disk only while running; free never charges disk. Confirmed stop is free for every resource, regardless of retained capacity.",
             "enum": [
-              "retained",
               "running_only",
               "free"
             ]
           },
           "offline_charge_mode": {
             "type": "string",
+            "description": "Controls unconfirmed offline intervals only. Node offline is not instance stopped and does not override confirmed-stop free billing.",
             "enum": [
               "defer",
               "continue"

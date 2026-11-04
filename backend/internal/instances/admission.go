@@ -226,23 +226,19 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 	if templateID != 0 {
 		r["init_template_version_id"] = templateID
 	}
-	creation := platform.Row{"gpu_count": spec.GPU.Count, "login_mode": "none", "cloud_init": login != nil}
+	creation := platform.Row{"gpu_count": spec.GPU.Count, "login_mode": "none", "cloud_init": platform.Bool(image["cloud_init"]), "cloud_init_capable": native == nil && platform.Bool(image["cloud_init"])}
 	if login != nil {
-		mode := "ssh_key"
-		if login.RootPassword != "" {
-			mode = "password"
-			if len(login.SSHPublicKeys) > 0 {
-				mode = "password_and_ssh_key"
-			}
+		creation["login_mode"] = "password"
+		if len(login.SSHPublicKeys) != 0 {
+			creation["login_mode"] = "ssh_key"
 		}
-		creation["login_mode"] = mode
 	}
 	if templateID != 0 {
 		template, err := platform.Get(db, "init_template_versions", templateID, false)
 		if err != nil {
 			return nil, err
 		}
-		creation["cloud_init"] = login != nil || platform.Text(template["phase"]) == "cloud_init"
+		creation["cloud_init"] = platform.Bool(image["cloud_init"]) || platform.Text(template["phase"]) == "cloud_init"
 	}
 	r["incus_config_snapshot"] = jsonText(platform.Row{"creation": creation})
 	if native != nil {

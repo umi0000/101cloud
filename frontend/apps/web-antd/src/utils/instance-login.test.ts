@@ -1,41 +1,17 @@
 import type { Image, NetworkOption } from '#/api/types';
 
-import { Buffer } from 'node:buffer';
-import { generateKeyPairSync, webcrypto } from 'node:crypto';
+import { describe, expect, it } from 'vitest';
 
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { emptyLoginDraft, imageSupportsLogin, validateLoginDraft } from './instance-login';
 
-import { emptyLoginDraft, imageSupportsLogin, parsePublicKey, validateLoginDraft } from './instance-login';
+const passwordDraft = (password: string) => ({ ...emptyLoginDraft(), rootPassword: password, rootPasswordConfirmation: password });
 
-function wire(...fields: Uint8Array[]): string {
-  return Buffer.concat(fields.map((field) => {
-    const length = Buffer.alloc(4);
-    length.writeUInt32BE(field.length);
-    return Buffer.concat([length, field]);
-  })).toString('base64');
+function wireKey(type: string, ...fields: string[]) {
+  const blob = [type, ...fields].map((field) => String.fromCharCode(field.length >>> 24, (field.length >>> 16) & 255, (field.length >>> 8) & 255, field.length & 255) + field).join('');
+  return `${type} ${btoa(blob)}`;
 }
-
-function publicKey(type: 'ec' | 'ed25519' | 'rsa', size = 2048): string {
-  if (type === 'ed25519') {
-    const key = generateKeyPairSync('ed25519').publicKey.export({ format: 'jwk' });
-    return `ssh-ed25519 ${wire(Buffer.from('ssh-ed25519'), Buffer.from(key.x!, 'base64url'))}`;
-  }
-  if (type === 'rsa') {
-    const key = generateKeyPairSync('rsa', { modulusLength: size }).publicKey.export({ format: 'jwk' });
-    const modulus = Buffer.from(key.n!, 'base64url');
-    return `ssh-rsa ${wire(Buffer.from('ssh-rsa'), Buffer.from(key.e!, 'base64url'), Buffer.concat([Buffer.from([0]), modulus]))}`;
-  }
-  const bits = size === 384 || size === 521 ? size : 256;
-  const curves: Record<number, string> = { 256: 'prime256v1', 384: 'secp384r1', 521: 'secp521r1' };
-  const key = generateKeyPairSync('ec', { namedCurve: curves[bits]! }).publicKey.export({ format: 'jwk' });
-  const typeName = `ecdsa-sha2-nistp${bits}`;
-  return `${typeName} ${wire(Buffer.from(typeName), Buffer.from(`nistp${bits}`), Buffer.concat([Buffer.from([4]), Buffer.from(key.x!, 'base64url'), Buffer.from(key.y!, 'base64url')]))}`;
-}
-
-beforeAll(() => vi.stubGlobal('crypto', webcrypto));
-afterAll(() => vi.unstubAllGlobals());
-
-const passwordDraft = (password: string) => ({ ...emptyLoginDraft(), mode: 'password' as const, rootPassword: password, rootPasswordConfirmation: password });
+const ed25519 = wireKey('ssh-ed25519', String.fromCharCode(...'d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a'.match(/../gu)!.map((byte) => Number.parseInt(byte, 16))));
+const keyDraft = (sshPublicKeyText: string) => ({ ...emptyLoginDraft(), mode: 'ssh-key' as const, sshPublicKeyText });
 
 describe('instance root login validation', () => {
   it('requires credentials and confirms passwords without trimming spaces', async () => {
@@ -44,7 +20,7 @@ describe('instance root login validation', () => {
     const result = await validateLoginDraft(passwordDraft(value));
     expect(result.error).toBe('');
     expect(result.login).toEqual({ root_password: value });
-    expect(result.summary).toEqual({ passwordSet: true, sshKeys: [] });
+    expect(result.summary).toEqual({ mode: 'password', passwordSet: true });
     expect((await validateLoginDraft({ ...passwordDraft(value), rootPasswordConfirmation: value.trim() })).error).not.toBe('');
   });
 
@@ -56,53 +32,62 @@ describe('instance root login validation', () => {
     }
   });
 
-  it('parses actual ed25519/RSA/ECDSA keys and deduplicates key material, not comments', async () => {
-    const ed = publicKey('ed25519');
-    const result = await validateLoginDraft({ ...emptyLoginDraft(), sshPublicKeys: `${ed} first\r\n${ed} second\n${publicKey('rsa')}\n${publicKey('ec')}` });
+  it('requires a matching confirmation and exposes only selected-mode metadata', async () => {
+    const password = 'root-password🙂';
+    const result = await validateLoginDraft(passwordDraft(password));
+    expect(Object.keys(result.login!)).toEqual(['root_password']);
+    expect(JSON.stringify(result.summary)).not.toContain(password);
+    expect(result.summary).toEqual({ mode: 'password', passwordSet: true });
+    expect((await validateLoginDraft({ ...passwordDraft(password), rootPasswordConfirmation: '' })).error).not.toBe('');
+    expect((await validateLoginDraft({ ...passwordDraft(''), rootPasswordConfirmation: password })).error).not.toBe('');
+  });
+
+  it('requires keys only in SSH mode, strips comments and deduplicates canonical keys', async () => {
+    expect((await validateLoginDraft(keyDraft(' \n\r\n '))).error).not.toBe('');
+    const result = await validateLoginDraft(keyDraft(`  ${ed25519} laptop\r\n\n${ed25519} other comment`));
     expect(result.error).toBe('');
-    expect(result.login?.ssh_public_keys).toHaveLength(3);
-    expect(result.summary?.sshKeys.map(({ type }) => type)).toEqual(['ssh-ed25519', 'ssh-rsa', 'ecdsa-sha2-nistp256']);
-    for (const key of result.summary!.sshKeys) expect(key.fingerprint).toMatch(/^SHA256:[A-Za-z0-9+/]{43}$/);
-    expect(JSON.stringify(result.summary)).not.toContain(ed);
+    expect(result.login).toEqual({ ssh_public_keys: [ed25519] });
+    expect(result.summary).toEqual({ mode: 'ssh-key', sshKeyCount: 1 });
+    expect(JSON.stringify(result.summary)).not.toContain(ed25519);
   });
 
-  it.each([256, 384, 521])('accepts actual ECDSA nistp%s keys', async (size) => {
-    const key = await parsePublicKey(publicKey('ec', size));
-    expect(key?.type).toBe(`ecdsa-sha2-nistp${size}`);
+  it('ignores inactive fields and never submits both credentials', async () => {
+    const password = 'root-password🙂';
+    expect((await validateLoginDraft({ ...passwordDraft(password), sshPublicKeyText: 'invalid inactive key' })).login).toEqual({ root_password: password });
+    expect((await validateLoginDraft({ ...keyDraft(ed25519), rootPassword: 'invalid', rootPasswordConfirmation: 'different' })).login).toEqual({ ssh_public_keys: [ed25519] });
+    expect(emptyLoginDraft().mode).toBe('password');
   });
 
-  it('normalizes whitespace, comments and optional base64 padding', async () => {
-    const source = publicKey('ec', 384);
-    const parsed = await parsePublicKey(`  ${source.replace(' ', '\t').replace(/=+$/, '')} workstation  `);
-    expect(parsed?.key).toBe(source);
-    expect(parsed?.fingerprint).toBe((await parsePublicKey(source))?.fingerprint);
-  });
-
-  it('rejects private keys, options, scripts, weak RSA and malformed wire data', async () => {
-    const ed = publicKey('ed25519');
-    for (const value of ['-----BEGIN OPENSSH PRIVATE KEY-----', `command="id" ${ed}`, `from="127.0.0.1" ${ed}`, '#!/bin/sh\nid', publicKey('rsa', 1024), 'ssh-ed25519 AAAA', ed.replace('ssh-ed25519 ', 'ssh-rsa ')]) {
-      expect((await validateLoginDraft({ ...emptyLoginDraft(), sshPublicKeys: value })).error).not.toBe('');
+  it('checks supported key wire shapes while leaving cryptographic validity to the server', async () => {
+    const rsa = wireKey('ssh-rsa', '\x01\x00\x01', `\0\x80${'\x01'.repeat(255)}`);
+    for (const key of [ed25519, rsa, ...(['nistp256', 'nistp384', 'nistp521'] as const).map((curve) => wireKey(`ecdsa-sha2-${curve}`, curve, `\x04${'\x01'.repeat(curve === 'nistp256' ? 64 : curve === 'nistp384' ? 96 : 132)}`))]) {
+      expect((await validateLoginDraft(keyDraft(key))).error).toBe('');
     }
-    const decoded = Buffer.from(ed.split(' ')[1]!, 'base64');
-    expect(await parsePublicKey(`ssh-ed25519 ${Buffer.concat([decoded, Buffer.from([0])]).toString('base64')}`)).toBeNull();
   });
 
-  it('enforces raw line byte/count limits before deduplication', async () => {
-    const ed = publicKey('ed25519');
-    const keyDraft = (sshPublicKeys: string) => ({ ...emptyLoginDraft(), sshPublicKeys });
-    expect((await validateLoginDraft(keyDraft(Array.from({ length: 11 }, () => ed).join('\n')))).error).not.toBe('');
-    expect((await validateLoginDraft(keyDraft(`${ed} ${'中'.repeat(3000)}`))).error).not.toBe('');
-    const max = `${ed} ${'a'.repeat(8192 - ed.length - 1)}`;
-    expect((await validateLoginDraft(keyDraft(max))).error).toBe('');
-    expect((await validateLoginDraft(keyDraft(`${max}a`))).error).not.toBe('');
+  it('rejects private keys, options, certificates, mismatched/truncated/trailing blobs, weak RSA and unsupported types without echoing input', async () => {
+    const invalid = [
+      '-----BEGIN OPENSSH PRIVATE KEY-----', `command="false" ${ed25519}`, `no-agent-forwarding ${ed25519}`,
+      ed25519.replace('ssh-ed25519 ', 'ssh-ed25519-cert-v01@openssh.com '), 'garbage-sensitive-key', 'ssh-ed25519 not_base64',
+      ed25519.replace('ssh-ed25519 ', 'ssh-rsa '), wireKey('ssh-ed25519', 'short'), wireKey('ssh-ed25519', 'a'.repeat(32), 'extra'),
+      wireKey('ssh-rsa', '\x01\x00\x01', `\0\x80${'\x01'.repeat(127)}`), wireKey('ssh-dss', 'unsupported'),
+      wireKey('ecdsa-sha2-nistp256', 'nistp384', `\x04${'x'.repeat(64)}`), `${ed25519} private\u0000comment`,
+    ];
+    for (const key of invalid) {
+      const result = await validateLoginDraft(keyDraft(key));
+      expect(result.error).not.toBe('');
+      expect(result.login).toBeUndefined();
+      expect(result.error).not.toContain(key);
+    }
   });
 
-  it('sends only the selected mode even if an inactive field contains old input', async () => {
-    const result = await validateLoginDraft({ ...passwordDraft('password1'), sshPublicKeys: publicKey('ed25519') });
-    expect(result.login).toEqual({ root_password: 'password1' });
-    const keys = await validateLoginDraft({ ...passwordDraft('password1'), mode: 'ssh-key', sshPublicKeys: publicKey('ed25519') });
-    expect(keys.login?.root_password).toBeUndefined();
-    expect(keys.summary?.passwordSet).toBe(false);
+  it('enforces ten entries before deduplication and 8192 UTF-8 bytes per entry including comments', async () => {
+    expect((await validateLoginDraft(keyDraft(Array.from({ length: 10 }, () => ed25519).join('\n')))).summary).toEqual({ mode: 'ssh-key', sshKeyCount: 1 });
+    expect((await validateLoginDraft(keyDraft(Array.from({ length: 11 }, () => ed25519).join('\n')))).error).not.toBe('');
+    const remaining = 8192 - new TextEncoder().encode(`${ed25519} `).length;
+    const exact = `${ed25519} ${'密'.repeat(Math.floor(remaining / 3))}${'x'.repeat(remaining % 3)}`;
+    expect((await validateLoginDraft(keyDraft(exact))).error).toBe('');
+    expect((await validateLoginDraft(keyDraft(`${exact}x`))).error).not.toBe('');
   });
 });
 

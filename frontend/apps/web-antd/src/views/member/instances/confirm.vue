@@ -163,8 +163,8 @@ onBeforeUnmount(() => {
               <div><dt>套餐</dt><dd>{{ order.plan.name }}</dd></div>
               <div><dt>系统镜像</dt><dd class="flex items-start gap-3"><OsIcon :name="order.image.os_name" class="shrink-0 text-[28px]" /><span><strong class="block">{{ order.image.os_name || 'Linux' }} {{ order.image.os_release }}</strong><span class="text-muted-foreground block text-xs">{{ order.image.name }} · {{ order.image.architecture }}</span></span></dd></div>
               <div><dt>登录用户</dt><dd>root</dd></div>
-              <div><dt>登录方式</dt><dd><span v-if="store.loginSummary?.passwordSet">root 密码已设置（不展示）</span><span v-else>SSH 公钥</span><span class="text-muted-foreground mt-1 block text-xs">由 cloud-init 下发；不会自动安装 OpenSSH。</span></dd></div>
-              <div v-if="store.loginSummary?.sshKeys.length"><dt>SSH 公钥</dt><dd><ul class="m-0 list-none space-y-2 p-0"><li v-for="key in store.loginSummary.sshKeys" :key="key.fingerprint"><span class="block text-xs">{{ key.type }}</span><span class="font-mono text-xs">{{ key.fingerprint }}</span></li></ul><span class="text-muted-foreground mt-1 block text-xs">仅展示类型与 SHA-256 指纹，不展示公钥原文；仅公钥模式禁用 SSH 密码认证。</span></dd></div>
+              <div v-if="store.loginSummary?.mode === 'password'"><dt>root 密码</dt><dd data-testid="root-password-summary">••••••••（已设置）</dd></div>
+              <div v-else-if="store.loginSummary?.mode === 'ssh-key'"><dt>SSH 公钥</dt><dd data-testid="ssh-public-key-summary">{{ store.loginSummary.sshKeyCount }} 条</dd></div>
               <div><dt>CPU</dt><dd>{{ order.spec.resources.vcpus }} vCPU</dd></div>
               <div><dt>内存</dt><dd>{{ formatBytes(order.spec.resources.memory_bytes) }}</dd></div>
               <div><dt>磁盘</dt><dd>{{ formatBytes(order.spec.resources.disk_bytes) }}</dd></div>

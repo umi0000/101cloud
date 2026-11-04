@@ -78,6 +78,10 @@ func AdmitInstance(ctx context.Context, db *gorm.DB, instance row, action string
 }
 
 func InstanceUsage(ctx context.Context, db *gorm.DB, instance row, event string, allocationIDs []uint64) error {
+	return instanceUsageAt(ctx, db, instance, event, allocationIDs, now())
+}
+
+func instanceUsageAt(ctx context.Context, db *gorm.DB, instance row, event string, allocationIDs []uint64, t time.Time) error {
 	if !in(event, "disk_reserved", "running", "stopped", "resize_stopped", "deleted", "resize", "resize_reserved", "resize_running_reserved", "gpu_reserved", "gpu_attached", "gpu_released") {
 		return invalid("unsupported usage lifecycle event")
 	}
@@ -95,7 +99,6 @@ func InstanceUsage(ctx context.Context, db *gorm.DB, instance row, event string,
 	if e != nil {
 		return e
 	}
-	t := now()
 	iid := platform.Uint(instance["id"])
 	if event == "resize_reserved" || event == "resize_running_reserved" {
 		ss, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}), "usage_sessions", "instance_id = ? AND status = 'active' AND charge_kind IN ('base_compute','storage')", iid)
@@ -130,9 +133,6 @@ func InstanceUsage(ctx context.Context, db *gorm.DB, instance row, event string,
 		}
 		for _, s := range ss {
 			kind := platform.Text(s["charge_kind"])
-			if in(event, "stopped", "resize_stopped") && (kind == "gpu" || (kind == "storage" && platform.Text(p["storage_charge_mode"]) == "retained")) {
-				continue
-			}
 			if event == "resize" && kind == "gpu" {
 				continue
 			}
@@ -140,28 +140,35 @@ func InstanceUsage(ctx context.Context, db *gorm.DB, instance row, event string,
 				return e
 			}
 		}
-		if event == "resize_stopped" {
-			// STOP settlement closes the old compute snapshot and reserves the
-			// replacement held session in one account-locked transaction.
-			return beginSession(db, ac, p, instance, "base_compute", nil, "held", t)
-		}
 		if event != "resize" {
 			return nil
 		}
 	}
 	if in(event, "disk_reserved", "running", "resize") {
-		storage := platform.Text(p["storage_charge_mode"])
-		if storage == "retained" || (storage == "running_only" && (event == "running" || platform.Text(instance["observed_state"]) == "running")) {
-			if e = beginSession(db, ac, p, instance, "storage", nil, "running", t); e != nil {
+		// Admission holds funds, but neither a disk reservation nor a resize
+		// request proves that the guest is running.
+		state := "held"
+		if event == "running" {
+			state = "running"
+		}
+		if platform.Text(p["storage_charge_mode"]) != "free" {
+			if e = beginSession(db, ac, p, instance, "storage", nil, state, t); e != nil {
 				return e
 			}
 		}
-		state := "held"
-		if event == "running" || platform.Text(instance["observed_state"]) == "running" {
-			state = "running"
-		}
 		if e = beginSession(db, ac, p, instance, "base_compute", nil, state, t); e != nil {
 			return e
+		}
+		if event == "running" {
+			gs, err := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}), "gpu_allocations", "instance_id = ? AND status = 'active' AND configured = TRUE", iid)
+			if err != nil {
+				return err
+			}
+			for _, g := range gs {
+				if e = beginSession(db, ac, p, instance, "gpu", g, "running", t); e != nil {
+					return e
+				}
+			}
 		}
 	}
 	if in(event, "gpu_reserved", "gpu_attached", "gpu_released") {
@@ -186,6 +193,16 @@ func InstanceUsage(ctx context.Context, db *gorm.DB, instance row, event string,
 			} else {
 				state := "held"
 				if event == "gpu_attached" {
+					current, err := platform.Get(db.Clauses(clause.Locking{Strength: "SHARE"}), "instances", iid, false)
+					if err != nil {
+						return err
+					}
+					if !freshUsageObservation(current, t) || platform.Text(current["observed_state"]) != "running" {
+						continue
+					}
+					if platform.Text(g["status"]) != "active" || !platform.Bool(g["configured"]) {
+						continue
+					}
 					state = "running"
 				}
 				if e = beginSession(db, ac, p, instance, "gpu", g, state, t); e != nil {
@@ -341,7 +358,7 @@ func releaseReservations(db *gorm.DB, s row, t time.Time) error {
 	// A deferred chunk must not release the old owner's funds for new usage,
 	// especially once the underlying bucket has expired.
 	var unpaid int64
-	if e := db.Clauses(clause.Locking{Strength: "UPDATE"}).Table("usage_charges").Where("session_id=? AND status='insufficient'", s["id"]).Count(&unpaid).Error; e != nil {
+	if e := db.Clauses(clause.Locking{Strength: "UPDATE"}).Table("usage_charges").Where("session_id=? AND status IN ('pending','insufficient') AND expected_pt>settled_pt", s["id"]).Count(&unpaid).Error; e != nil {
 		return e
 	}
 	if unpaid > 0 {
@@ -372,7 +389,7 @@ func releaseReservation(db *gorm.DB, r row, t time.Time) error {
 }
 
 func releaseEndedReservations(db *gorm.DB, ac row, t time.Time) error {
-	rs, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("r.id").Limit(settlementChunkSize), "credit_reservations r", "r.account_id=? AND r.status='held' AND EXISTS (SELECT 1 FROM usage_sessions s WHERE s.id=r.session_id AND s.status='ended') AND NOT EXISTS (SELECT 1 FROM usage_charges c WHERE c.session_id=r.session_id AND c.status='insufficient')", ac["id"])
+	rs, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("r.id").Limit(settlementChunkSize), "credit_reservations r", "r.account_id=? AND r.status='held' AND EXISTS (SELECT 1 FROM usage_sessions s WHERE s.id=r.session_id AND s.status='ended') AND NOT EXISTS (SELECT 1 FROM usage_charges c WHERE c.session_id=r.session_id AND c.status IN ('pending','insufficient') AND c.expected_pt>c.settled_pt)", ac["id"])
 	if e != nil {
 		return e
 	}
@@ -631,6 +648,10 @@ func settleSession(db *gorm.DB, ac, p, s row, t time.Time) error {
 	return nil
 }
 func endSession(db *gorm.DB, ac, p, s row, t time.Time) error {
+	// Never rewrite or refund an interval that was settled before cutover.
+	if last := stamp(s["last_settled_at"]); last.After(t) {
+		t = last
+	}
 	if e := settleSession(db, ac, p, s, t); e != nil {
 		return e
 	}
@@ -738,12 +759,90 @@ func expireBuckets(db *gorm.DB, ac row, t time.Time) error {
 	}
 	return nil
 }
+
+// Only recent, non-future observations may change metering. A node going
+// offline is not evidence that its guests stopped.
+func freshUsageObservation(instance row, at time.Time) bool {
+	observed := stamp(instance["observed_at"])
+	return !observed.IsZero() && !observed.After(at) && at.Sub(observed) <= time.Minute
+}
+
+func reconcileInstanceUsage(ctx context.Context, db *gorm.DB, instance row, t time.Time) error {
+	if instance["deleted_at"] != nil || instance["creation_failed_at"] != nil || !freshUsageObservation(instance, t) {
+		return nil
+	}
+	state := platform.Text(instance["observed_state"])
+	if state != "running" && state != "stopped" {
+		return nil
+	}
+	var online int64
+	if err := db.Table("nodes").Where("id=? AND health='online'", instance["node_id"]).Count(&online).Error; err != nil {
+		return err
+	}
+	if online == 0 {
+		return nil
+	}
+	observed := stamp(instance["observed_at"])
+	if state == "running" {
+		var last struct{ EndedAt *time.Time }
+		if err := db.Table("usage_sessions").Select("MAX(ended_at) ended_at").Where("instance_id=?", instance["id"]).Scan(&last).Error; err != nil {
+			return err
+		}
+		if last.EndedAt != nil && !observed.After(*last.EndedAt) {
+			return nil
+		}
+		return instanceUsageAt(ctx, db, instance, "running", nil, observed)
+	}
+	ac, err := usageAccount(db, instance)
+	if err != nil || ac == nil {
+		return err
+	}
+	p, err := instanceCreditPolicy(db, instance)
+	if err != nil {
+		return err
+	}
+	sessions, err := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}), "usage_sessions", "instance_id=? AND status='active' AND metering_state<>'held'", instance["id"])
+	if err != nil {
+		return err
+	}
+	for _, session := range sessions {
+		if observed.Before(stamp(session["started_at"])) {
+			continue
+		}
+		if err = endSession(db, ac, p, session, observed); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func settleAll(ctx context.Context, a *platform.App) error {
 	var ids []uint64
 	if e := a.DB.WithContext(ctx).Table("credit_accounts").Where("status <> 'closed'").Order("id").Pluck("id", &ids).Error; e != nil {
 		return e
 	}
 	for _, id := range ids {
+		var instances []uint64
+		if e := a.DB.WithContext(ctx).Table("instances").Where("user_id=(SELECT user_id FROM credit_accounts WHERE id=?) AND deleted_at IS NULL AND creation_failed_at IS NULL", id).Order("id").Pluck("id", &instances).Error; e != nil {
+			return e
+		}
+		for _, instanceID := range instances {
+			if err := refreshUsageObservation(ctx, a, instanceID); err != nil {
+				return err
+			}
+			if e := a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+				if _, err := platform.Get(db, "credit_accounts", id, true); err != nil {
+					return err
+				}
+				instance, err := platform.Get(db, "instances", instanceID, true)
+				if err != nil {
+					return err
+				}
+				return reconcileInstanceUsage(ctx, db, instance, now())
+			}); e != nil {
+				return e
+			}
+		}
 		var sessions []uint64
 		if e := a.DB.WithContext(ctx).Table("usage_sessions").Where("account_id=? AND status='active'", id).Order("id").Pluck("id", &sessions).Error; e != nil {
 			return e
@@ -773,6 +872,22 @@ func settleAll(ctx context.Context, a *platform.App) error {
 					return err
 				}
 				t := now()
+				if platform.Text(s["metering_state"]) == "held" {
+					return nil
+				}
+				instance, err := platform.Get(db.Clauses(clause.Locking{Strength: "SHARE"}), "instances", platform.Uint(s["instance_id"]), false)
+				if err != nil {
+					return err
+				}
+				if freshUsageObservation(instance, t) && platform.Text(instance["observed_state"]) == "stopped" && !stamp(instance["observed_at"]).Before(stamp(s["started_at"])) {
+					var online int64
+					if err = db.Table("nodes").Where("id=? AND health='online'", instance["node_id"]).Count(&online).Error; err != nil {
+						return err
+					}
+					if online > 0 {
+						return endSession(db, ac, p, s, stamp(instance["observed_at"]))
+					}
+				}
 				if err = settleSession(db, ac, p, s, t); err != nil {
 					return err
 				}
@@ -787,6 +902,9 @@ func settleAll(ctx context.Context, a *platform.App) error {
 				return err
 			}
 			t := now()
+			if err = settleDeferredCharges(db, ac, t); err != nil {
+				return err
+			}
 			if err = expireBuckets(db, ac, t); err != nil {
 				return err
 			}
@@ -799,6 +917,21 @@ func settleAll(ctx context.Context, a *platform.App) error {
 			return detectExhaustion(db, ac, t)
 		}); e != nil {
 			return e
+		}
+	}
+	return nil
+}
+
+// Offline deferral keeps the original reservation owner, even after STOP or
+// bucket expiry. Once its node is online, make the normal payment attempt.
+func settleDeferredCharges(db *gorm.DB, ac row, t time.Time) error {
+	charges, err := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("c.id").Limit(settlementChunkSize), "usage_charges c", "c.account_id=? AND c.status='pending' AND JSON_EXTRACT(c.calculation_snapshot,'$.offline_deferred')=true AND EXISTS (SELECT 1 FROM usage_sessions s JOIN nodes n ON n.id=s.node_id WHERE s.id=c.session_id AND n.health='online')", ac["id"])
+	if err != nil {
+		return err
+	}
+	for _, charge := range charges {
+		if err = payCharge(db, ac, row{"id": charge["session_id"]}, charge, t); err != nil {
+			return err
 		}
 	}
 	return nil

@@ -94,7 +94,7 @@ func TestMoneyPrecisionAndSignValidation(t *testing.T) {
 func validCreditPolicy() map[string]any {
 	return map[string]any{
 		"daily_allowance_pt": "7.000001", "timezone": "Asia/Shanghai", "grant_time": "06:30:00", "daily_validity_seconds": 86400, "billing_window_seconds": 60, "shutdown_grace_seconds": 600,
-		"grace_charge_mode": "waived", "restore_action": "cancel_pending_stop", "storage_charge_mode": "retained", "offline_charge_mode": "defer",
+		"grace_charge_mode": "waived", "restore_action": "cancel_pending_stop", "storage_charge_mode": "running_only", "offline_charge_mode": "defer",
 	}
 }
 func encodedPolicy(t *testing.T, p map[string]any) json.RawMessage {
@@ -129,6 +129,7 @@ func TestPolicyValidationRejectsUnconfirmedEconomics(t *testing.T) {
 	}{
 		{"zero_grace", "shutdown_grace_seconds", 0}, {"excessive_grace", "shutdown_grace_seconds", 86401}, {"invalid_timezone", "timezone", "Unknown/Nowhere"}, {"bad_clock", "grant_time", "24:00:00"}, {"zero_validity", "daily_validity_seconds", 0}, {"negative_window", "billing_window_seconds", -1},
 		{"numeric_money", "daily_allowance_pt", 7}, {"excess_precision", "daily_allowance_pt", "0.0000001"}, {"negative_price", "daily_allowance_pt", "-1"}, {"unknown_mode", "offline_charge_mode", "guess"}, {"unknown_key", "allow_negative_balance", true},
+		{"retained_storage", "storage_charge_mode", "retained"}, {"unknown_storage", "storage_charge_mode", "guess"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -141,7 +142,7 @@ func TestPolicyValidationRejectsUnconfirmedEconomics(t *testing.T) {
 	}
 	for _, grace := range []string{"waived", "accrue"} {
 		for _, restore := range []string{"cancel_pending_stop", "keep_deadline"} {
-			for _, storage := range []string{"retained", "running_only", "free"} {
+			for _, storage := range []string{"running_only", "free"} {
 				for _, offline := range []string{"defer", "continue"} {
 					p := validCreditPolicy()
 					p["grace_charge_mode"] = grace

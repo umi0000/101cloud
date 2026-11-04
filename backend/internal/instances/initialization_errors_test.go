@@ -26,6 +26,7 @@ func TestCloudInitDiagnosticClassification(t *testing.T) {
 		{name: "warning-with-tool-installed", status: "done", extended: "degraded done", warning: "Failed generating key type rsa", marker: true, code: "initialization_cloud_init_degraded", reason: "cloud_init_degraded"},
 		{name: "fatal-errors", status: "error", errors: true, marker: true, code: "initialization_cloud_init_failed", reason: "cloud_init_errors"},
 		{name: "marker-missing", status: "done", code: "initialization_marker_missing", reason: "completion_marker_missing"},
+		{name: "password-not-applied", status: "done", marker: true, code: "initialization_password_not_ready", reason: "root_password_not_ready"},
 		{name: "disabled", status: "disabled", code: "initialization_marker_missing", reason: "completion_marker_missing"},
 		{name: "not-started", status: "not started", code: "initialization_marker_missing", reason: "completion_marker_missing"},
 		{name: "cloud-init-missing", status: "unknown", missingCloud: true, code: "initialization_tool_missing", reason: "required_tool_missing"},

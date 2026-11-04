@@ -131,9 +131,9 @@ export const useInstanceOrderStore = defineStore('instance-order', () => {
       if (!identity.value || locked.value) return;
       loginDraft = {
         mode: value.mode,
-        rootPassword: value.mode === 'password' ? value.rootPassword : '',
-        rootPasswordConfirmation: value.mode === 'password' ? value.rootPasswordConfirmation : '',
-        sshPublicKeys: value.mode === 'ssh-key' ? value.sshPublicKeys : '',
+        rootPassword: value.rootPassword,
+        rootPasswordConfirmation: value.rootPasswordConfirmation,
+        sshPublicKeyText: value.sshPublicKeyText,
       };
     },
   });
