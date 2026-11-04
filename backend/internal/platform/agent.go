@@ -15,6 +15,7 @@ import (
 	"time"
 
 	agentclient "101cloud/hostagent/client"
+	"gorm.io/gorm"
 )
 
 func (a *App) CheckEndpoint(endpoint string) error {
@@ -88,6 +89,71 @@ func (a *App) Agent(ctx context.Context, nodeID uint64, method, path string, bod
 	return v, e
 }
 func (a *App) AgentConditional(ctx context.Context, nodeID uint64, method, path string, body any, etag string) (map[string]any, string, error) {
+	if dispatch, ok := ctx.Value(taskDispatchKey{}).(taskDispatch); ok && method != http.MethodGet && method != http.MethodHead {
+		var result map[string]any
+		var resultETag string
+		var requestErr error
+		err := a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+			var live uint64
+			if err := tx.Raw("SELECT id FROM tasks WHERE id=? AND lease_generation=? AND status='running' AND lease_until>? FOR UPDATE", dispatch.job.ID, dispatch.job.LeaseGeneration, a.Time()).Scan(&live).Error; err != nil {
+				return err
+			}
+			if live != dispatch.job.ID || nodeID != dispatch.job.NodeID {
+				return errors.New("lost task lease before native dispatch")
+			}
+			// Commit this evidence independently while the task row stays locked.
+			// If the process/SQL connection dies after HTTP submission, takeover
+			// must not confuse a lost operation ID with an unsent request.
+			intent := a.DB.WithContext(ctx).Table("task_steps").Where("task_id=? AND step_key=? AND attempt=?", dispatch.job.ID, dispatch.key, dispatch.job.LeaseGeneration).Update("result_redacted", gorm.Expr("JSON_SET(COALESCE(result_redacted, JSON_OBJECT()), '$.native_dispatch_started', true)"))
+			if intent.Error != nil {
+				return intent.Error
+			}
+			if intent.RowsAffected != 1 {
+				return errors.New("native dispatch omitted durable step intent")
+			}
+			result, resultETag, requestErr = a.agentConditional(ctx, nodeID, method, path, body, etag)
+			if operation := Text(result["operation"]); operation != "" {
+				ref, err := url.Parse(operation)
+				if err != nil || ref.IsAbs() || !strings.HasPrefix(ref.Path, "/1.0/operations/") {
+					return errors.New("invalid native operation reference")
+				}
+				if target, err := url.ParseRequestURI(path); err == nil && ref.Query().Get("project") == "" {
+					q := ref.Query()
+					q.Set("project", target.Query().Get("project"))
+					ref.RawQuery = q.Encode()
+				}
+				res := tx.Table("task_steps").Where("task_id=? AND step_key=? AND attempt=?", dispatch.job.ID, dispatch.key, dispatch.job.LeaseGeneration).Updates(Row{"operation_id": ref.String(), "status": "waiting", "node_id": nodeID, "project_name": ref.Query().Get("project")})
+				if res.Error != nil {
+					return res.Error
+				}
+				if res.RowsAffected != 1 {
+					return errors.New("native dispatch omitted durable step intent")
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			return result, resultETag, Unknown(err)
+		}
+		return result, resultETag, requestErr
+	}
+	return a.agentConditional(ctx, nodeID, method, path, body, etag)
+}
+
+// WithTaskDispatch fences the actual HTTP mutation, not its preparatory reads.
+// Takeover locks the same task row and therefore observes the returned operation
+// identity before it can revoke the worker. A lost response remains ambiguous.
+func WithTaskDispatch(ctx context.Context, job Job, key string) context.Context {
+	return context.WithValue(ctx, taskDispatchKey{}, taskDispatch{job, key})
+}
+
+type taskDispatchKey struct{}
+type taskDispatch struct {
+	job Job
+	key string
+}
+
+func (a *App) agentConditional(ctx context.Context, nodeID uint64, method, path string, body any, etag string) (map[string]any, string, error) {
 	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") || strings.ContainsAny(path, "\r\n\\") {
 		return nil, "", errors.New("invalid node API path")
 	}
@@ -133,6 +199,9 @@ func (a *App) AgentConditional(ctx context.Context, nodeID uint64, method, path 
 		return nil, "", E(503, "node_unavailable", "节点返回了无法识别的响应，请联系管理员检查节点状态。")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if resp.StatusCode == http.StatusNotFound && Text(out["type"]) == "error" && Uint(out["error_code"]) == http.StatusNotFound {
+			return out, resp.Header.Get("ETag"), E(404, "native_not_found", "Native resource is absent")
+		}
 		code := "node_unavailable"
 		status := 503
 		if resp.StatusCode == 409 || resp.StatusCode == 412 {

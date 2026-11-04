@@ -61,7 +61,7 @@ function openInitialization(taskId: string) {
       </div>
       <ErrorFeedback v-if="t.task" class="mt-2" :feedback="describeTaskError(t.task, t.requestId)" />
       <div v-if="t.task?.status === 'failed'" class="text-muted-foreground mt-2 text-xs">
-        任务已失败，不会自动重试。请先处理原因，再决定是否重新提交。
+        {{ t.task.creation_cleanup ? '任务已失败，不会自动重新创建。' : '任务已失败，不会自动重试。请先处理原因，再决定是否重新提交。' }}
       </div>
       <Button v-if="!auth.isAdmin && t.task?.type === 'instance.create'" class="mt-3" size="small" @click="openInitialization(t.taskId)">查看初始化</Button>
       <div v-if="t.task?.steps?.length" class="mt-2 space-y-1">

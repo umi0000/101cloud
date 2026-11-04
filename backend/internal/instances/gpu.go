@@ -129,6 +129,9 @@ func queueGPU(ctx context.Context, a *platform.App, db *gorm.DB, r platform.Row,
 	if e != nil {
 		return nil, e
 	}
+	if r["creation_failed_at"] != nil {
+		return nil, platform.E(404, "not_found", "Instance not found")
+	}
 	if platform.Text(r["image_type"]) != "container" {
 		return nil, conflict("unsupported_configuration", "GPU 操作仅支持容器实例。")
 	}
@@ -726,7 +729,7 @@ func configureGPU(ctx context.Context, a *platform.App, job platform.Job, r plat
 	if e = a.Step(ctx, job, "gpu.configure", "", "running"); e != nil {
 		return e
 	}
-	result, e := a.Agent(ctx, job.NodeID, "PUT", "/agent/v1/instances/"+url.PathEscape(platform.Text(r["incus_name"]))+"/gpu?project="+url.QueryEscape(platform.Text(r["project_name"])), platform.Row{"gpu_uuids": want, "allow_live": allowLive})
+	result, e := a.Agent(platform.WithTaskDispatch(ctx, job, "gpu.configure"), job.NodeID, "PUT", "/agent/v1/instances/"+url.PathEscape(platform.Text(r["incus_name"]))+"/gpu?project="+url.QueryEscape(platform.Text(r["project_name"])), platform.Row{"gpu_uuids": want, "allow_live": allowLive})
 	if e != nil {
 		return platform.Unknown(e)
 	}

@@ -38,6 +38,11 @@ const clock = window.setInterval(() => { now.value = Date.now(); }, 1000);
 
 const state = computed(() => creationState(task.value));
 const failed = computed(() => state.value === 'failed' || state.value === 'unknown');
+const instanceName = computed(() => task.value?.creation_cleanup?.instance_name ?? instance.value?.name);
+const cleanupLabels = {
+  pending: '等待清理', cleaning: '正在清理', unknown: '回收结果待管理员核对', completed: '已完成清理',
+};
+const billingLabels = { pending: '等待处理', refunded: '已完成冲正、清欠与预留释放' };
 watch(failed, (value) => { if (!value) failureOpen.value = false; });
 const active = computed(() => !error.value && !denied.value && state.value === 'active');
 const canEnter = computed(() => !error.value && !summaryError.value && canEnterCreatedInstance(task.value, instance.value, identity.value));
@@ -107,7 +112,8 @@ async function load() {
     }
     task.value = response.data;
     error.value = null;
-    if (!response.data.instance_id) {
+    // 失败实例已从成员 API 隐藏；只使用任务提供的安全名称，不再读取配置摘要。
+    if (response.data.creation_cleanup || !response.data.instance_id) {
       instance.value = null;
       summaryError.value = null;
       return;
@@ -153,7 +159,9 @@ watch([identity, taskId], () => {
   void load();
 }, { immediate: true, flush: 'sync' });
 usePolling(() => {
-  if (state.value === 'active' || state.value === 'unknown' || error.value || summaryError.value || state.value === 'pending') return load();
+  const cleanup = task.value?.creation_cleanup;
+  if ((cleanup && (cleanup.status !== 'completed' || cleanup.billing_status !== 'refunded'))
+    || state.value === 'active' || state.value === 'unknown' || error.value || summaryError.value || state.value === 'pending') return load();
 }, () => 3000);
 onBeforeUnmount(() => {
   disposed = true;
@@ -179,7 +187,7 @@ function enterInstance() {
           <OsIcon :name="instance?.image_os_name ?? ''" class="shrink-0 text-3xl" aria-hidden="true" />
           <div class="min-w-0 flex-1">
             <h1 id="initialization-heading">{{ heading }}</h1>
-            <p class="instance-name">{{ instance?.name ?? '实例信息待确认' }}</p>
+            <p class="instance-name">{{ instanceName ?? '实例信息待确认' }}</p>
           </div>
           <div class="elapsed"><span>耗时</span><strong>{{ elapsed }}</strong></div>
         </div>
@@ -212,8 +220,13 @@ function enterInstance() {
     </section>
     <Modal v-model:open="failureOpen" title="初始化失败信息" :footer="null" :width="560" destroy-on-close>
       <template v-if="failed">
-        <p class="mb-4 text-sm">任务 {{ taskId }}<template v-if="instance"> · {{ instance.name }}</template></p>
+        <p class="mb-4 text-sm">任务 {{ taskId }}<template v-if="instanceName"> · {{ instanceName }}</template></p>
         <p class="mb-4 text-sm">{{ state === 'unknown' ? '执行结果仍需管理员核对；不会自动重试，请勿重复创建或执行初始化。' : '任务已失败，不会自动重新创建。' }}</p>
+        <div v-if="task?.creation_cleanup" class="mb-4 space-y-2 text-sm">
+          <p>资源清理：{{ cleanupLabels[task.creation_cleanup.status] }}</p>
+          <p>退款状态：{{ billingLabels[task.creation_cleanup.billing_status] }}</p>
+          <p>未成功交付不收费，清理等待期间也不计费。</p>
+        </div>
         <ErrorFeedback v-for="(feedback, index) in taskFeedback" :key="index" class="mb-4" :feedback="feedback" />
         <p v-if="!taskFeedback.length" class="mb-4 text-sm">未记录具体失败原因，请联系管理员检查原任务。</p>
       </template>

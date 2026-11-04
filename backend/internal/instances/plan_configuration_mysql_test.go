@@ -44,6 +44,7 @@ type planConfigurationFixture struct {
 	requests      int
 	requestUserID uint64
 	reads         atomic.Int64
+	native        http.Handler
 }
 
 func newPlanConfigurationFixture(t *testing.T) *planConfigurationFixture {
@@ -94,6 +95,10 @@ func newPlanConfigurationFixture(t *testing.T) *planConfigurationFixture {
 	// Admission is allowed precisely one read-only native operation. Unexpected
 	// requests fail closed instead of returning permissive empty native evidence.
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if f.native != nil {
+			f.native.ServeHTTP(w, r)
+			return
+		}
 		if r.Method != http.MethodGet || r.URL.Path != "/1.0/storage-pools/default/resources" || r.URL.Query().Get("project") != "default" {
 			t.Errorf("unexpected admission Agent request: %s %s", r.Method, r.URL)
 			http.Error(w, "unexpected native operation", http.StatusInternalServerError)

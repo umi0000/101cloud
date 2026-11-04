@@ -25,6 +25,11 @@ func AdmitInstance(ctx context.Context, db *gorm.DB, instance row, action string
 	if e != nil {
 		return e
 	}
+	if failed, err := instanceCreationFailed(db.WithContext(ctx), instance); err != nil {
+		return err
+	} else if failed {
+		return conflict("invalid_state", "failed creations cannot admit paid resources")
+	}
 	if platform.Text(ac["status"]) != "active" {
 		return conflict("credit_exhausted", "credit account is not active")
 	}
@@ -72,59 +77,6 @@ func AdmitInstance(ctx context.Context, db *gorm.DB, instance row, action string
 	return nil
 }
 
-// CancelUnprovisionedInstance is only for a creation proven never dispatched by
-// the caller, with guest absence, instance ownership and a live task lease checked
-// in the same transaction. It releases held funds through the existing ledger;
-// it never settles, refunds, deletes history or treats a running guest as stopped.
-func CancelUnprovisionedInstance(ctx context.Context, db *gorm.DB, instance row) error {
-	db = db.WithContext(ctx)
-	ac, e := usageAccount(db, instance)
-	if e != nil || ac == nil {
-		return e
-	}
-	ss, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id"), "usage_sessions", "instance_id = ?", instance["id"])
-	if e != nil {
-		return e
-	}
-	for _, s := range ss {
-		if !pristineCreationSession(s, instance, ac) {
-			return conflict("invalid_state", "创建资源的计费记录已有使用证据，预留暂不释放；请管理员核对。")
-		}
-		var charged int64
-		if e = db.Table("usage_charges").Where("session_id = ?", s["id"]).Count(&charged).Error; e != nil {
-			return e
-		}
-		if charged != 0 {
-			return conflict("invalid_state", "创建资源已有计费区间，预留暂不释放；请管理员核对。")
-		}
-		rs, err := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}).Order("id"), "credit_reservations", "session_id = ?", s["id"])
-		if err != nil {
-			return err
-		}
-		for _, reservation := range rs {
-			if platform.Uint(reservation["account_id"]) != platform.Uint(ac["id"]) || platform.Text(reservation["status"]) != "held" || !dec(reservation["settled_pt"]).IsZero() || !dec(reservation["released_pt"]).IsZero() {
-				return conflict("invalid_state", "计费预留已有结算或释放记录，请管理员核对后处理。")
-			}
-		}
-	}
-	t := now()
-	for _, s := range ss {
-		if e = releaseReservations(db, s, t); e != nil {
-			return e
-		}
-		if e = db.Table("usage_sessions").Where("id = ?", s["id"]).Updates(row{"status": "ended", "ended_at": t, "revision": gorm.Expr("revision+1")}).Error; e != nil {
-			return e
-		}
-	}
-	return nil
-}
-
-func pristineCreationSession(s, instance, ac row) bool {
-	kind, state := platform.Text(s["charge_kind"]), platform.Text(s["metering_state"])
-	// Admission starts retained-storage clocks before a guest exists. These may
-	// be cancelled only without any metering/charge history and caller absence proof.
-	return platform.Uint(s["account_id"]) == platform.Uint(ac["id"]) && platform.Uint(s["user_id"]) == platform.Uint(instance["user_id"]) && platform.Uint(s["node_id"]) == platform.Uint(instance["node_id"]) && platform.Uint(s["instance_id"]) == platform.Uint(instance["id"]) && platform.Text(s["status"]) == "active" && s["ended_at"] == nil && platform.Uint(s["metered_microseconds"]) == 0 && dec(s["cumulative_expected_pt"]).IsZero() && stamp(s["started_at"]).Equal(stamp(s["last_settled_at"])) && ((state == "held" && (kind == "base_compute" || kind == "gpu")) || (state == "running" && kind == "storage"))
-}
 func InstanceUsage(ctx context.Context, db *gorm.DB, instance row, event string, allocationIDs []uint64) error {
 	if !in(event, "disk_reserved", "running", "stopped", "resize_stopped", "deleted", "resize", "resize_reserved", "resize_running_reserved", "gpu_reserved", "gpu_attached", "gpu_released") {
 		return invalid("unsupported usage lifecycle event")
@@ -133,6 +85,11 @@ func InstanceUsage(ctx context.Context, db *gorm.DB, instance row, event string,
 	ac, e := usageAccount(db, instance)
 	if e != nil || ac == nil {
 		return e
+	}
+	if failed, err := instanceCreationFailed(db, instance); err != nil {
+		return err
+	} else if failed {
+		return nil
 	}
 	p, e := instanceCreditPolicy(db, instance)
 	if e != nil {
@@ -240,6 +197,11 @@ func InstanceUsage(ctx context.Context, db *gorm.DB, instance row, event string,
 	return nil
 }
 func beginSession(db *gorm.DB, ac, p, instance row, kind string, gpu row, state string, t time.Time) error {
+	if failed, err := instanceCreationFailed(db, instance); err != nil {
+		return err
+	} else if failed {
+		return nil
+	}
 	q := db.Table("usage_sessions").Clauses(clause.Locking{Strength: "UPDATE"}).Where("instance_id = ? AND charge_kind = ? AND status = 'active'", instance["id"], kind)
 	if gpu != nil {
 		q = q.Where("gpu_allocation_id = ?", gpu["id"])
@@ -312,6 +274,11 @@ func expected(s row, microseconds uint64) decimal.Decimal {
 }
 func reserveWindow(db *gorm.DB, ac, p, s row, t time.Time, strict bool) error {
 	if platform.Text(s["billing_mode"]) == "admin_exempt" {
+		return nil
+	}
+	if failed, err := sessionCreationFailed(db, s); err != nil {
+		return err
+	} else if failed {
 		return nil
 	}
 	need := expected(s, platform.Uint(p["billing_window_seconds"])*1000000)
@@ -488,6 +455,11 @@ func (f *chargeFunds) canPay(sessionID uint64) bool {
 }
 
 func payCharge(db *gorm.DB, ac, s, charge row, t time.Time) error {
+	if failed, err := sessionCreationFailed(db, s); err != nil {
+		return err
+	} else if failed || platform.Text(charge["status"]) == "cancelled" {
+		return nil
+	}
 	if !dec(charge["expected_pt"]).GreaterThan(dec(charge["settled_pt"])) {
 		return nil
 	}
@@ -498,7 +470,7 @@ func payCharge(db *gorm.DB, ac, s, charge row, t time.Time) error {
 	// Only funds exceeding older debt are available to a new interval. Held
 	// sources stay exclusive to their owner and its oldest unpaid interval.
 	var prior struct{ Amount string }
-	if e = db.Clauses(clause.Locking{Strength: "UPDATE"}).Table("usage_charges").Select("COALESCE(SUM(expected_pt-settled_pt),0) amount").Where("account_id=? AND status='insufficient' AND id<?", ac["id"], charge["id"]).Scan(&prior).Error; e != nil {
+	if e = db.Clauses(clause.Locking{Strength: "UPDATE"}).Table("usage_charges c").Select("COALESCE(SUM(c.expected_pt-c.settled_pt),0) amount").Where("c.account_id=? AND c.status='insufficient' AND c.id<? AND "+chargeNotFailedSQL, ac["id"], charge["id"]).Scan(&prior).Error; e != nil {
 		return e
 	}
 	funds.free = decimal.Max(decimal.Zero, funds.free.Sub(dec(prior.Amount)))
@@ -513,6 +485,11 @@ func payCharge(db *gorm.DB, ac, s, charge row, t time.Time) error {
 }
 
 func (f *chargeFunds) pay(db *gorm.DB, ac, s, charge row, t time.Time) error {
+	if failed, err := sessionCreationFailed(db, s); err != nil {
+		return err
+	} else if failed || platform.Text(charge["status"]) == "cancelled" {
+		return nil
+	}
 	paid := dec(charge["settled_pt"])
 	previousPaid := paid
 	need := dec(charge["expected_pt"]).Sub(paid)
@@ -582,6 +559,11 @@ func (f *chargeFunds) pay(db *gorm.DB, ac, s, charge row, t time.Time) error {
 	return refreshSettlementPending(db, platform.Uint(ac["id"]), t)
 }
 func settleSession(db *gorm.DB, ac, p, s row, t time.Time) error {
+	if failed, err := sessionCreationFailed(db, s); err != nil {
+		return err
+	} else if failed {
+		return nil
+	}
 	from := stamp(s["last_settled_at"])
 	if !t.After(from) || platform.Text(s["metering_state"]) == "held" {
 		return nil
@@ -781,6 +763,11 @@ func settleAll(ctx context.Context, a *platform.App) error {
 				if platform.Text(s["status"]) != "active" {
 					return nil
 				}
+				if failed, err := sessionCreationFailed(db, s); err != nil {
+					return err
+				} else if failed {
+					return nil
+				}
 				p, err := sessionCreditPolicy(db, s)
 				if err != nil {
 					return err
@@ -889,7 +876,7 @@ func restoreEnforcement(db *gorm.DB, ac row, t time.Time) error {
 	if !left.IsPositive() {
 		return nil
 	}
-	sessions, e := rows(db, "usage_sessions", "account_id = ? AND status = 'active' AND billing_mode = 'credit'", ac["id"])
+	sessions, e := rows(db, "usage_sessions", "account_id = ? AND status = 'active' AND billing_mode = 'credit' AND NOT EXISTS (SELECT 1 FROM instances failed_i WHERE failed_i.id=usage_sessions.instance_id AND failed_i.creation_failed_at IS NOT NULL FOR SHARE)", ac["id"])
 	if e != nil {
 		return e
 	}

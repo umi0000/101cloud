@@ -220,7 +220,7 @@ func settlementPayable(db *gorm.DB, accountID uint64, t time.Time) (bool, error)
 	return charge.ID != 0, err
 }
 
-const payableChargeSQL = `(EXISTS (SELECT 1 FROM credit_buckets b WHERE b.account_id=c.account_id AND b.remaining_pt>b.reserved_pt AND b.valid_from<=? AND (b.expires_at IS NULL OR b.expires_at>?)) OR EXISTS (SELECT 1 FROM credit_reservations r WHERE r.account_id=c.account_id AND r.session_id=c.session_id AND r.status='held' AND r.reserved_pt>r.settled_pt+r.released_pt))`
+const payableChargeSQL = chargeNotFailedSQL + ` AND (EXISTS (SELECT 1 FROM credit_buckets b WHERE b.account_id=c.account_id AND b.remaining_pt>b.reserved_pt AND b.valid_from<=? AND (b.expires_at IS NULL OR b.expires_at>?)) OR EXISTS (SELECT 1 FROM credit_reservations r WHERE r.account_id=c.account_id AND r.session_id=c.session_id AND r.status='held' AND r.reserved_pt>r.settled_pt+r.released_pt))`
 
 func refreshSettlementPending(db *gorm.DB, accountID uint64, t time.Time) error {
 	pending, e := settlementPayable(db, accountID, t)

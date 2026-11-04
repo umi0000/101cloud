@@ -39,14 +39,14 @@ func detectExhaustion(db *gorm.DB, ac row, t time.Time) error {
 	}
 	// Only confirmed payable debt starts a shutdown clock, not a rounded-zero rate.
 	var debt row
-	if e = db.Table("usage_charges").Select("COALESCE(SUM(expected_pt),0) expected_pt, COALESCE(SUM(settled_pt),0) settled_pt").Where("account_id = ? AND status = 'insufficient'", ac["id"]).Take(&debt).Error; e != nil {
+	if e = db.Table("usage_charges c").Select("COALESCE(SUM(c.expected_pt),0) expected_pt, COALESCE(SUM(c.settled_pt),0) settled_pt").Where("c.account_id = ? AND c.status = 'insufficient' AND "+chargeNotFailedSQL, ac["id"]).Take(&debt).Error; e != nil {
 		return e
 	}
 	debt["status"] = "insufficient"
 	if !hasPayableInsufficiency(debt) {
 		return nil
 	}
-	instances, e := rows(db.Order("id"), "instances", "user_id = ? AND billing_mode = 'credit' AND product_type = 'elastic' AND deleted_at IS NULL AND (observed_state IN ('running','frozen','unknown') OR desired_state = 'running')", ac["user_id"])
+	instances, e := rows(db.Order("id"), "instances", "user_id = ? AND billing_mode = 'credit' AND product_type = 'elastic' AND creation_failed_at IS NULL AND deleted_at IS NULL AND (observed_state IN ('running','frozen','unknown') OR desired_state = 'running')", ac["user_id"])
 	if e != nil {
 		return e
 	}
@@ -132,7 +132,7 @@ func CheckCreditStop(ctx context.Context, db *gorm.DB, instanceID, eventID uint6
 	if e != nil {
 		return false, e
 	}
-	if platform.Text(instance["billing_mode"]) != "credit" || platform.Text(instance["product_type"]) != "elastic" || instance["deleted_at"] != nil || platform.Uint(instance["user_id"]) != platform.Uint(event["user_id"]) {
+	if platform.Text(instance["billing_mode"]) != "credit" || platform.Text(instance["product_type"]) != "elastic" || instance["creation_failed_at"] != nil || instance["deleted_at"] != nil || platform.Uint(instance["user_id"]) != platform.Uint(event["user_id"]) {
 		return false, nil
 	}
 	var membership row
@@ -380,7 +380,7 @@ func advanceEventChunk(ctx context.Context, a *platform.App, id, first, last uin
 			if e != nil {
 				return e
 			}
-			exempt := platform.Text(i["billing_mode"]) != "credit" || platform.Text(i["product_type"]) != "elastic"
+			exempt := platform.Text(i["billing_mode"]) != "credit" || platform.Text(i["product_type"]) != "elastic" || i["creation_failed_at"] != nil
 			stopped := in(platform.Text(i["observed_state"]), "stopped", "deleted") && !stamp(i["observed_at"]).Before(stamp(event["exhausted_at"]))
 			if exempt || stopped || platform.Text(item["status"]) == "stopped" {
 				if platform.Text(item["status"]) != "stopped" {

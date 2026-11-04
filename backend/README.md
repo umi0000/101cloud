@@ -8,7 +8,15 @@
 
 实例 resize/delete 由后端单个持久化任务编排，客户端不得串联 stop/resize/start 或 stop/delete。resize 的 `confirm_restart` 可选，但运行中必须为 `true`；所有非管理员elastic/custom实例须拥有resize权限，运行中还须stop/start权限。运行中正常关机确认后改配置、确认配置后启动，原已停止实例保持停止。任务保存 `restart_after_resize:true`、`previous_resources` 和期望 running，步骤为 `state.stop → resize.native → resize.confirmed → state.start`；进入启动意图后恢复不得重放早先停机或配置步骤。套餐、配额、节点/常驻预算、resize-limits 和磁盘禁止缩容约束不变。
 
+未成功交付的创建失败会自动退役：新增迁移 `20261104_00_failed_creation_cleanup.sql` 持久记录首次失败、原任务及清理状态，不修改已应用历史迁移。列表和成员详情/网络/GPU/控制台/监控立即不可见，仅原创建任务保留安全 `creation_cleanup` 摘要及原错误；管理员可按ID核对内部退役行。后台先只读收敛原操作、验证项目/name/UUID/平台归属，再复用stop/delete和删除后的独立GPU采样；断连或歧义保留unknown与库存占用，不重放未知mutation。仅从未交付的create适用，成功任务/create.verify/checkpoint和后续生命周期错误均保护。失败标记同事务启动分批冲正，等待物理清理期间不收费；过期bucket不复活，欠费取消、预留释放，财务历史不硬删。此代码变更不部署、不操作线上旧实例。
+
+退役后普通排队 stop/delete 任务同样失去执行权限；只有核对完成的内部清理任务可把原任务身份传给嵌套停止/删除。隔离 MySQL 下已验证并发冲正、分批恢复、过期来源、其他实例欠费保护、GPU 采样与异身份拒绝；独立 HTTP/worker 烟测使用模拟 TLS Incus，创建失败后 stop/delete 各一次，成员列表为空、详情404、活跃计费及未释放预留均为0，原任务保留错误并返回 completed/refunded。真实线上旧实例仅只读调查，未执行回收或退款。
+
+2026-11-04 已部署 `.111` 并执行上述内嵌迁移，备份位于 `/var/backups/101cloud/20261104-failed-creation-cleanup/`；本段发布记录取代前述仅源码验证阶段的“未操作线上”状态。旧GPU配置记录的operation UUID按原项目解析为原生操作路径，相关隔离MySQL竞态回归通过。实例29的历史失败已确认清理，全部计费会话结束，GPU释放核验为true、IP解除；81.381546 Pt已通过14304笔refund原流水冲正，未退款扣费、未取消相关账单和held预留均收敛为0。结果不明且无明确失败证据的历史任务保留，未盲删。
+
 删除必须精确确认实例名并提交 `delete_data:true`。运行中删除仅管理员可用，另须 `mode:"force"`、`confirm_data_loss_risk:true`；强停可能丢失未保存数据。同一持久化任务保存 force=true，确认强停后才向 Agent 发 DELETE，确认删除后获取新鲜 GPU 实际占用证据才释放分配。超时/未知保留预留并核对记录操作，不盲目重放破坏性步骤；普通用户仅可删除已停止实例。
+
+管理员故障恢复删除：`DELETE /admin/instances/{id}`（亦支持 `POST /admin/instances/{id}/delete`）提交 `cleanup_stuck:true`、`mode:"force"`、`confirm_data_loss_risk:true`、精确 `confirm_name`、`delete_data:true`，可接管操作中/pending/unknown/陈旧实例并返回真实 task_id。事务撤销旧任务/租约、保留任务步骤和审计；原生派发持有 task 行锁并在释放前保存 operation_id，防止迟到 CREATE/START 复活。先核实/取消并等旧原生操作终态，再确认目标缺席；最初已不存在也成功且不发 stop/delete。此显式清理以目标缺席为准，不等主机 GPU 指标；普通删除严格校验不变。财务/IP/GPU 释放一次，保留 deleted_at 墓碑及所有账本历史，不退还历史消费。丢失提交编号/旧版歧义 journal 公开 cleanup_native_submission_unknown，需从可信原生日志恢复编号后协调当前清理，不盲目重放旧创建或启动。
 
 套餐配置：`PlanCreate`/`PlanPatch`和`Plan`包含`node_ids`、`gpu_policy`、`allowed_user_actions`、`gpu_user_permissions`。node_ids须非空且不重复，网络覆盖全部所选节点，镜像匹配全部节点/网络项目。启用及active编辑要求节点已验证且active/online、网络已验证、项目镜像ready（提供GPU型号还须gpu_ready）。报价/创建node_id若提供必须匹配所选网络节点并在套餐内。
 
@@ -329,6 +337,8 @@ GPU 实例删除先确认原生消失，再最多等待约 95 秒的独立监控
 
 删除回归沿用固定证书 TLS 节点 fixture 与连接内 MySQL 临时表，需 `CLOUD_TEST_MYSQL_DSN` 指向可创建临时表的测试 MySQL（按既有约定使用已迁移测试库）；无该变量时 MySQL 用例跳过。用例覆盖删除前缓存到删除后新样本、过期 operation 404/无 ID 意图的对账不重放、重复处理、证据不足保留全部资源及无 GPU 跳过指标。正向等待约 1 秒/场景，负向用调用方 300ms 上下文测试取消，不等待生产 95 秒上限；不代表真实 GPU 硬件验收。
 
+强制清理回归位于 `internal/instances/stuck_delete_mysql_test.go`，使用 `CLOUD_TEST_MYSQL_ADMIN_DSN` 创建隔离库并应用全部真实迁移/外键，经真实 Gin HTTP 变更中间件验证 queued/running/waiting/unknown 接管、权限/确认/重放，再使用固定证书 TLS 原生 fixture 验证初始缺席、强停删除、GPU 指标不可用仍回收、冲突身份/离线保留资源、严格 HTTP+Incus404、已知原生操作取消与恢复、派发中 CREATE 接管串行化以及撤销 worker 不再派发/改 SQL。`platform/jobs_mysql_test.go` 另覆盖撤销后的 finishTask/Step 拒绝迟到写入。不涉及真实节点/硬件删除。
+
 完整架构、配置边界和本地验收记录见 [后端设计方案](后端设计方案.md)。本地协议验收不替代真实 KVM 启动、多GPU驱动热调整及VGA硬件验收；上线前需在获准的测试节点验证。
 
 ## 13. 实际部署记录（192.168.0.111）
@@ -387,3 +397,11 @@ HTTP监听127.0.0.1:8080，就绪检查、随机管理员登录、真实Agent固
 验证：全量真实MySQL8.4 `go test -race -p 1 ./... -count=1`、go vet、前端全量Vitest、vue-tsc及生产构建通过；OpenAPI JSON无重复键且旧默认接口/成员GPU定价目录已移除。隔离真实HTTP路由、SQL准入及只读TLS存储夹具下，同一GPU由两个套餐分别报价4/7pt并返回202，两笔gpu_allocations持久化对应费率且共享同一gpu_id；钱包仍1个、额度桶仍1个、daily_grants为0。低于4pt的用户上限只返回gpu_price_exceeds_limit，不产生伪库存错误。未运行原生交付worker，不将queued验收称为硬件实例交付成功。
 
 真实线上数据副本和正式停服迁移前后均比较全部账单/流水/额度桶金额及GPU分配费率、实例状态/资源，完全一致。切换窗口最新业务库备份 `business-at-plan-owned-cutover.sql.gz` 已gzip校验，全库备份 `all-databases-before-plan-owned-20261103-185805.sql.gz` 本机/服务器SHA256匹配。线上登录只读确认GPU DTO无定价字段、旧默认接口404、套餐2拥有metrics及GPU定价绑定，就绪200、节点在线持续采样、账本差异0、停机磁盘active会话0。线上只请求报价，未创建测试实例或修改资金；共享套餐GPU报价4pt且不再出现定价绑定造成的GPU库存错误。既有套餐1的独占/共享定价冲突保留，需管理员选择兼容配置，不擅改商业价格。
+
+2026-11-04 管理员卡住实例强制清理已仅发布 `.111`，目录 `/srv/101cloud/releases/20261104-admin-stuck-cleanup`，无需数据库迁移。支持管理员DELETE及POST /admin/instances/:id/delete显式cleanup_stuck=true与强制风险/精确名称/删除磁盘确认；非ready、状态过期及已有任务均可提交真实清理任务。锁内取消旧任务并提升租约代数，原生请求派发与操作编号记录有持久化围栏，防止旧worker在接管后继续CREATE/START或改写已删除状态。确认目标缺席后，清理路径不等待独立宿主GPU指标，正常删除原严格回收逻辑不变；关闭计费并一次释放目标IP/GPU/预留，实例保留deleted_at历史记录以维持账单审计引用，从活动列表移除。
+
+验证：真实MySQL全量go test -race -p 1 ./... -count=1及go vet通过；前端49个文件483条Vitest、vue-tsc、变更文件oxlint、生产构建通过。新增回归覆盖接管queued/running/waiting/unknown、成员拒绝、确认/重放、原生运行目标强停删除、初始缺席、UUID冲突、离线保留资源、派发中CREATE围栏、取消响应不等于操作结束、迟到worker不能回写。围栏日志同时写node/project上下文；只读初始化诊断每次单独记录有限长度步骤，不重放原初始化。
+
+实际独立HTTP后端+原生TLS协议夹具+浏览器构造unknown创建任务，管理员DELETE返回202，旧create变cancelled/superseded_by_cleanup，worker确认不存在后delete任务succeeded并跳回实例列表；原生停止/删除请求0次，GPUreleased、IPavailable、active使用会话0、10000pt本金完整及预留0。仅协议夹具，不是线上真实实例删除。线上只打开实例15的清理确认后取消，未删除任何真实实例、未变更原卡住任务或管理员发放；发布前后实例配置/状态、活动任务及发放基线一致，就绪200、账本差异0、停机磁盘active会话0。
+
+备份位于 `/var/backups/101cloud/`：`backend-before-20261104-admin-stuck-cleanup`、`frontend-before-20261104-admin-stuck-cleanup.link`、`all-databases-before-stuck-cleanup-20261104-202151.sql.gz`。全库副本保留在工作区外101cloud-backups，gzip及双端SHA256校验通过。若旧请求完全丢失原生操作编号且仍有提交歧义，清理任务保留unknown/cleanup_native_submission_unknown，需依据可信原生日志恢复操作编号后协调，不把瞬间查无实例冒充不存在晚到CREATE的证明；离线、权限或超时均不判成功。

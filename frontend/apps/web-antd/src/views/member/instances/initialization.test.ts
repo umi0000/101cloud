@@ -5,6 +5,7 @@ import { createApp, h, nextTick, reactive } from 'vue';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { ApiError } from '#/api/request';
 import { CREATION_STAGES } from '#/utils/creation-progress';
 
 const runtime = vi.hoisted(() => ({
@@ -179,9 +180,107 @@ describe('initialization route recovery and isolation', () => {
     expect(feedback.some((entry) => entry.textContent?.includes('登录配置初始化检查'))).toBe(true);
     expect(feedback.some((entry) => entry.textContent?.includes('实例初始化完成检查'))).toBe(true);
   });
+  it.each(['failed', 'unknown'] as const)('restores a hidden %s creation using the safe task name without fetching its instance', async (status) => {
+    const failed = task();
+    failed.status = status;
+    failed.creation_progress!.stages[4]!.status = 'failed';
+    failed.creation_cleanup = { status: 'cleaning', billing_status: 'refunded', instance_name: 'safe retired name' };
+    failed.error_code = 'initialization_tool_missing';
+    failed.error = { code: 'initialization_tool_missing', message: '', details: {
+      stage: 'login.cloud-ready', reason: 'required_tool_missing', exit_code: 2,
+    } };
+    runtime.task.mockResolvedValue({ data: failed });
+    runtime.instance.mockRejectedValue(new ApiError(404, { code: 'not_found', message: '', details: null }, '', null));
+    mount();
+    await flush();
+    expect(runtime.instance).not.toHaveBeenCalled();
+    expect(root.querySelector('h1')?.textContent).toBe('初始化失败');
+    expect(root.textContent).toContain('safe retired name');
+    expect(root.textContent).not.toContain('实例摘要读取失败');
+    expect(root.textContent).not.toContain('资源清理');
+    expect(root.textContent).not.toContain('退款状态');
+    expect(root.textContent).not.toContain('未成功交付不收费');
+    expect([...root.querySelectorAll('button')].some((button) => button.textContent === '进入实例')).toBe(false);
+    [...root.querySelectorAll('button')].find((button) => button.textContent === '查看失败信息')!.click();
+    await flush();
+    const dialog = root.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain('资源清理：正在清理');
+    expect(dialog.textContent).toContain('退款状态：已完成冲正、清欠与预留释放');
+    expect(dialog.textContent).toContain('未成功交付不收费，清理等待期间也不计费');
+    expect(dialog.textContent).toContain('退出码：2');
+    if (status === 'unknown') expect(dialog.textContent).toContain('执行结果仍需管理员核对');
+    await runtime.poll!();
+    await flush();
+    expect(runtime.task).toHaveBeenCalledTimes(2);
+    expect(runtime.instance).not.toHaveBeenCalled();
+    expect(runtime.push).not.toHaveBeenCalled();
+    expect(failed.status).toBe(status);
+  });
+
+  it('polls cleanup and billing to completion without replacing the original failed phase or diagnostics', async () => {
+    const failed = task();
+    failed.status = 'failed';
+    failed.creation_progress!.stages[4]!.status = 'failed';
+    failed.creation_cleanup = { status: 'pending', billing_status: 'pending', instance_name: 'safe retired name' };
+    runtime.task.mockResolvedValueOnce({ data: failed });
+    mount();
+    await flush();
+    [...root.querySelectorAll('button')].find((button) => button.textContent === '查看失败信息')!.click();
+    await flush();
+    expect(root.querySelector('[role="dialog"]')?.textContent).toContain('退款状态：等待处理');
+    const reclaimed: Task = { ...failed, creation_cleanup: { ...failed.creation_cleanup, status: 'completed' } };
+    runtime.task.mockResolvedValueOnce({ data: reclaimed });
+    await runtime.poll!();
+    await flush();
+    expect(root.querySelector('[role="dialog"]')?.textContent).toContain('资源清理：已完成清理');
+    runtime.task.mockResolvedValueOnce({ data: { ...reclaimed, creation_cleanup: { ...reclaimed.creation_cleanup!, billing_status: 'refunded' } } });
+    await runtime.poll!();
+    await flush();
+    expect(root.querySelector('[role="dialog"]')?.textContent).toContain('退款状态：已完成冲正、清欠与预留释放');
+    expect(root.querySelector('[data-stage="cloud_init"]')?.getAttribute('data-status')).toBe('failed');
+    await runtime.poll!();
+    expect(runtime.task).toHaveBeenCalledTimes(3);
+    expect(runtime.instance).not.toHaveBeenCalled();
+  });
+
+  it('clears a previous summary error once the task reports expected creation cleanup', async () => {
+    const failed = task();
+    failed.status = 'failed';
+    runtime.task.mockResolvedValueOnce({ data: failed });
+    runtime.instance.mockRejectedValueOnce(new ApiError(404, { code: 'not_found', message: '', details: null }, '', null));
+    mount();
+    await flush();
+    expect(root.textContent).toContain('实例摘要读取失败');
+    runtime.task.mockResolvedValueOnce({ data: { ...failed, creation_cleanup: {
+      status: 'unknown', billing_status: 'refunded', instance_name: 'safe retired name',
+    } } });
+    await runtime.poll!();
+    await flush();
+    expect(root.textContent).not.toContain('实例摘要读取失败');
+    expect(root.textContent).toContain('safe retired name');
+    expect(runtime.instance).toHaveBeenCalledTimes(1);
+  });
+
+  it('removes the last instance summary as soon as a later task response marks failed cleanup', async () => {
+    const running = task();
+    running.status = 'running';
+    runtime.task.mockResolvedValueOnce({ data: running });
+    mount();
+    await flush();
+    expect(root.textContent).toContain('name-user-a');
+    runtime.task.mockResolvedValueOnce({ data: { ...running, status: 'failed', creation_cleanup: {
+      status: 'cleaning', billing_status: 'refunded', instance_name: 'safe retired name',
+    } } });
+    await runtime.poll!();
+    await flush();
+    expect(root.textContent).not.toContain('name-user-a');
+    expect(root.textContent).toContain('safe retired name');
+    expect(runtime.instance).toHaveBeenCalledTimes(1);
+  });
   it('closes failure details on account change and does not reopen them for another task', async () => {
     const failed = task();
     failed.status = 'unknown';
+    failed.creation_cleanup = { status: 'unknown', billing_status: 'refunded', instance_name: 'safe retired name' };
     runtime.task.mockResolvedValueOnce({ data: failed });
     mount();
     await flush();
@@ -195,5 +294,6 @@ describe('initialization route recovery and isolation', () => {
     await flush();
     expect(root.querySelector('[role="dialog"]')).toBeNull();
     expect(root.textContent).not.toContain('name-user-a');
+    expect(root.textContent).not.toContain('safe retired name');
   });
 });

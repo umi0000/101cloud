@@ -334,9 +334,6 @@ func TestMySQLDailyPollingNeedsNoPolicyUntilAnAccountIsConfigured(t *testing.T) 
 func TestMySQLUnconfiguredExemptLifecycleDoesNotCreateFinancialState(t *testing.T) {
 	ctx, db := openBillingMySQL(t, "ci_exempt_no_wallet_")
 	instance := row{"billing_mode": "admin_exempt", "user_id": uint64(1), "id": uint64(1)}
-	if err := CancelUnprovisionedInstance(ctx, db, instance); err != nil {
-		t.Fatal(err)
-	}
 	for _, event := range []string{"disk_reserved", "running", "stopped", "resize_stopped", "deleted", "resize", "resize_reserved", "resize_running_reserved", "gpu_reserved", "gpu_attached", "gpu_released"} {
 		if err := InstanceUsage(ctx, db, instance, event, nil); err != nil {
 			t.Fatalf("%s unexpectedly requires an allowance: %v", event, err)

@@ -765,7 +765,14 @@ export interface CreationProgress {
   initialization_pending: boolean;
 }
 
+export interface CreationCleanup {
+  status: 'pending' | 'cleaning' | 'unknown' | 'completed';
+  billing_status: 'pending' | 'refunded';
+  instance_name: string;
+}
+
 export interface Task {
+  creation_cleanup?: CreationCleanup | null;
   creation_progress?: CreationProgress | null;
   error?: null | PublicError;
   created_at: Time;

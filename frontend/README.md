@@ -37,6 +37,7 @@ apps/web-antd/src/
 - 2026-11-03 初始化窗口已发布到 `192.168.0.111`，当前前端目录 `/srv/101cloud/releases/20261103-initialization-window`。前后端、配置及数据库备份在 `/var/backups/101cloud/20261103-initialization-window/`，`frontend.link` 记录原发布目录。本次无需新增迁移；HTTPS 健康接口及真实成员任务 97 的阶段接口/窗口只读验证通过，临时验收会话已撤销，未创建或重跑实例。历史任务缺少最终核验标记会保守显示初始化尚未完成，不代表本次实际重新执行或初始化失败。
 - 2026-11-04 初始化错误响应已发布到 `192.168.0.111`，当前目录 `/srv/101cloud/releases/20261104-initialization-errors`；前后端、配置、数据库备份在 `/var/backups/101cloud/20261104-initialization-errors/`。无新增迁移，后端构建校验和一致，HTTPS ready 正常；真实发布资源搭配浏览器隔离诊断响应验证了具体 ssh-keygen 原因、退出码、整体待核对与重复错误去重。未重跑初始化或修改历史任务；旧任务不会自动补写诊断。
 - 2026-11-04 精简初始化及失败弹窗已仅前端部署 `.111`，当前目录 `/srv/101cloud/releases/20261104-initialization-failure-modal`；原入口记录在 `/var/backups/101cloud/20261104-initialization-failure-modal/frontend.link`。后端校验和未变、健康接口正常；发布资源配合隔离诊断响应验证主页面无摘要和原因、unknown 显示失败、点击失败按钮可查看原因和原退出码。未改动实例或任务。
+- 2026-11-04 失败创建自动回收及财务冲正已部署 `.111`，发布目录 `/srv/101cloud/releases/20261104-failed-creation-cleanup`，备份 `/var/backups/101cloud/20261104-failed-creation-cleanup/`。执行内嵌迁移 `20261104_00_failed_creation_cleanup.sql`；历史 Arch 实例29已由任务108完成清理，GPU确认释放、IP解除、计费会话全部结束。已按原流水冲正81.381546 Pt（14304笔），相关账单取消及预留释放完成；成员详情404、列表无该实例，原任务102错误页真实浏览器验证可打开。上线核验修复旧GPU步骤仅存operation UUID的兼容，未重放原初始化。仅结果不明的其他历史任务未擅自删除。
 
 确认页只读展示配置、费用明细、额度、首窗口预留和报价倒计时，最终提交前复核报价/账户；条款变化只更新展示，必须再次确认。返回修改保留选择。冻结快照仅当前会话持有，无快照或刷新后提示重新选配，不生成虚构订单号/支付记录。不确定结果锁定原payload/key重试；受理后使用任务 ID 跳转 `/instances/initialization/:taskId`，换号不会泄露前一账号配置。
 
@@ -44,7 +45,7 @@ apps/web-antd/src/
 
 初始化窗口：居中最大 720px，三点仅为标题栏装饰；显示实例名称、任务 ID 和真实时间戳耗时，不再显示系统/资源/安全登录摘要。通过本人 `GET /tasks/{id}` 的 `creation_progress.stages` 展示真实阶段；GPU 不适用时省略，脚本不适用明确跳过。底部细线只表示活动，不表示百分比；不展示日志、脚本输出或模拟命令。精简及失败弹窗改动已部署 `.111`。
 
-刷新或直接访问从任务与本人 `GET /instances/{id}` 恢复，不依赖订单内存。实例卡片使用持久 `creation_task_id` 重入；当前会话任务中心也有“查看初始化”。只有任务 succeeded、所有必要阶段完成、verify 成功且 `initialization_pending=false` 才展示完成；停止后 pending、失败、unknown、状态查询中断分别呈现，绝不自动重放创建。成功后手动“进入实例”，同时核验当前账号、任务 `instance_id` 与实例 `creation_task_id`，再打开成员详情抽屉；不会自动跳走。账号/任务变化即清空旧数据并隔离异步旧响应；网络恢复只重新查询。
+刷新或直接访问从本人任务恢复，不依赖订单内存；未标记失败清理时再读取本人 `GET /instances/{id}`。实例卡片使用持久 `creation_task_id` 重入，当前会话任务中心的“查看初始化”也可继续打开已隐藏实例对应的错误页。只有任务 succeeded、所有必要阶段完成、verify 成功且 `initialization_pending=false` 才展示完成；停止后 pending、失败、unknown、状态查询中断分别呈现，绝不自动重放创建。失败清理标记始终禁止进入实例。成功后手动“进入实例”，同时核验当前账号、任务 `instance_id` 与实例 `creation_task_id`，再打开成员详情抽屉；不会自动跳走。账号/任务变化即清空旧数据并隔离异步旧响应；网络恢复只重新查询。
 
 ### 创建时的 root 登录凭据
 
@@ -68,6 +69,10 @@ apps/web-antd/src/
 - `command_terminated` 仅表示命令被终止：退出码 137 不直接判定超时，提示管理员核对超时/资源限制等原因；`template_timeout_invalid` 表示模板超时配置无效，两者仍归初始化脚本失败。对应边界测试保留原整数退出码，不混同已确认 timeout。
 - degraded 明确显示“cloud-init 已带警告完成”，与 cloud-init 错误失败区分。`ssh_host_key_generation_missing_tool` 固定说明 SSH 主机密钥生成失败、缺少 ssh-keygen，建议检查并安装 OpenSSH，不武断断言软件未安装；普通缺工具仍使用 `required_tool_missing`。该特定原因有独立白名单/敏感文本过滤测试。
 - 后端任务 unknown 仍保留待核对及禁止自动重放语义，但初始化页面标题与对应阶段统一显示“初始化失败”/“失败”；核对说明仅在失败弹窗中显示。错误按安全格式化后的 code、中文 stage、标题及说明去重，不合并不同阶段的诊断。
+- 未交付创建失败清理契约（已部署 `.111`）：任务可包含 `creation_cleanup: {status: pending|cleaning|unknown|completed, billing_status: pending|refunded, instance_name: string}`。schema 校验固定状态和安全名称，保留原 `instance_id`、`creation_progress`、任务/步骤错误及原 unknown 结果；前端不把待核对改成已知失败。
+- 存在清理标记时，初始化页只从任务读取安全 `instance_name`，清空旧实例摘要并停止请求实例详情；实例 API 隐藏后的 404 是预期，不再显示“实例摘要读取失败”。未标记任务遇到非预期摘要查询错误仍正常报错。清理状态与退款状态、未交付及等待清理期间不收费说明仅在“初始化失败信息”弹窗呈现，不堆放在主页面；原阶段和原错误继续可读。
+- 清理未完成或退款尚待处理时只轮询原任务；不重试创建、不显示“进入实例”，也不提示重放原任务。任务 `next_action=wait_cleanup/none/inspect_failure` 不等于可重新提交原创建。实例列表完全依赖后端过滤失败记录，不按前端 provisioning 状态另行隐藏；隐藏实例的直接详情链接遇到 404 只显示不可访问错误，不回退到卡片或旧配置。
+- 新增/扩展行为测试覆盖清理 schema、禁止进入、安全任务摘要、跳过实例 404、失败弹窗状态、退款轮询、直接详情 404 和任务入口保留。前端全量 475 项测试、类型检查及生产构建通过；使用真实本地 API/worker 清理响应在浏览器验证错误页仍可恢复，清理/退款信息仅在失败弹窗展示，且不再读取隐藏实例详情。
 
 
 ## 环境
@@ -217,6 +222,8 @@ CLOUD_TRUSTED_PROXIES='127.0.0.1/32,::1/128'
 
 验证：后端 vet、race 全量真实 MySQL 回归通过（确认/权限、顺序、停止失败不删除、预留/计费快照、竞争准入、部分执行恢复）；前端类型检查、oxlint、生产构建通过。隔离 MySQL 与状态式 TLS 节点协议场景中，经 curl 触发真实任务，确认 stop→resize→start，及强停 stop→delete 后 IP/GPU/用量回收；这是协议场景，不是实际硬件测试。线上仅打开实例 18 的两类确认弹窗及实例 19 的停止态规格弹窗，未确认风险时按钮禁用，运行中有重启/强制关闭提示、精确名称确认保留；未提交任何线上生命周期操作，实例 18 仍运行且规格未改。前端目录 `/srv/101cloud/releases/20261101-running-actions`，完整数据库和旧后端备份在 `/var/backups/101cloud/`，分别为 `before-running-actions-20261101.sql.gz`、`backend-before-running-actions-20261101`。
 
+2026-11-04 管理实例详情增加卡住实例“强制清理删除”：操作中、状态过期及未就绪时仍可打开，精确名称和风险确认后仅管理端发送 `cleanup_stuck=true`、`mode=force`、`confirm_data_loss_risk=true`、`delete_data=true`。弹窗说明取消已有操作、磁盘不可恢复、权威确认原生不存在则跳过原生操作、离线不算不存在，并保留历史计费/审计。普通就绪删除保持原请求行为；其他生命周期操作不因此放开。轮询期间表单可升级为清理确认，要求重新输入名称和勾选；202 只提示提交，任务完成刷新、详情确认删除后返回列表。新增 `views/admin/instances/detail.test.ts` 行为回归；本条不代表已执行检查或已部署。
+
 2026-11-01 修复顶栏偏好设置齿轮点击无反应：自定义触发按钮原先覆盖默认插槽但没有绑定抽屉打开事件，现在通过现有 Preferences.open 暴露方法打开，并添加本地化 aria-label。仅更新 `.111` 前端 `/srv/101cloud/releases/20261101-preferences-open`，旧链接 `/var/backups/101cloud/frontend-before-preferences-open-20261101.link`。类型检查、包含修改组件的 oxlint、生产构建通过；线上真实点击验证抽屉打开、关闭、重新打开及主题即时切换，无运行时错误，验证后恢复浅色并退出登录。既有初始化配置优先于缓存的规则未改：刷新仍恢复配置指定的默认浅色；本次仅修复入口，不声称主题持久化行为改变。
 
 2026-11-02 节点镜像目录已完整部署到 `.111` 前后端及 Host Agent：前端 `/srv/101cloud/releases/20261102-node-images`。登记支持节点已有本地镜像核验、通过节点 Agent 读取真实官方目录并下载远程镜像、批量选节点及逐节点项目/架构/cloud-init/指纹/GPU 兼容性配置；只有原生核验后的 ready 配置可供对应节点/项目创建或纳管。未知下载走原任务对账，模糊派发不重发；GPU 就绪始终是管理员声明，不自动安装驱动。当前支持的源为 `images.linuxcontainers.org`，Ubuntu OS 从其中真实目录选择，不暴露格式不兼容的 Canonical Cloud 源。
@@ -311,3 +318,5 @@ vue-tsc、变更文件oxlint及生产构建通过。线上只读核查真实账�
 2026-11-03 列表表头与筛选栏重叠修复已仅发布 `.111` 静态前端 `/srv/101cloud/releases/20261103-list-toolbar-alignment-r2`。线上实测Ant Space wrap产生-8px底部margin，覆盖外部mb-3并使表格与筛选控件重叠；实例、目录（镜像/套餐/模板）、财务（账户/流水/兑换码/额度事件）、任务、审计的列表工具栏改为正常Flex换行布局与12px表格间距。筛选控件显式固定宽度以避免组件width:100%使每项占满一行；缺少滚动配置的列表增加表格内部横向滚动，日期范围限制容器宽度，不靠负偏移或全局覆盖Ant组件。
 
 vue-tsc、十个变更文件oxlint及生产构建通过。真实浏览器以1440px/390px遍历上述十个列表：间距12px，有数据的表头/首行单元格横坐标及宽度差0px、无页面横向溢出；空列表不虚报单元格测量。审计筛选无结果→清空恢复、窄屏表格滚动160px后表头与内容仍对齐，无运行时错误。仅GET列表及登录/退出操作，没有业务数据变更，不重启后端。原套餐配置版本及r1链接分别保存在 `/var/backups/101cloud/frontend-before-20261103-list-toolbar-alignment.link` 与 `frontend-before-20261103-list-toolbar-alignment-r2.link`。
+
+2026-11-04 管理员卡住实例清理入口已仅发布 `.111`，目录 `/srv/101cloud/releases/20261104-admin-stuck-cleanup`。实例详情在操作中、状态过期或未ready时也可打开“强制清理删除”，须精确名称及风险勾选，发送cleanup_stuck=true并强制删除确认；普通ready删除保持原行为。仅受理202不宣称完成，任务确认已删除/详情404后返回列表；普通离线错误不当成已删除。真实隔离后端浏览器走通unknown任务接管至缺席清理成功，线上仅打开实例15确认后取消，没有真实删除。新增8条行为回归及完整49文件483条测试、vue-tsc、变更文件oxlint和生产构建通过；历史账单/审计保留。后端竞态及备份证据见backend README。

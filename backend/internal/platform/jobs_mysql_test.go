@@ -162,3 +162,33 @@ func TestMySQLTimeoutExecutionRemainsUnknown(t *testing.T) {
 		t.Fatalf("timeout safe fallback absent: %+v", public)
 	}
 }
+
+func TestMySQLSupersededTaskRejectsLateFinishAndStepWrites(t *testing.T) {
+	db := jobTestDB(t)
+	a := New(db, Config{})
+	queued, err := Enqueue(db, "regression.superseded", 0, 0, 0, false, Row{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := Uint(queued["task_id"])
+	job := Job{ID: id, LeaseGeneration: 1}
+	if err := db.Table("tasks").Where("id=?", id).Updates(Row{"status": "running", "lease_owner": "old-worker", "lease_generation": 1, "lease_until": a.Time().Add(time.Minute)}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Step(t.Context(), job, "create.native", "", "running"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Table("tasks").Where("id=?", id).Updates(Row{"status": "cancelled", "error_code": "superseded_by_cleanup", "finished_at": a.Time(), "lease_owner": nil, "lease_until": nil, "lease_generation": 2}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := a.finishTask(t.Context(), job, "old-worker", "succeeded", a.Time(), nil, nil); err == nil {
+		t.Fatal("revoked worker overwrote cancellation")
+	}
+	if err := a.Step(t.Context(), job, "state.start", "", "running"); err == nil {
+		t.Fatal("revoked worker journaled a new mutation")
+	}
+	stored, err := Get(db, "tasks", id, false)
+	if err != nil || Text(stored["status"]) != "cancelled" || Text(stored["error_code"]) != "superseded_by_cleanup" || Uint(stored["lease_generation"]) != 2 {
+		t.Fatalf("late completion changed persistent takeover: %+v %v", stored, err)
+	}
+}

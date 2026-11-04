@@ -3,7 +3,7 @@ import type { PowerMode } from '#/api/backend';
 import type { Instance, InstanceNetwork, Plan } from '#/api/types';
 
 import { computed, onMounted, ref, shallowRef, watch } from 'vue';
-import { useRoute } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
 
@@ -51,6 +51,7 @@ import { useNow } from './components/shared';
 import TaskPanel from './components/task-panel.vue';
 
 const route = useRoute();
+const router = useRouter();
 const id = route.params.id as string;
 
 const inst = useResource(() => instancesApi.get(id));
@@ -62,7 +63,20 @@ async function loadNetwork() {
 }
 
 async function reload() {
-  await Promise.all([inst.reload(), loadNetwork()]);
+  try {
+    await inst.reload();
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404 && inst.data.value) {
+      await router.replace('/admin/instances');
+      return;
+    }
+    throw error;
+  }
+  if (inst.data.value?.desired_state === 'deleted' && !inst.data.value.active_task_id) {
+    await router.replace('/admin/instances');
+    return;
+  }
+  await loadNetwork();
 }
 
 async function initial() {
@@ -225,15 +239,24 @@ const resizeOpen = ref(false);
 // 销毁实例
 const deleteOpen = ref(false);
 const deleteAction = useAction();
+const recoveryRequired = computed(() => !lifecycleReady.value || busy.value || !i.value?.capabilities.delete);
+const deleteRecovery = ref(false);
+watch(recoveryRequired, (required) => {
+  if (deleteOpen.value && required) deleteRecovery.value = true;
+});
+watch(deleteRecovery, () => deleteAction.resetKey());
 function openDelete() {
   deleteAction.resetKey();
+  deleteRecovery.value = recoveryRequired.value;
   deleteOpen.value = true;
 }
 async function submitDelete() {
   const name = i.value?.name ?? '';
-  if (!lifecycleReady.value || busy.value || !i.value?.capabilities.delete) return false;
+  if (!i.value || deleteAction.pending.value) return false;
+  if (!deleteRecovery.value && recoveryRequired.value) return false;
   const body: Parameters<typeof instancesApi.delete>[1] = { confirm_name: name, delete_data: true };
-  if (running.value) {
+  if (deleteRecovery.value) body.cleanup_stuck = true;
+  if (deleteRecovery.value || running.value) {
     body.mode = 'force';
     body.confirm_data_loss_risk = true;
   }
@@ -241,7 +264,7 @@ async function submitDelete() {
     (key) => instancesApi.delete(id, body, { ifMatch: ifMatch(), key }),
     { onConflict: conflict, success: '已提交销毁实例' },
   );
-  return afterAccepted(r, '销毁实例');
+  return afterAccepted(r, deleteRecovery.value ? '强制清理删除实例' : '销毁实例');
 }
 
 // 控制台
@@ -301,7 +324,7 @@ function resourcesText(x: Instance) {
               <Tag class="m-0" color="processing">操作进行中</Tag>
               <RouterLink :to="`/admin/tasks?instance_id=${i.id}`">查看任务</RouterLink>
             </template>
-            <Button v-if="i.capabilities.console" :disabled="busy" @click="consoleRef?.start()">
+            <Button v-if="i.capabilities.console" :disabled="busy || !lifecycleReady" @click="consoleRef?.start()">
               {{ i.instance_type === 'virtual-machine' ? '控制台' : '终端' }}
             </Button>
             <span v-if="i.provisioning_state === 'failed' && i.resource_reservations_released === true" class="text-sm text-red-500">
@@ -309,12 +332,14 @@ function resourcesText(x: Instance) {
             </span>
             <span v-else-if="i.state_stale" class="text-sm text-orange-500">状态未知，等待同步</span>
             <template v-else>
-              <Button v-if="i.capabilities.start" :disabled="busy" type="primary" @click="openPower('start')">启动</Button>
-              <Button v-if="i.observed_state === 'running'" :disabled="busy" @click="openPower('restart')">重启</Button>
-              <Button v-if="i.capabilities.stop" :disabled="busy" @click="openPower('stop')">停止</Button>
+              <Button v-if="i.capabilities.start" :disabled="busy || !lifecycleReady" type="primary" @click="openPower('start')">启动</Button>
+              <Button v-if="i.observed_state === 'running'" :disabled="busy || !lifecycleReady" @click="openPower('restart')">重启</Button>
+              <Button v-if="i.capabilities.stop" :disabled="busy || !lifecycleReady" @click="openPower('stop')">停止</Button>
               <Button v-if="lifecycleReady" :disabled="busy || !i.capabilities.resize" @click="resizeOpen = true">修改实例规格</Button>
-              <Button v-if="lifecycleReady" danger :disabled="busy || !i.capabilities.delete" @click="openDelete">销毁实例</Button>
             </template>
+            <Button danger data-testid="admin-instance-delete" @click="openDelete">
+              {{ recoveryRequired ? '强制清理删除' : '销毁实例' }}
+            </Button>
           </Space>
         </div>
       </Card>
@@ -433,15 +458,16 @@ function resourcesText(x: Instance) {
       <ResizeDialog v-model:open="resizeOpen" :etag="inst.etag.value" :instance="i" @done="conflict" />
 
       <ConfirmAction
+        :key="deleteRecovery ? 'cleanup' : 'ordinary-delete'"
         v-model:open="deleteOpen"
         :confirm-name="i.name"
         danger
-        :description="running ? '执行此操作将强制关闭实例，然后永久删除实例及磁盘数据，未保存的数据会丢失' : '实例和磁盘数据将被永久删除。'"
-        :disabled="!lifecycleReady || busy || !i.capabilities.delete"
-        ok-text="销毁实例"
+        :description="deleteRecovery ? '此操作将取消实例已有操作，强制关闭并永久删除实例及磁盘，未保存的数据会丢失，无法恢复。节点权威确认原生实例已不存在时跳过关闭和删除；节点离线或请求失败不代表实例不存在，不会据此完成删除。历史计费和审计记录保留。提交后请等待任务确认完成。' : running ? '执行此操作将强制关闭实例，然后永久删除实例及磁盘数据，未保存的数据会丢失。历史计费和审计记录保留。' : '实例和磁盘数据将被永久删除，无法恢复。历史计费和审计记录保留。'"
+        :disabled="deleteAction.pending.value"
+        :ok-text="deleteRecovery ? '强制清理删除' : '销毁实例'"
         :on-confirm="submitDelete"
-        :risk-text="running ? '我确认强制关闭可能丢失未保存的数据，且实例及磁盘数据将被永久删除' : ''"
-        title="销毁实例"
+        :risk-text="deleteRecovery ? '我确认取消已有操作，并强制清理实例及全部磁盘数据，此操作不可恢复' : running ? '我确认强制关闭可能丢失未保存的数据，且实例及磁盘数据将被永久删除' : ''"
+        :title="deleteRecovery ? '强制清理删除实例' : '销毁实例'"
       />
 
       <ConsoleDrawer ref="consoleRef" :etag="inst.etag.value" :instance="i" />

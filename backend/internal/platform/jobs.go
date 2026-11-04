@@ -151,6 +151,7 @@ func (a *App) Step(ctx context.Context, j Job, key, operation, status string) er
 		var old Row
 		res := tx.Table("task_steps").Where("task_id=? AND step_key=? AND attempt=?", j.ID, key, j.LeaseGeneration).Take(&old)
 		if errors.Is(res.Error, gorm.ErrRecordNotFound) {
+			r["result_redacted"] = `{"native_dispatch_fenced":true}`
 			if e := tx.Table("task_steps").Create(&r).Error; e != nil {
 				return e
 			}

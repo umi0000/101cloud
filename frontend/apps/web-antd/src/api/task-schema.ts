@@ -37,8 +37,15 @@ export const CreationProgressSchema = z.object({
   }),
 });
 
+export const CreationCleanupSchema = z.object({
+  status: z.enum(['pending', 'cleaning', 'unknown', 'completed']),
+  billing_status: z.enum(['pending', 'refunded']),
+  instance_name: z.string(),
+});
+
 
 export const TaskSchema = z.object({
+  creation_cleanup: CreationCleanupSchema.nullable().optional(),
   creation_progress: CreationProgressSchema.nullable().optional(),
   created_at: z.string(),
   error: PublicErrorSchema.nullable().optional(),

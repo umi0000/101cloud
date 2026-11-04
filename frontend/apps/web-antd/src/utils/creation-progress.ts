@@ -12,7 +12,9 @@ export const CREATION_STAGES: { key: CreationStageKey; label: string }[] = [
 
 export function creationState(task: Task | null): 'active' | 'cancelled' | 'failed' | 'loading' | 'pending' | 'succeeded' | 'unavailable' | 'unknown' {
   if (!task) return 'loading';
-  if (task.type !== 'instance.create' || !task.creation_progress) return 'unavailable';
+  if (task.type !== 'instance.create') return 'unavailable';
+  if (task.creation_cleanup) return task.status === 'unknown' ? 'unknown' : 'failed';
+  if (!task.creation_progress) return 'unavailable';
   const progress = task.creation_progress;
   // 已知步骤失败不能覆盖任务整体仍待核对的结果与防重放提示。
   if (task.status === 'unknown') return 'unknown';

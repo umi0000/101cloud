@@ -37,6 +37,8 @@ func registerWorkers(a *platform.App) {
 	a.RegisterJob("instance.import", runImport)
 	a.RegisterJob("instance.reconcile", runReconcile)
 	a.RegisterJob("instance.gpu", runGPU)
+	a.RegisterJob("instance.creation_cleanup", runCreationCleanup)
+	a.AddPoller("failed-creation-cleanup", 15*time.Second, pollFailedCreations)
 	for _, kind := range []string{"instance.create", "instance.start", "instance.stop", "instance.restart", "instance.resize", "instance.delete", "instance.import", "instance.gpu"} {
 		a.RegisterReconciler(kind, runReconcile)
 	}
@@ -85,6 +87,14 @@ func workerObserve(ctx context.Context, a *platform.App, r platform.Row) (platfo
 	}
 	if platform.Text(m["name"]) != platform.Text(r["incus_name"]) {
 		return nil, "", errors.New("instance name changed")
+	}
+	if platform.Bool(r["stuck_cleanup"]) {
+		if err := stuckDeleteIdentity(r, m); err != nil {
+			return nil, "", err
+		}
+	}
+	if r["creation_failed_at"] != nil && platform.Text(cfg["user.101cloud.instance_id"]) != platform.Text(r["id"]) {
+		return nil, "", errors.New("creation cleanup ownership marker mismatch")
 	}
 	return m, etag, nil
 }
@@ -191,6 +201,14 @@ func workerOperation(ctx context.Context, a *platform.App, j platform.Job, key s
 	}
 	v, err := send()
 	if err != nil {
+		if nativeMissing(err) && confirmed != nil {
+			if absent, observeErr := confirmed(); observeErr == nil && absent {
+				if stepErr := a.Step(ctx, j, key, "", "succeeded"); stepErr != nil {
+					return nil, platform.Unknown(stepErr)
+				}
+				return platform.Row{}, nil
+			}
+		}
 		if errors.Is(err, workerSkipped) {
 			if e := a.Step(ctx, j, key, "", "cancelled"); e != nil {
 				return nil, e
@@ -264,8 +282,15 @@ func workerInstance(ctx context.Context, a *platform.App, j platform.Job) (platf
 	if err != nil {
 		return nil, err
 	}
+	cleanup := platform.Bool(object(string(j.Parameters))["cleanup_stuck"])
+	if cleanup {
+		r["stuck_cleanup"] = true
+	}
 	if platform.Uint(r["node_id"]) != j.NodeID || platform.Uint(r["user_id"]) != j.UserID {
 		return nil, errors.New("task instance ownership or placement changed")
+	}
+	if r["creation_failed_at"] != nil && !cleanup && j.Type != "instance.creation_cleanup" && ctx.Value(creationCleanupAuthorityKey{}) != j.ID {
+		return nil, platform.E(404, "not_found", "Instance not found")
 	}
 	return r, nil
 }
@@ -285,17 +310,20 @@ func workerCreatePreflightFailed(ctx context.Context, a *platform.App, j platfor
 	if ctx.Value(workerRecoveryKey{}) != nil {
 		return workerUnknown(ctx, a, j, r, workerRetainedCreationError(cause))
 	}
-	absent, err := workerAbsent(ctx, a, r)
-	if err != nil || !absent {
-		return workerUnknown(ctx, a, j, r, workerRetainedCreationError(cause))
-	}
-	err = a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+	err := a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
 		if e := lockWorkerAccount(db, a, j, j.UserID); e != nil {
 			return e
 		}
 		current, e := platform.Get(db, "instances", j.InstanceID, true)
 		if e != nil {
 			return e
+		}
+		delivered, e := creationDelivered(db, current)
+		if e != nil {
+			return e
+		}
+		if delivered {
+			return errors.New("delivered creation cannot release preflight reservations")
 		}
 		if !workerPristineCreation(current, j) {
 			return errors.New("creation state changed before reservation cleanup")
@@ -329,10 +357,14 @@ func workerCreatePreflightFailed(ctx context.Context, a *platform.App, j platfor
 				return errors.New("GPU reservation is not pristine")
 			}
 		}
-		if e = billing.CancelUnprovisionedInstance(ctx, db, current); e != nil {
+		now := a.Time()
+		current["creation_failed_at"] = now
+		if e = db.Table("instances").Where("id=?", j.InstanceID).Updates(platform.Row{"creation_failed_at": now, "creation_failure_task_id": j.ID, "creation_cleanup_state": "completed", "desired_state": "deleted", "deleted_at": now}).Error; e != nil {
 			return e
 		}
-		now := a.Time()
+		if e = billing.CancelFailedCreation(ctx, db, current, now); e != nil {
+			return e
+		}
 		if e = db.Table("gpu_allocations").Where("instance_id=? AND status='reserved'", j.InstanceID).Updates(platform.Row{"status": "cancelled", "released_at": now, "release_reason": "creation failed before dispatch", "release_verified": true, "last_verified_at": now, "revision": gorm.Expr("revision+1")}).Error; e != nil {
 			return e
 		}
@@ -346,7 +378,7 @@ func workerCreatePreflightFailed(ctx context.Context, a *platform.App, j platfor
 	})
 	if err != nil {
 		platform.LogError("retain failed creation reservations", err)
-		return workerUnknown(ctx, a, j, r, workerRetainedCreationError(cause))
+		return workerUnknown(ctx, a, j, r, workerRetainedCreationError(confirmedCreationFailure(cause)))
 	}
 	return cause
 }
@@ -363,7 +395,7 @@ func workerRetainedCreationError(cause error) error {
 		details = map[string]any{}
 	}
 	details["resource_reservations_released"] = false
-	details["action"] = "资源预留仍保留，未自动重试或释放；请管理员核对节点实例、派发记录及计费预留后处理。"
+	details["action"] = "物理资源预留仍保留；确定未交付失败将由后台安全回收，派发有歧义时仅核对原操作，不会重放创建或初始化。"
 	return platform.EDetails(409, platform.Text(public["code"]), platform.Text(public["message"]), platform.Row(details))
 }
 func workerConfirm(ctx context.Context, a *platform.App, j platform.Job, r platform.Row, state, event string, extra platform.Row) error {
@@ -380,6 +412,14 @@ func workerConfirmStep(ctx context.Context, a *platform.App, j platform.Job, r p
 		locked, err := platform.Get(db, "instances", platform.Uint(r["id"]), true)
 		if err != nil {
 			return err
+		}
+		if locked["creation_failed_at"] != nil {
+			if state == "running" || (extra != nil && platform.Text(extra["desired_state"]) == "running") {
+				return errors.New("failed creation cannot resume")
+			}
+			if extra != nil && platform.Text(extra["provisioning_state"]) == "ready" {
+				extra["provisioning_state"] = "failed"
+			}
 		}
 		changes := platform.Row{"observed_state": state, "observed_at": a.Time(), "revision": gorm.Expr("revision + 1")}
 		for k, v := range extra {
@@ -551,10 +591,13 @@ func workerCreateBody(ctx context.Context, a *platform.App, r platform.Row) (pla
 	source := platform.Row{"type": "image", "fingerprint": fingerprint}
 	return platform.Row{"name": platform.Text(r["incus_name"]), "type": platform.Text(r["image_type"]), "architecture": platform.Text(r["architecture"]), "profiles": []string{}, "config": cfg, "devices": platform.Row{"root": platform.Row{"type": "disk", "path": "/", "pool": platform.Text(r["storage_pool"]), "size": platform.Text(r["disk_bytes"])}, "eth0": nic}, "source": source}, nil
 }
-func runCreate(ctx context.Context, a *platform.App, j platform.Job) error {
+func runCreateWork(ctx context.Context, a *platform.App, j platform.Job) error {
 	r, err := workerInstance(ctx, a, j)
 	if err != nil {
 		return err
+	}
+	if r["creation_failed_at"] != nil || r["deleted_at"] != nil {
+		return platform.E(409, "creation_retired", "失败创建已退役，不可重新派发。")
 	}
 	prior, err := workerStep(ctx, a, j, "create.native")
 	if err != nil {
@@ -599,7 +642,7 @@ func runCreate(ctx context.Context, a *platform.App, j platform.Job) error {
 		}
 	}
 	_, err = workerOperation(ctx, a, j, "create.native", func() (map[string]any, error) {
-		return a.Agent(ctx, j.NodeID, http.MethodPost, "/1.0/instances?project="+url.QueryEscape(platform.Text(r["project_name"])), body)
+		return a.Agent(platform.WithTaskDispatch(ctx, j, "create.native"), j.NodeID, http.MethodPost, "/1.0/instances?project="+url.QueryEscape(platform.Text(r["project_name"])), body)
 	}, confirm)
 	if err != nil {
 		return workerUnknown(ctx, a, j, r, err)
@@ -613,14 +656,14 @@ func runCreate(ctx context.Context, a *platform.App, j platform.Job) error {
 		cfg = object(m["config"])
 	}
 	if platform.Text(cfg["user.101cloud.instance_id"]) != platform.Text(r["id"]) || workerFingerprint(cfg["volatile.base_image"]) != workerFingerprint(r["image_fingerprint"]) {
-		return workerUnknown(ctx, a, j, r, errors.New("created identity or pinned image mismatch"))
+		return workerUnknown(ctx, a, j, r, confirmedCreationFailure(platform.EDetails(409, "creation_configuration_invalid", "创建结果的归属或镜像不符合批准配置，实例未交付，将安全回收。", platform.Row{"reason": "identity_or_image_mismatch"})))
 	}
 	securityValid := (platform.Text(r["image_type"]) == "container" && platform.Text(cfg["security.privileged"]) == "false") || (platform.Text(r["image_type"]) == "virtual-machine" && cfg["security.privileged"] == nil)
 	if !workerResourcesMatch(m, platform.Uint(r["vcpus"]), platform.Text(r["memory_bytes"]), platform.Text(r["disk_bytes"])) || !securityValid || len(rows(m["profiles"])) != 0 {
-		return workerUnknown(ctx, a, j, r, errors.New("created resources or security differ from explicit approval"))
+		return workerUnknown(ctx, a, j, r, confirmedCreationFailure(platform.EDetails(409, "creation_configuration_invalid", "创建结果的资源或安全配置不符合批准配置，实例未交付，将安全回收。", platform.Row{"reason": "resources_or_security_mismatch"})))
 	}
 	if err = workerCreatedDevices(m, body); err != nil {
-		return workerUnknown(ctx, a, j, r, err)
+		return workerUnknown(ctx, a, j, r, confirmedCreationFailure(platform.EDetails(409, "creation_configuration_invalid", "创建结果的设备不符合批准配置，实例未交付，将安全回收。", platform.Row{"reason": "device_configuration_mismatch"})))
 	}
 	r["incus_uuid"] = cfg["volatile.uuid"]
 	if err = a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
@@ -695,7 +738,7 @@ func runCreate(ctx context.Context, a *platform.App, j platform.Job) error {
 	if err = a.Step(ctx, j, "state.start", "", "succeeded"); err != nil {
 		return workerUnknown(ctx, a, j, r, err)
 	}
-	if err = a.Step(ctx, j, "create.verify", "", "succeeded"); err != nil {
+	if err = workerConfirmStep(ctx, a, j, r, finalState, "", platform.Row{"incus_config_snapshot": gorm.Expr("JSON_SET(incus_config_snapshot, '$.creation_delivered', true)")}, "create.verify"); err != nil {
 		return workerUnknown(ctx, a, j, r, err)
 	}
 	return a.TaskResult(ctx, j, platform.Row{"instance_id": strconv.FormatUint(j.InstanceID, 10), "observed_state": finalState})
@@ -730,10 +773,18 @@ func runLifecycle(ctx context.Context, a *platform.App, j platform.Job) error {
 			return e
 		}
 		if action != "stop" {
+			if current["creation_failed_at"] != nil {
+				return workerSkipped
+			}
 			if platform.Text(current["desired_state"]) != "running" {
 				return workerSkipped
 			}
-			return a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error { return billing.AdmitInstance(ctx, db, current, action) })
+			return a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+				if err := lockWorkerAccount(db, a, j, j.UserID); err != nil {
+					return err
+				}
+				return billing.AdmitInstance(ctx, db, current, action)
+			})
 		}
 		reason := platform.Text(p["reason"])
 		if strings.HasPrefix(reason, "credit-enforcement:") {
@@ -743,6 +794,9 @@ func runLifecycle(ctx context.Context, a *platform.App, j platform.Job) error {
 			}
 			var proceed bool
 			e = a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+				if err := lockWorkerAccount(db, a, j, j.UserID); err != nil {
+					return err
+				}
 				var x error
 				proceed, x = billing.CheckCreditStop(ctx, db, j.InstanceID, id)
 				return x
@@ -807,7 +861,7 @@ func runLifecycle(ctx context.Context, a *platform.App, j platform.Job) error {
 			if _, _, e := workerObserve(ctx, a, r); e != nil {
 				return nil, e
 			}
-			return a.Agent(ctx, j.NodeID, http.MethodPut, workerPath(r, "/state"), platform.Row{"action": action, "timeout": timeout, "force": platform.Bool(p["force"]), "stateful": false})
+			return a.Agent(platform.WithTaskDispatch(ctx, j, "state."+action), j.NodeID, http.MethodPut, workerPath(r, "/state"), platform.Row{"action": action, "timeout": timeout, "force": platform.Bool(p["force"]), "stateful": false})
 		}, confirmed)
 		if errors.Is(err, workerSkipped) {
 			return skip()
@@ -847,7 +901,7 @@ func runLifecycle(ctx context.Context, a *platform.App, j platform.Job) error {
 					if _, _, e = workerObserve(ctx, a, r); e != nil {
 						return nil, e
 					}
-					return a.Agent(ctx, j.NodeID, http.MethodPut, workerPath(r, "/state"), platform.Row{"action": "stop", "timeout": timeout, "force": true, "stateful": false})
+					return a.Agent(platform.WithTaskDispatch(ctx, j, "state.idle-force-stop"), j.NodeID, http.MethodPut, workerPath(r, "/state"), platform.Row{"action": "stop", "timeout": timeout, "force": true, "stateful": false})
 				}, confirmed)
 				if errors.Is(err, workerSkipped) {
 					return skip()
@@ -1027,7 +1081,7 @@ func workerInitialize(ctx context.Context, a *platform.App, j platform.Job, r pl
 			if _, _, e := workerObserve(timeout, a, r); e != nil {
 				return nil, e
 			}
-			return a.Agent(timeout, j.NodeID, http.MethodPost, workerPath(r, "/exec"), platform.Row{"command": command, "environment": env, "interactive": false, "wait-for-websocket": false, "record-output": false})
+			return a.Agent(platform.WithTaskDispatch(timeout, j, key), j.NodeID, http.MethodPost, workerPath(r, "/exec"), platform.Row{"command": command, "environment": env, "interactive": false, "wait-for-websocket": false, "record-output": false})
 		}, nil)
 	}
 	if platform.Text(template["phase"]) == "cloud_init" {
@@ -1046,7 +1100,12 @@ func workerInitialize(ctx context.Context, a *platform.App, j platform.Job, r pl
 	if err = workerExit(result); err != nil {
 		return workerInitFailure(ctx, a, j, err)
 	}
-	return a.DB.WithContext(ctx).Table("instance_init_runs").Where("instance_id = ? AND task_id = ?", j.InstanceID, j.ID).Updates(platform.Row{"status": "succeeded", "exit_code": 0, "finished_at": a.Time(), "revision": gorm.Expr("revision + 1")}).Error
+	return a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
+		if err := workerLease(a, db, j); err != nil {
+			return err
+		}
+		return db.Table("instance_init_runs").Where("instance_id = ? AND task_id = ?", j.InstanceID, j.ID).Updates(platform.Row{"status": "succeeded", "exit_code": 0, "finished_at": a.Time(), "revision": gorm.Expr("revision + 1")}).Error
+	})
 }
 
 // Exec operation completion only proves transport completion. Persist success
@@ -1094,7 +1153,12 @@ func workerExit(operation platform.Row) error {
 	return nil
 }
 func workerInitFailure(ctx context.Context, a *platform.App, j platform.Job, err error) error {
-	_ = a.DB.WithContext(context.WithoutCancel(ctx)).Table("instance_init_runs").Where("instance_id = ? AND task_id = ?", j.InstanceID, j.ID).Updates(platform.Row{"status": "unknown", "revision": gorm.Expr("revision + 1")}).Error
+	_ = a.DB.WithContext(context.WithoutCancel(ctx)).Transaction(func(db *gorm.DB) error {
+		if err := workerLease(a, db, j); err != nil {
+			return err
+		}
+		return db.Table("instance_init_runs").Where("instance_id = ? AND task_id = ?", j.InstanceID, j.ID).Updates(platform.Row{"status": "unknown", "revision": gorm.Expr("revision + 1")}).Error
+	})
 	return platform.Unknown(err)
 }
 
@@ -1210,7 +1274,7 @@ func runResize(ctx context.Context, a *platform.App, j platform.Job) error {
 		root["size"] = p.Resources.DiskBytes
 		devices["root"] = root
 		_, err = workerOperation(ctx, a, j, "resize.native", func() (map[string]any, error) {
-			v, _, e := a.AgentConditional(ctx, j.NodeID, http.MethodPut, workerPath(r, ""), body, etag)
+			v, _, e := a.AgentConditional(platform.WithTaskDispatch(ctx, j, "resize.native"), j.NodeID, http.MethodPut, workerPath(r, ""), body, etag)
 			return v, e
 		}, confirmed)
 		if err != nil {
@@ -1295,21 +1359,44 @@ func runDelete(ctx context.Context, a *platform.App, j platform.Job) error {
 	if err != nil {
 		return err
 	}
+	cleanup := platform.Bool(p["cleanup_stuck"])
+	if cleanup {
+		preflightAbsent, preflightErr := workerDeleteAbsent(ctx, a, r, true)
+		if preflightErr != nil {
+			return workerUnknown(ctx, a, j, r, preflightErr)
+		}
+		if !preflightAbsent {
+			if _, _, observeErr := workerObserve(ctx, a, r); observeErr != nil && !nativeMissing(observeErr) {
+				return workerUnknown(ctx, a, j, r, observeErr)
+			}
+		}
+		if err = stuckDeleteQuiescent(ctx, a, j, r); err != nil {
+			return workerUnknown(ctx, a, j, r, err)
+		}
+	}
 	old, err := workerStep(ctx, a, j, "delete.native")
 	if err != nil {
 		return err
 	}
-	absent, err := workerAbsent(ctx, a, r)
+	absent, err := workerDeleteAbsent(ctx, a, r, cleanup)
 	if err != nil {
 		return workerUnknown(ctx, a, j, r, err)
 	}
-	if absent && old == nil {
+	if absent && old == nil && !cleanup {
 		return workerUnknown(ctx, a, j, r, errors.New("instance disappeared without a durable delete intent"))
 	}
 	if !absent {
 		if _, _, err = workerObserve(ctx, a, r); err != nil {
-			return workerUnknown(ctx, a, j, r, err)
+			if !cleanup || !nativeMissing(err) {
+				return workerUnknown(ctx, a, j, r, err)
+			}
+			absent, err = workerDeleteAbsent(ctx, a, r, true)
+			if err != nil || !absent {
+				return workerUnknown(ctx, a, j, r, errors.New("native target absence could not be confirmed"))
+			}
 		}
+	}
+	if !absent {
 		state, e := workerState(ctx, a, r)
 		if e != nil {
 			return workerUnknown(ctx, a, j, r, e)
@@ -1320,29 +1407,33 @@ func runDelete(ctx context.Context, a *platform.App, j platform.Job) error {
 			}
 			stop := j
 			stop.Type = "instance.stop"
-			stop.Parameters = json.RawMessage(jsonText(platform.Row{"force": platform.Bool(p["force"]), "reason": "instance deletion"}))
+			stop.Parameters = json.RawMessage(jsonText(platform.Row{"force": platform.Bool(p["force"]), "reason": "instance deletion", "cleanup_stuck": cleanup}))
 			if e = runLifecycle(ctx, a, stop); e != nil {
 				return e
 			}
 		}
 	}
-	_, err = workerOperation(ctx, a, j, "delete.native", func() (map[string]any, error) {
-		if _, _, e := workerObserve(ctx, a, r); e != nil {
-			return nil, e
+	if !cleanup || !absent {
+		_, err = workerOperation(ctx, a, j, "delete.native", func() (map[string]any, error) {
+			if _, _, e := workerObserve(ctx, a, r); e != nil {
+				return nil, e
+			}
+			state, e := workerState(ctx, a, r)
+			if e != nil {
+				return nil, e
+			}
+			if state != "stopped" {
+				return nil, errors.New("native deletion requires a freshly confirmed stopped instance")
+			}
+			return a.Agent(platform.WithTaskDispatch(ctx, j, "delete.native"), j.NodeID, http.MethodDelete, workerPath(r, ""), nil)
+		}, func() (bool, error) { return workerDeleteAbsent(ctx, a, r, cleanup) })
+		if err != nil {
+			return workerUnknown(ctx, a, j, r, err)
 		}
-		state, e := workerState(ctx, a, r)
-		if e != nil {
-			return nil, e
-		}
-		if state != "stopped" {
-			return nil, errors.New("native deletion requires a freshly confirmed stopped instance")
-		}
-		return a.Agent(ctx, j.NodeID, http.MethodDelete, workerPath(r, ""), nil)
-	}, func() (bool, error) { return workerAbsent(ctx, a, r) })
-	if err != nil {
+	} else if err = a.Step(ctx, j, "delete.native", "", "succeeded"); err != nil {
 		return workerUnknown(ctx, a, j, r, err)
 	}
-	absent, err = workerAbsent(ctx, a, r)
+	absent, err = workerDeleteAbsent(ctx, a, r, cleanup)
 	if err != nil || !absent {
 		if err == nil {
 			err = errors.New("deleted instance is still present")
@@ -1354,8 +1445,10 @@ func runDelete(ctx context.Context, a *platform.App, j platform.Job) error {
 	if err = a.Step(ctx, j, "delete.verify_reclamation", "", "running"); err != nil {
 		return workerUnknown(ctx, a, j, r, err)
 	}
-	if err = workerDeletedGPUs(ctx, a, r, confirmedAt); err != nil {
-		return workerUnknown(ctx, a, j, r, err)
+	if !cleanup {
+		if err = workerDeletedGPUs(ctx, a, r, confirmedAt); err != nil {
+			return workerUnknown(ctx, a, j, r, err)
+		}
 	}
 	if err = a.Step(ctx, j, "delete.verify_reclamation", "", "succeeded"); err != nil {
 		return workerUnknown(ctx, a, j, r, err)
@@ -1370,6 +1463,9 @@ func runDelete(ctx context.Context, a *platform.App, j platform.Job) error {
 		current, e := platform.Get(db, "instances", j.InstanceID, true)
 		if e != nil {
 			return e
+		}
+		if current["deleted_at"] != nil {
+			return nil
 		}
 		now := a.Time()
 		if e = billing.InstanceUsage(ctx, db, current, "deleted", nil); e != nil {
@@ -1429,7 +1525,7 @@ func workerDeletedGPUs(ctx context.Context, a *platform.App, r platform.Row, con
 }
 
 func workerGPUReclamationError(reason string) error {
-	return platform.EDetails(409, "gpu_reclamation_unverified", "原生实例已删除，但 GPU 回收证据尚未确认；IP、GPU、配额及计费预留仍保留。", platform.Row{
+	return platform.EDetails(409, "gpu_reclamation_unverified", "原生实例已删除，但 GPU 回收证据尚未确认；IP、GPU及配额预留仍保留。", platform.Row{
 		"stage": "delete.verify_reclamation", "reason": reason, "native_deletion_confirmed": true, "resource_reservations_released": false,
 		"action": "请管理员检查节点监控采集是否完整且时间同步，等待删除后的完整新样本，再对原任务执行对账；请勿重复删除或手工释放预留。",
 	})
@@ -1795,6 +1891,15 @@ func runReconcile(ctx context.Context, a *platform.App, j platform.Job) error {
 	if err != nil {
 		return err
 	}
+	if j.InstanceID != 0 {
+		instance, e := platform.Get(a.DB.WithContext(ctx), "instances", j.InstanceID, false)
+		if e != nil {
+			return e
+		}
+		if instance["creation_failed_at"] != nil {
+			return platform.E(409, "creation_retired", "失败创建已交由后台安全回收，不得重放原任务。")
+		}
+	}
 	sourceID := platform.Uint(p["source_task_id"])
 	seen := map[uint64]bool{j.ID: true}
 	var sources []platform.Row
@@ -1876,12 +1981,8 @@ func runReconcile(ctx context.Context, a *platform.App, j platform.Job) error {
 		return platform.Unknown(err)
 	}
 	err = a.DB.WithContext(ctx).Transaction(func(db *gorm.DB) error {
-		var live int64
-		if e := db.Table("tasks").Where("id = ? AND lease_generation = ? AND status = 'running' AND lease_until > ?", j.ID, j.LeaseGeneration, a.Time()).Count(&live).Error; e != nil {
+		if e := workerLease(a, db, j); e != nil {
 			return e
-		}
-		if live != 1 {
-			return errors.New("lost reconciliation lease before source completion")
 		}
 		for _, s := range sources {
 			result := db.Table("tasks").Where("id = ? AND status = 'unknown' AND lease_generation = ? AND revision = ?", s["id"], s["lease_generation"], s["revision"]).Updates(platform.Row{"status": "succeeded", "finished_at": a.Time(), "error_code": nil, "result_redacted": gorm.Expr("JSON_REMOVE(COALESCE(result_redacted, JSON_OBJECT()), '$.error')"), "phase": "reconciled", "lease_owner": nil, "lease_until": nil, "revision": gorm.Expr("revision + 1")})

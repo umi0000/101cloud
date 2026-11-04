@@ -146,6 +146,9 @@ func (s *consoleService) create(c *gin.Context) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if inst["creation_failed_at"] != nil {
+		return nil, platform.E(404, "not_found", "实例不存在")
+	}
 	if !admin && platform.Uint(inst["user_id"]) != u.ID {
 		return nil, platform.E(404, "not_found", "实例不存在")
 	}
@@ -239,8 +242,11 @@ func (s *consoleService) authorized(ctx context.Context, row consoleSession, liv
 		return err
 	}
 	var inst platform.Row
-	if err := s.a.DB.WithContext(ctx).Table("instances").Select("user_id,node_id,observed_state,provisioning_state,deleted_at,product_type,allowed_user_actions").Where("id = ?", row.InstanceID).Take(&inst).Error; err != nil {
+	if err := s.a.DB.WithContext(ctx).Table("instances").Select("user_id,node_id,observed_state,provisioning_state,deleted_at,creation_failed_at,product_type,allowed_user_actions").Where("id = ?", row.InstanceID).Take(&inst).Error; err != nil {
 		return err
+	}
+	if inst["creation_failed_at"] != nil {
+		return platform.E(404, "not_found", "实例不存在")
 	}
 	if platform.Uint(inst["user_id"]) != row.InstanceOwnerID || platform.Uint(inst["node_id"]) != row.NodeID || (!row.IsAdmin && platform.Uint(inst["user_id"]) != row.UserID) {
 		return platform.E(403, "console_revoked", "实例权限已改变")
@@ -358,6 +364,9 @@ func (s *consoleService) prepare(ctx context.Context, a *platform.App, job platf
 	inst, err := platform.Get(a.DB.WithContext(ctx), "instances", row.InstanceID, false)
 	if err != nil {
 		return fail(err)
+	}
+	if inst["creation_failed_at"] != nil {
+		return fail(platform.E(404, "not_found", "实例不存在"))
 	}
 	path := "/1.0/instances/" + url.PathEscape(platform.Text(inst["incus_name"]))
 	body := map[string]any{}

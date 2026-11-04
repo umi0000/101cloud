@@ -21,8 +21,9 @@ func debtRetryFixture(t *testing.T) (*gorm.DB, row, time.Time) {
 	// manufacturing unrelated instance/node fixtures. The account stays locked.
 	for table, definition := range map[string]string{
 		"credit_accounts":     "id BIGINT PRIMARY KEY,user_id BIGINT,version BIGINT DEFAULT 0,revision BIGINT DEFAULT 1,settlement_pending BOOLEAN NOT NULL DEFAULT FALSE",
+		"instances":           "id BIGINT PRIMARY KEY,creation_failed_at DATETIME(6)",
 		"credit_buckets":      "id BIGINT AUTO_INCREMENT PRIMARY KEY,account_id BIGINT,source_type VARCHAR(24),business_key VARBINARY(191),granted_pt DECIMAL(20,6),remaining_pt DECIMAL(20,6),reserved_pt DECIMAL(20,6),valid_from DATETIME(6),expires_at DATETIME(6),version BIGINT DEFAULT 0,revision BIGINT DEFAULT 1,CHECK(remaining_pt>=reserved_pt AND reserved_pt>=0)",
-		"usage_sessions":      "id BIGINT PRIMARY KEY,account_id BIGINT,status VARCHAR(24),billing_mode VARCHAR(24)",
+		"usage_sessions":      "id BIGINT PRIMARY KEY,account_id BIGINT,status VARCHAR(24),billing_mode VARCHAR(24),instance_id BIGINT",
 		"usage_charges":       "id BIGINT PRIMARY KEY,account_id BIGINT,session_id BIGINT,expected_pt DECIMAL(20,6),settled_pt DECIMAL(20,6),status VARCHAR(24),settled_at DATETIME(6),revision BIGINT DEFAULT 1,updated_at DATETIME(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),CHECK(expected_pt>=settled_pt AND settled_pt>=0)",
 		"credit_reservations": "id BIGINT PRIMARY KEY,account_id BIGINT,session_id BIGINT,bucket_id BIGINT,reserved_pt DECIMAL(20,6),settled_pt DECIMAL(20,6),released_pt DECIMAL(20,6),status VARCHAR(24),closed_at DATETIME(6),revision BIGINT DEFAULT 1,CHECK(reserved_pt>=settled_pt+released_pt)",
 		"credit_ledger":       "id BIGINT AUTO_INCREMENT PRIMARY KEY,account_id BIGINT,bucket_id BIGINT,business_key VARBINARY(191),entry_type VARCHAR(24),amount_delta_pt DECIMAL(20,6),reserved_delta_pt DECIMAL(20,6),remaining_after_pt DECIMAL(20,6),reserved_after_pt DECIMAL(20,6),charge_id BIGINT,reservation_id BIGINT,created_at DATETIME(6) DEFAULT CURRENT_TIMESTAMP(6)",
@@ -33,7 +34,8 @@ func debtRetryFixture(t *testing.T) (*gorm.DB, row, time.Time) {
 	}
 	for _, sql := range []string{
 		"INSERT INTO credit_accounts(id,user_id) VALUES(1,1)",
-		"INSERT INTO usage_sessions VALUES(1,1,'ended','credit'),(2,1,'active','credit')",
+		"INSERT INTO instances VALUES(1,NULL)",
+		"INSERT INTO usage_sessions VALUES(1,1,'ended','credit',1),(2,1,'active','credit',1)",
 		"INSERT INTO usage_charges(id,account_id,session_id,expected_pt,settled_pt,status,revision,updated_at) VALUES(1,1,1,3,0,'insufficient',7,'2026-11-01 00:00:00'),(2,1,2,2,0,'insufficient',8,'2026-11-01 00:00:00')",
 	} {
 		if err := db.Exec(sql).Error; err != nil {

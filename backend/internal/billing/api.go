@@ -460,6 +460,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 	a.AddPoller("credit-daily-grants", time.Minute, func(ctx context.Context, a *platform.App) error { return dailyGrants(ctx, a) })
 	a.AddPoller("credit-settlement", 5*time.Second, func(ctx context.Context, a *platform.App) error { return settleAll(ctx, a) })
 	a.AddPoller("credit-debt-settlement", time.Second, func(ctx context.Context, a *platform.App) error { return settlePending(ctx, a) })
+	a.AddPoller("credit-failed-creation-refunds", time.Second, func(ctx context.Context, a *platform.App) error { return cancelFailedCreations(ctx, a) })
 	a.AddPoller("credit-enforcement", time.Second, func(ctx context.Context, a *platform.App) error { return enforceAll(ctx, a) })
 	a.RegisterJob("credit_enforcement_reconcile", func(ctx context.Context, a *platform.App, j platform.Job) error {
 		var p struct {
@@ -610,6 +611,6 @@ func accountDTO(db *gorm.DB, ac row) (row, error) {
 
 func outstandingDebt(db *gorm.DB, accountID uint64) (decimal.Decimal, error) {
 	var amount string
-	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Table("usage_charges").Select("COALESCE(SUM(expected_pt-settled_pt),0)").Where("account_id=? AND status='insufficient'", accountID).Scan(&amount).Error
+	err := db.Clauses(clause.Locking{Strength: "UPDATE"}).Table("usage_charges c").Select("COALESCE(SUM(c.expected_pt-c.settled_pt),0)").Where("c.account_id=? AND c.status='insufficient' AND "+chargeNotFailedSQL, accountID).Scan(&amount).Error
 	return dec(amount), err
 }

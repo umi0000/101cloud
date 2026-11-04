@@ -305,7 +305,7 @@ export const instancesApi = {
   ) => post<TaskAccepted>('/admin/custom-instances', body, w),
   delete: (
     id: ID,
-    body: { confirm_data_loss_risk?: boolean; confirm_name: string; delete_data: true; mode?: 'force' },
+    body: { cleanup_stuck?: boolean; confirm_data_loss_risk?: boolean; confirm_name: string; delete_data: true; mode?: 'force' },
     w: Write,
   ) => del<TaskAccepted>(ai(id), body, w),
   detachGPU: (

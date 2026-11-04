@@ -74,6 +74,33 @@ describe('authoritative creation progress', () => {
     expect(CreationProgressSchema.safeParse({ initialization_pending: false, stages: [{ key: 'script', status: 'skipped' }, { key: 'script', status: 'succeeded' }] }).success).toBe(false);
   });
 
+  it('validates and retains only the public cleanup contract', () => {
+    const creation_cleanup = { status: 'cleaning', billing_status: 'refunded', instance_name: 'safe name' } as const;
+    const parsed = TaskSchema.parse({ ...task(), creation_cleanup: { ...creation_cleanup, login: 'must not survive' } });
+    expect(parsed.creation_cleanup).toEqual(creation_cleanup);
+    expect(TaskSchema.safeParse(task({ creation_cleanup: null })).success).toBe(true);
+    for (const invalid of [
+      { ...creation_cleanup, status: 'deleted' },
+      { ...creation_cleanup, billing_status: 'charged' },
+      { ...creation_cleanup, instance_name: null },
+      { status: 'pending', billing_status: 'pending' },
+    ]) {
+      expect(TaskSchema.safeParse({ ...task(), creation_cleanup: invalid }).success).toBe(false);
+    }
+  });
+
+  it.each(['pending', 'cleaning', 'unknown', 'completed'] as const)('never permits entry into a failed creation during %s cleanup', (status) => {
+    const result = task({ creation_cleanup: { status, billing_status: 'refunded', instance_name: 'safe name' } });
+    expect(creationState(result)).toBe('failed');
+    expect(canEnterCreatedInstance(result, { id: 'instance-a', creation_task_id: 'task-a', user_id: 'user-a' }, 'user-a')).toBe(false);
+    result.status = 'unknown';
+    expect(creationState(result)).toBe('unknown');
+    expect(result.status).toBe('unknown');
+    result.status = 'failed';
+    result.creation_progress = undefined;
+    expect(creationState(result)).toBe('failed');
+  });
+
   it('uses timestamps for elapsed time without inventing durations', () => {
     expect(elapsedLabel('2026-11-03T00:00:00Z', '2026-11-03T00:01:05Z')).toBe('1 分 05 秒');
     expect(elapsedLabel(null, Date.now())).toBe('—');

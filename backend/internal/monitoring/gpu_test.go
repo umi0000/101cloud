@@ -32,16 +32,17 @@ func TestGPUAutomaticCandidatesIncludeIdleStopOnly(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	rows := `SELECT name FROM (
- SELECT 'idle-stop-only' AS name, 1 AS node_id, NULL AS deleted_at, 'running' AS observed_state,
+ SELECT 'idle-stop-only' AS name, 1 AS node_id, NULL AS deleted_at, NULL AS creation_failed_at, 'running' AS observed_state,
   0 AS auto_release_gpu, 0 AS auto_rebind_gpu, CAST('{"idle":{"enabled":true,"action":"stop_instance"}}' AS JSON) AS gpu_policy
- UNION ALL SELECT 'detach-enabled',1,NULL,'running',1,0,CAST('{"idle":{"enabled":true,"action":"detach_gpu"}}' AS JSON)
- UNION ALL SELECT 'rebalance-enabled',1,NULL,'running',0,1,CAST('{"idle":{"enabled":false,"action":"detach_gpu"}}' AS JSON)
- UNION ALL SELECT 'disabled-stop',1,NULL,'running',0,0,CAST('{"idle":{"enabled":false,"action":"stop_instance"}}' AS JSON)
- UNION ALL SELECT 'stopped-stop',1,NULL,'stopped',0,0,CAST('{"idle":{"enabled":true,"action":"stop_instance"}}' AS JSON)
- UNION ALL SELECT 'deleted-stop',1,'2026-10-30 00:00:00','running',0,0,CAST('{"idle":{"enabled":true,"action":"stop_instance"}}' AS JSON)
- UNION ALL SELECT 'other-node-stop',2,NULL,'running',0,0,CAST('{"idle":{"enabled":true,"action":"stop_instance"}}' AS JSON)
- UNION ALL SELECT 'no-policy',1,NULL,'running',0,0,CAST('{}' AS JSON)
- UNION ALL SELECT 'string-not-boolean',1,NULL,'running',0,0,CAST('{"idle":{"enabled":"true","action":"stop_instance"}}' AS JSON)
+ UNION ALL SELECT 'detach-enabled',1,NULL,NULL,'running',1,0,CAST('{"idle":{"enabled":true,"action":"detach_gpu"}}' AS JSON)
+ UNION ALL SELECT 'rebalance-enabled',1,NULL,NULL,'running',0,1,CAST('{"idle":{"enabled":false,"action":"detach_gpu"}}' AS JSON)
+ UNION ALL SELECT 'disabled-stop',1,NULL,NULL,'running',0,0,CAST('{"idle":{"enabled":false,"action":"stop_instance"}}' AS JSON)
+ UNION ALL SELECT 'stopped-stop',1,NULL,NULL,'stopped',0,0,CAST('{"idle":{"enabled":true,"action":"stop_instance"}}' AS JSON)
+ UNION ALL SELECT 'deleted-stop',1,'2026-10-30 00:00:00',NULL,'running',0,0,CAST('{"idle":{"enabled":true,"action":"stop_instance"}}' AS JSON)
+ UNION ALL SELECT 'retired-stop',1,NULL,'2026-10-30 00:00:00','running',0,0,CAST('{"idle":{"enabled":true,"action":"stop_instance"}}' AS JSON)
+ UNION ALL SELECT 'other-node-stop',2,NULL,NULL,'running',0,0,CAST('{"idle":{"enabled":true,"action":"stop_instance"}}' AS JSON)
+ UNION ALL SELECT 'no-policy',1,NULL,NULL,'running',0,0,CAST('{}' AS JSON)
+ UNION ALL SELECT 'string-not-boolean',1,NULL,NULL,'running',0,0,CAST('{"idle":{"enabled":"true","action":"stop_instance"}}' AS JSON)
 ) candidates WHERE ` + gpuAutomaticCandidateFilter + ` ORDER BY name`
 	var got []string
 	if err = db.WithContext(ctx).Raw(rows, 1).Scan(&got).Error; err != nil {
@@ -72,8 +73,8 @@ func TestGPUWindowMapUpserts(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	var fixture struct {
-		ID     uint64
-		NodeID uint64
+		ID                 uint64
+		NodeID             uint64
 		SchedulingPolicyID string
 	}
 	if err = db.WithContext(ctx).Table("instances").Select("id,node_id,JSON_UNQUOTE(JSON_EXTRACT(policy_versions,'$.\"gpu-scheduling\"')) AS scheduling_policy_id").Where("JSON_EXTRACT(policy_versions,'$.\"gpu-scheduling\"') IS NOT NULL").Order("id").Limit(1).Find(&fixture).Error; err != nil {

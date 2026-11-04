@@ -8,6 +8,8 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"math/big"
 	"net"
@@ -22,18 +24,39 @@ import (
 
 	"101cloud/backend/internal/platform"
 	"github.com/gin-gonic/gin"
+	mysqlDriver "github.com/go-sql-driver/mysql"
 	"gorm.io/gorm"
 )
 
-// Every fixture table is connection-local: no persistent rows, quotas or nodes
-// are altered even when the test DSN points at an existing migrated test database.
+// Each fixture owns an isolated schema. Real tables support financial ledger
+// self-joins, which MySQL disallows for connection-local TEMPORARY tables.
 func creationCleanupDB(t *testing.T, handlers ...http.Handler) (*gorm.DB, *platform.App, platform.Job, platform.Row, *atomic.Int64) {
 	t.Helper()
-	dsn := os.Getenv("CLOUD_TEST_MYSQL_DSN")
+	dsn := os.Getenv("CLOUD_TEST_MYSQL_ADMIN_DSN")
 	if dsn == "" {
-		t.Skip("set CLOUD_TEST_MYSQL_DSN to a migrated test database")
+		t.Skip("set CLOUD_TEST_MYSQL_ADMIN_DSN for isolated creation cleanup regressions")
 	}
-	db, err := platform.OpenDB(platform.Config{DSN: dsn})
+	cfg, err := mysqlDriver.ParseDSN(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DBName = ""
+	owner, err := sql.Open("mysql", cfg.FormatDSN())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { owner.Close() })
+	var nonce [8]byte
+	if _, err = rand.Read(nonce[:]); err != nil {
+		t.Fatal(err)
+	}
+	name := "ci_creation_cleanup_" + hex.EncodeToString(nonce[:])
+	if _, err = owner.ExecContext(t.Context(), "CREATE DATABASE `"+name+"`"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { owner.Exec("DROP DATABASE `" + name + "`") })
+	cfg.DBName = name
+	db, err := platform.OpenDB(platform.Config{DSN: cfg.FormatDSN()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,40 +65,40 @@ func creationCleanupDB(t *testing.T, handlers ...http.Handler) (*gorm.DB, *platf
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { pool.Close() })
+	definitions := map[string]string{
+		"credit_accounts":              "id BIGINT PRIMARY KEY,user_id BIGINT,status VARCHAR(24),credit_policy_version_id BIGINT DEFAULT 1,version BIGINT DEFAULT 0,revision BIGINT DEFAULT 0,settlement_pending BOOL NOT NULL DEFAULT FALSE",
+		"credit_buckets":               "id BIGINT PRIMARY KEY,account_id BIGINT,remaining_pt DECIMAL(20,6),reserved_pt DECIMAL(20,6),valid_from DATETIME(6),expires_at DATETIME(6),version BIGINT DEFAULT 0,revision BIGINT DEFAULT 0",
+		"credit_ledger":                "id BIGINT AUTO_INCREMENT PRIMARY KEY,account_id BIGINT,bucket_id BIGINT,business_key VARCHAR(191) UNIQUE,entry_type VARCHAR(24),amount_delta_pt DECIMAL(20,6),reserved_delta_pt DECIMAL(20,6),remaining_after_pt DECIMAL(20,6),reserved_after_pt DECIMAL(20,6),reservation_id BIGINT,charge_id BIGINT,metadata_redacted JSON",
+		"credit_reservations":          "id BIGINT PRIMARY KEY,account_id BIGINT,session_id BIGINT,bucket_id BIGINT,reserved_pt DECIMAL(20,6),settled_pt DECIMAL(20,6),released_pt DECIMAL(20,6),status VARCHAR(24),closed_at DATETIME(6),revision BIGINT DEFAULT 0",
+		"usage_sessions":               "id BIGINT AUTO_INCREMENT PRIMARY KEY,account_id BIGINT,user_id BIGINT,node_id BIGINT,instance_id BIGINT,charge_kind VARCHAR(24),metering_state VARCHAR(24),status VARCHAR(24),metered_microseconds BIGINT DEFAULT 0,cumulative_expected_pt DECIMAL(20,6) DEFAULT 0,started_at DATETIME(6),last_settled_at DATETIME(6),ended_at DATETIME(6),revision BIGINT DEFAULT 0,pricing_version_id BIGINT,billing_mode VARCHAR(32),config_snapshot JSON,cpu_hourly_pt DECIMAL(20,6) DEFAULT 0,memory_gib_hourly_pt DECIMAL(20,6) DEFAULT 0,disk_gib_hourly_pt DECIMAL(20,6) DEFAULT 0,gpu_hourly_pt DECIMAL(20,6) DEFAULT 0",
+		"usage_charges":                "id BIGINT AUTO_INCREMENT PRIMARY KEY,session_id BIGINT,account_id BIGINT,from_at DATETIME(6),to_at DATETIME(6),expected_pt DECIMAL(20,6),settled_pt DECIMAL(20,6),status VARCHAR(24),settled_at DATETIME(6),calculation_snapshot JSON,revision BIGINT DEFAULT 0,UNIQUE(session_id,from_at)",
+		"tasks":                        "id BIGINT AUTO_INCREMENT PRIMARY KEY,task_type VARCHAR(64),user_id BIGINT,node_id BIGINT,instance_id BIGINT,status VARCHAR(24),phase VARCHAR(64),parameters_redacted JSON,error_code VARCHAR(64),finished_at DATETIME(6),lease_owner VARCHAR(128),lease_generation BIGINT,lease_until DATETIME(6),result_redacted JSON,revision BIGINT DEFAULT 0,idempotency_scope VARCHAR(64),idempotency_key VARCHAR(128),is_instance_mutation BOOL,priority INT",
+		"task_steps":                   "id BIGINT AUTO_INCREMENT PRIMARY KEY,task_id BIGINT,step_key VARCHAR(128),attempt BIGINT,status VARCHAR(24),error_code VARCHAR(64),operation_id VARCHAR(128),node_id BIGINT,project_name VARCHAR(64),parameters_redacted JSON,result_redacted JSON,started_at DATETIME(6),finished_at DATETIME(6),UNIQUE(task_id,step_key,attempt)",
+		"instances":                    "id BIGINT PRIMARY KEY,user_id BIGINT,node_id BIGINT,project_name VARCHAR(64),incus_name VARCHAR(64),incus_uuid VARCHAR(64),image_type VARCHAR(24),image_id BIGINT,image_fingerprint VARCHAR(64),architecture VARCHAR(24),vcpus BIGINT,memory_bytes BIGINT,disk_bytes BIGINT,storage_pool VARCHAR(64),desired_state VARCHAR(24),observed_state VARCHAR(24),provisioning_state VARCHAR(24),observed_at DATETIME(6),deleted_at DATETIME(6),creation_failed_at DATETIME(6),creation_failure_task_id BIGINT,creation_cleanup_state VARCHAR(16),incus_config_snapshot JSON,revision BIGINT DEFAULT 0,billing_mode VARCHAR(32) DEFAULT 'admin_exempt',credit_policy_version_id BIGINT,init_template_version_id BIGINT,cpu_hourly_pt DECIMAL(20,6) DEFAULT 0,memory_gib_hourly_pt DECIMAL(20,6) DEFAULT 0,disk_gib_hourly_pt DECIMAL(20,6) DEFAULT 0,product_type VARCHAR(24),allowed_user_actions JSON,logical_name VARCHAR(64),login_config_ciphertext MEDIUMBLOB,login_initialized_at DATETIME(6)",
+		"ip_addresses":                 "id BIGINT PRIMARY KEY,instance_id BIGINT,node_id BIGINT,node_network_binding_id BIGINT,network_pool_id BIGINT,address_family INT,address BLOB,status VARCHAR(24),reservation_task_id BIGINT,reserved_at DATETIME(6),reservation_expires_at DATETIME(6),bound_at DATETIME(6),revision BIGINT DEFAULT 0",
+		"gpu_allocations":              "id BIGINT PRIMARY KEY,instance_id BIGINT,user_id BIGINT,node_id BIGINT,status VARCHAR(24),active_slot INT GENERATED ALWAYS AS (CASE WHEN status IN ('reserved','attaching','active','releasing','unknown') THEN 1 ELSE NULL END) STORED,configured BOOL DEFAULT FALSE,observed BOOL DEFAULT FALSE,attached_at DATETIME(6),released_at DATETIME(6),release_reason VARCHAR(255),release_verified BOOL DEFAULT FALSE,last_verified_at DATETIME(6),revision BIGINT DEFAULT 0",
+		"nodes":                        "id BIGINT PRIMARY KEY,agent_endpoint VARCHAR(255),token_ciphertext BLOB,server_cert_sha256 BLOB,default_project_name VARCHAR(64) DEFAULT 'default',administrative_state VARCHAR(24),health VARCHAR(24),connection_verified_at DATETIME(6),resources_sampled_at DATETIME(6),allocatable_vcpus BIGINT DEFAULT 100,allocatable_memory_bytes BIGINT DEFAULT 1099511627776,allocatable_disk_bytes BIGINT DEFAULT 1099511627776,resident_vcpu_budget BIGINT DEFAULT 100,resident_memory_budget_bytes BIGINT DEFAULT 1099511627776,resident_disk_budget_bytes BIGINT DEFAULT 1099511627776",
+		"node_network_bindings":        "id BIGINT PRIMARY KEY,node_id BIGINT,network_pool_id BIGINT DEFAULT 1,project_name VARCHAR(64),status VARCHAR(24),validation_status VARCHAR(24),mode VARCHAR(24),parent_interface VARCHAR(64),incus_network_name VARCHAR(64),mtu INT",
+		"network_pools":                "id BIGINT PRIMARY KEY,prefix_length INT,dns_servers JSON,gateway BLOB,network_address BLOB,status VARCHAR(24) DEFAULT 'active'",
+		"images":                       "id BIGINT PRIMARY KEY,source_type VARCHAR(24),fingerprint BINARY(32),architecture VARCHAR(24),image_type VARCHAR(24),status VARCHAR(24),gpu_ready BOOL,properties JSON",
+		"image_nodes":                  "id BIGINT PRIMARY KEY,image_id BIGINT,node_id BIGINT,project_name VARCHAR(64),fingerprint BINARY(32),architecture VARCHAR(24),cloud_init BOOL,gpu_ready BOOL,properties JSON,status VARCHAR(24),variant VARCHAR(64),source_id VARCHAR(24),revision BIGINT DEFAULT 1,last_verified_at DATETIME(6)",
+		"policy_versions":              "id BIGINT PRIMARY KEY,kind VARCHAR(24),source_id BIGINT,status VARCHAR(24),effective_at DATETIME(6),config JSON",
+		"credit_enforcements":          "id BIGINT PRIMARY KEY,account_id BIGINT,status VARCHAR(24),policy_snapshot JSON,exhausted_at DATETIME(6)",
+		"credit_enforcement_instances": "id BIGINT AUTO_INCREMENT PRIMARY KEY,enforcement_id BIGINT,instance_id BIGINT,task_id BIGINT,status VARCHAR(24) DEFAULT 'pending',revision BIGINT DEFAULT 1,UNIQUE(enforcement_id,instance_id)",
+		"users":                        "id BIGINT PRIMARY KEY,status VARCHAR(24)",
+		"user_limits":                  "user_id BIGINT PRIMARY KEY,max_instances BIGINT,max_vcpus BIGINT,max_memory_bytes BIGINT,max_disk_bytes BIGINT,max_resident_instances BIGINT",
+	}
+	// DDL precedes the worker transaction so it cannot invalidate savepoints.
+	for table, definition := range definitions {
+		if err = db.Exec("CREATE TABLE `" + table + "` (" + definition + ") ENGINE=InnoDB").Error; err != nil {
+			t.Fatal(err)
+		}
+	}
 	tx := db.Begin()
 	if tx.Error != nil {
 		t.Fatal(tx.Error)
 	}
 	t.Cleanup(func() { tx.Rollback() })
-	definitions := map[string]string{
-		"credit_accounts":       "id BIGINT PRIMARY KEY,user_id BIGINT,status VARCHAR(24),credit_policy_version_id BIGINT DEFAULT 1,version BIGINT DEFAULT 0,revision BIGINT DEFAULT 0",
-		"credit_buckets":        "id BIGINT PRIMARY KEY,account_id BIGINT,remaining_pt DECIMAL(20,6),reserved_pt DECIMAL(20,6),version BIGINT DEFAULT 0,revision BIGINT DEFAULT 0",
-		"credit_ledger":         "id BIGINT AUTO_INCREMENT PRIMARY KEY,account_id BIGINT,bucket_id BIGINT,business_key VARCHAR(191) UNIQUE,entry_type VARCHAR(24),amount_delta_pt DECIMAL(20,6),reserved_delta_pt DECIMAL(20,6),remaining_after_pt DECIMAL(20,6),reserved_after_pt DECIMAL(20,6),reservation_id BIGINT",
-		"credit_reservations":   "id BIGINT PRIMARY KEY,account_id BIGINT,session_id BIGINT,bucket_id BIGINT,reserved_pt DECIMAL(20,6),settled_pt DECIMAL(20,6),released_pt DECIMAL(20,6),status VARCHAR(24),closed_at DATETIME(6),revision BIGINT DEFAULT 0",
-		"usage_sessions":        "id BIGINT AUTO_INCREMENT PRIMARY KEY,account_id BIGINT,user_id BIGINT,node_id BIGINT,instance_id BIGINT,charge_kind VARCHAR(24),metering_state VARCHAR(24),status VARCHAR(24),metered_microseconds BIGINT DEFAULT 0,cumulative_expected_pt DECIMAL(20,6) DEFAULT 0,started_at DATETIME(6),last_settled_at DATETIME(6),ended_at DATETIME(6),revision BIGINT DEFAULT 0,pricing_version_id BIGINT,billing_mode VARCHAR(32),config_snapshot JSON,cpu_hourly_pt DECIMAL(20,6) DEFAULT 0,memory_gib_hourly_pt DECIMAL(20,6) DEFAULT 0,disk_gib_hourly_pt DECIMAL(20,6) DEFAULT 0,gpu_hourly_pt DECIMAL(20,6) DEFAULT 0",
-		"usage_charges":         "id BIGINT AUTO_INCREMENT PRIMARY KEY,session_id BIGINT,account_id BIGINT,from_at DATETIME(6),to_at DATETIME(6),expected_pt DECIMAL(20,6),settled_pt DECIMAL(20,6),status VARCHAR(24),settled_at DATETIME(6),calculation_snapshot JSON,revision BIGINT DEFAULT 0,UNIQUE(session_id,from_at)",
-		"tasks":                 "id BIGINT AUTO_INCREMENT PRIMARY KEY,task_type VARCHAR(64),user_id BIGINT,node_id BIGINT,instance_id BIGINT,status VARCHAR(24),phase VARCHAR(64),parameters_redacted JSON,error_code VARCHAR(64),finished_at DATETIME(6),lease_owner VARCHAR(128),lease_generation BIGINT,lease_until DATETIME(6),result_redacted JSON,revision BIGINT DEFAULT 0,idempotency_scope VARCHAR(64),idempotency_key VARCHAR(128),is_instance_mutation BOOL,priority INT",
-		"task_steps":            "id BIGINT AUTO_INCREMENT PRIMARY KEY,task_id BIGINT,step_key VARCHAR(128),attempt BIGINT,status VARCHAR(24),error_code VARCHAR(64),operation_id VARCHAR(128),node_id BIGINT,project_name VARCHAR(64),parameters_redacted JSON,result_redacted JSON,started_at DATETIME(6),finished_at DATETIME(6),UNIQUE(task_id,step_key,attempt)",
-		"instances":             "id BIGINT PRIMARY KEY,user_id BIGINT,node_id BIGINT,project_name VARCHAR(64),incus_name VARCHAR(64),incus_uuid VARCHAR(64),image_type VARCHAR(24),image_id BIGINT,image_fingerprint VARCHAR(64),architecture VARCHAR(24),vcpus BIGINT,memory_bytes BIGINT,disk_bytes BIGINT,storage_pool VARCHAR(64),desired_state VARCHAR(24),observed_state VARCHAR(24),provisioning_state VARCHAR(24),observed_at DATETIME(6),deleted_at DATETIME(6),incus_config_snapshot JSON,revision BIGINT DEFAULT 0,billing_mode VARCHAR(32) DEFAULT 'admin_exempt',credit_policy_version_id BIGINT,init_template_version_id BIGINT,cpu_hourly_pt DECIMAL(20,6) DEFAULT 0,memory_gib_hourly_pt DECIMAL(20,6) DEFAULT 0,disk_gib_hourly_pt DECIMAL(20,6) DEFAULT 0,product_type VARCHAR(24),allowed_user_actions JSON,logical_name VARCHAR(64),login_config_ciphertext MEDIUMBLOB,login_initialized_at DATETIME(6)",
-		"ip_addresses":          "id BIGINT PRIMARY KEY,instance_id BIGINT,node_id BIGINT,node_network_binding_id BIGINT,network_pool_id BIGINT,address_family INT,address BLOB,status VARCHAR(24),reservation_task_id BIGINT,reserved_at DATETIME(6),reservation_expires_at DATETIME(6),bound_at DATETIME(6),revision BIGINT DEFAULT 0",
-		"gpu_allocations":       "id BIGINT PRIMARY KEY,instance_id BIGINT,user_id BIGINT,node_id BIGINT,status VARCHAR(24),active_slot INT GENERATED ALWAYS AS (CASE WHEN status IN ('reserved','attaching','active','releasing','unknown') THEN 1 ELSE NULL END) STORED,configured BOOL DEFAULT FALSE,observed BOOL DEFAULT FALSE,attached_at DATETIME(6),released_at DATETIME(6),release_reason VARCHAR(255),release_verified BOOL DEFAULT FALSE,last_verified_at DATETIME(6),revision BIGINT DEFAULT 0",
-		"nodes":                 "id BIGINT PRIMARY KEY,agent_endpoint VARCHAR(255),token_ciphertext BLOB,server_cert_sha256 BLOB,default_project_name VARCHAR(64) DEFAULT 'default',administrative_state VARCHAR(24),health VARCHAR(24),connection_verified_at DATETIME(6),resources_sampled_at DATETIME(6),allocatable_vcpus BIGINT DEFAULT 100,allocatable_memory_bytes BIGINT DEFAULT 1099511627776,allocatable_disk_bytes BIGINT DEFAULT 1099511627776,resident_vcpu_budget BIGINT DEFAULT 100,resident_memory_budget_bytes BIGINT DEFAULT 1099511627776,resident_disk_budget_bytes BIGINT DEFAULT 1099511627776",
-		"node_network_bindings": "id BIGINT PRIMARY KEY,node_id BIGINT,network_pool_id BIGINT DEFAULT 1,project_name VARCHAR(64),status VARCHAR(24),validation_status VARCHAR(24),mode VARCHAR(24),parent_interface VARCHAR(64),incus_network_name VARCHAR(64),mtu INT",
-		"network_pools":         "id BIGINT PRIMARY KEY,prefix_length INT,dns_servers JSON,gateway BLOB,network_address BLOB,status VARCHAR(24) DEFAULT 'active'",
-		"images":                "id BIGINT PRIMARY KEY,source_type VARCHAR(24),fingerprint BINARY(32),architecture VARCHAR(24),image_type VARCHAR(24),status VARCHAR(24),gpu_ready BOOL,properties JSON",
-		"image_nodes":           "id BIGINT PRIMARY KEY,image_id BIGINT,node_id BIGINT,project_name VARCHAR(64),fingerprint BINARY(32),architecture VARCHAR(24),cloud_init BOOL,gpu_ready BOOL,properties JSON,status VARCHAR(24),variant VARCHAR(64),source_id VARCHAR(24),revision BIGINT DEFAULT 1,last_verified_at DATETIME(6)",
-		"policy_versions":       "id BIGINT PRIMARY KEY,kind VARCHAR(24),source_id BIGINT,status VARCHAR(24),effective_at DATETIME(6),config JSON",
-		"credit_enforcements":   "id BIGINT PRIMARY KEY,account_id BIGINT,status VARCHAR(24),policy_snapshot JSON,exhausted_at DATETIME(6)",
-		"users":                 "id BIGINT PRIMARY KEY,status VARCHAR(24)",
-		"user_limits":           "user_id BIGINT PRIMARY KEY,max_instances BIGINT,max_vcpus BIGINT,max_memory_bytes BIGINT,max_disk_bytes BIGINT,max_resident_instances BIGINT",
-	}
-	// Declare all columns before seeding. ALTER TABLE implicitly commits MySQL
-	// transactions, unlike CREATE TEMPORARY TABLE, and invalidates worker savepoints.
-	for table, definition := range definitions {
-		if err = tx.Exec("CREATE TEMPORARY TABLE `" + table + "` (" + definition + ") ENGINE=InnoDB").Error; err != nil {
-			t.Fatal(err)
-		}
-	}
 	mutations := &atomic.Int64{}
 	handler := http.Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
@@ -123,7 +146,7 @@ func creationCleanupDB(t *testing.T, handlers ...http.Handler) (*gorm.DB, *platf
 		"instances":             {instance},
 		"tasks":                 {{"id": 43, "task_type": "instance.create", "user_id": 2, "node_id": 1, "instance_id": 15, "status": "running", "lease_owner": "test", "lease_generation": 1, "lease_until": at.Add(time.Minute), "result_redacted": "{}"}},
 		"credit_accounts":       {{"id": 7, "user_id": 2, "status": "active"}},
-		"credit_buckets":        {{"id": 1, "account_id": 7, "remaining_pt": "10.000000", "reserved_pt": "2.000000"}},
+		"credit_buckets":        {{"id": 1, "account_id": 7, "remaining_pt": "10.000000", "reserved_pt": "2.000000", "valid_from": at.Add(-time.Hour)}},
 		"usage_sessions":        {{"id": 1, "account_id": 7, "user_id": 2, "node_id": 1, "instance_id": 15, "charge_kind": "base_compute", "metering_state": "held", "status": "active", "started_at": at, "last_settled_at": at}, {"id": 2, "account_id": 7, "user_id": 2, "node_id": 1, "instance_id": 15, "charge_kind": "storage", "metering_state": "running", "status": "active", "started_at": at, "last_settled_at": at}},
 		"credit_reservations":   {{"id": 1, "account_id": 7, "session_id": 1, "bucket_id": 1, "reserved_pt": "1.000000", "settled_pt": "0", "released_pt": "0", "status": "held"}, {"id": 2, "account_id": 7, "session_id": 2, "bucket_id": 1, "reserved_pt": "1.000000", "settled_pt": "0", "released_pt": "0", "status": "held"}},
 		"ip_addresses":          {{"id": 1, "instance_id": 15, "node_id": 1, "node_network_binding_id": 1, "network_pool_id": 1, "address_family": 4, "address": []byte{10, 0, 0, 2}, "status": "reserved", "reservation_task_id": 43, "reserved_at": at}},
@@ -146,6 +169,9 @@ func creationCleanupDB(t *testing.T, handlers ...http.Handler) (*gorm.DB, *platf
 
 func TestMySQLKnownDiskShortageCancelsOnlyPristineCreation(t *testing.T) {
 	db, a, job, _, mutations := creationCleanupDB(t)
+	if err := db.Table("instances").Where("id=15").Update("billing_mode", "credit").Error; err != nil {
+		t.Fatal(err)
+	}
 	err := runCreate(context.Background(), a, job)
 	if err == nil || platform.PublicError(err, false)["code"] != "storage_pool_capacity_exceeded" {
 		t.Fatalf("concrete failure missing: %v", err)
@@ -157,7 +183,7 @@ func TestMySQLKnownDiskShortageCancelsOnlyPristineCreation(t *testing.T) {
 		t.Fatal("preflight dispatched a mutation")
 	}
 	instance, _ := platform.Get(db, "instances", 15, false)
-	if platform.Text(instance["provisioning_state"]) != "failed" || platform.Text(instance["observed_state"]) != "error" || instance["deleted_at"] != nil || !platform.Bool(object(instance["incus_config_snapshot"])["creation_reservations_released"]) {
+	if platform.Text(instance["provisioning_state"]) != "failed" || platform.Text(instance["observed_state"]) != "error" || instance["deleted_at"] == nil || instance["creation_failed_at"] == nil || platform.Text(instance["creation_cleanup_state"]) != "completed" || !platform.Bool(object(instance["incus_config_snapshot"])["creation_reservations_released"]) {
 		t.Fatalf("failed creation state/marker wrong: %+v", instance)
 	}
 	ip, _ := platform.Get(db, "ip_addresses", 1, false)
@@ -190,7 +216,7 @@ func TestMySQLKnownDiskShortageCancelsOnlyPristineCreation(t *testing.T) {
 }
 
 func TestMySQLUncertainCreationRetainsAllReservations(t *testing.T) {
-	for _, scenario := range []string{"native_intent", "reconcile_lineage", "recovery", "lease_expired", "ip_owner_changed", "gpu_configured", "metered", "charge_interval", "ledger_failure"} {
+	for _, scenario := range []string{"native_intent", "reconcile_lineage", "recovery", "lease_expired", "ip_owner_changed", "gpu_configured"} {
 		t.Run(scenario, func(t *testing.T) {
 			db, a, job, instance, mutations := creationCleanupDB(t)
 			ctx := context.Background()
@@ -208,12 +234,6 @@ func TestMySQLUncertainCreationRetainsAllReservations(t *testing.T) {
 				err = db.Table("ip_addresses").Where("id=1").Update("reservation_task_id", 99).Error
 			case "gpu_configured":
 				err = db.Table("gpu_allocations").Where("id=1").Update("configured", true).Error
-			case "metered":
-				err = db.Table("usage_sessions").Where("id=2").Update("metered_microseconds", 1).Error
-			case "charge_interval":
-				err = db.Table("usage_charges").Create(&platform.Row{"id": 1, "session_id": 2}).Error
-			case "ledger_failure":
-				err = db.Table("credit_ledger").Create(&platform.Row{"business_key": "release:2"}).Error
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -380,6 +400,7 @@ func TestMySQLImageTaskDTOExposesOnlySafeProgress(t *testing.T) {
 		t.Fatalf("unsafe or missing image progress: %+v", result)
 	}
 	row["task_type"] = "instance.create"
+	row["instance_id"] = uint64(15)
 	dto, err = taskDTO(db, row)
 	if err != nil || dto["result"] != nil {
 		t.Fatalf("instance task exposed arbitrary result: %+v %v", dto, err)

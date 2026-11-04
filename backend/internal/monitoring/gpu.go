@@ -41,7 +41,7 @@ var gpuPollState = struct {
 
 // The detach mirror deliberately excludes stop_instance. Read that saved action
 // explicitly so an idle-stop-only policy is still evaluated without enabling detach.
-const gpuAutomaticCandidateFilter = "node_id=? AND deleted_at IS NULL AND observed_state='running' AND (auto_release_gpu=1 OR auto_rebind_gpu=1 OR (JSON_EXTRACT(gpu_policy,'$.idle.enabled')=CAST('true' AS JSON) AND JSON_UNQUOTE(JSON_EXTRACT(gpu_policy,'$.idle.action'))='stop_instance'))"
+const gpuAutomaticCandidateFilter = "node_id=? AND deleted_at IS NULL AND creation_failed_at IS NULL AND observed_state='running' AND (auto_release_gpu=1 OR auto_rebind_gpu=1 OR (JSON_EXTRACT(gpu_policy,'$.idle.enabled')=CAST('true' AS JSON) AND JSON_UNQUOTE(JSON_EXTRACT(gpu_policy,'$.idle.action'))='stop_instance'))"
 
 var gpuHighWindowConflict = clause.OnConflict{DoUpdates: clause.AssignmentColumns([]string{"high_since", "last_sampled_at", "updated_at"})}
 var gpuIdleWindowConflict = clause.OnConflict{DoUpdates: clause.AssignmentColumns([]string{"agent_boot_id", "runtime_started_at", "last_sequence", "last_sampled_at", "idle_since", "updated_at"})}
@@ -193,7 +193,7 @@ func evaluateGPUInstance(ctx context.Context, a *platform.App, id uint64) error 
 		if e != nil {
 			return e
 		}
-		if platform.Text(instance["observed_state"]) != "running" || instance["deleted_at"] != nil {
+		if instance["creation_failed_at"] != nil || platform.Text(instance["observed_state"]) != "running" || instance["deleted_at"] != nil {
 			return nil
 		}
 		idle, e := a.InstancePolicy(ctx, instance, "gpu-idle")

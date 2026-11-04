@@ -165,7 +165,7 @@ func workerLoginInitialize(ctx context.Context, a *platform.App, j platform.Job,
 		if _, _, e = workerObserve(timeout, a, r); e != nil {
 			return nil, e
 		}
-		return a.Agent(timeout, j.NodeID, http.MethodPost, workerPath(r, "/exec"), platform.Row{
+		return a.Agent(platform.WithTaskDispatch(timeout, j, "login.cloud-ready"), j.NodeID, http.MethodPost, workerPath(r, "/exec"), platform.Row{
 			// A disabled cloud-init can exit zero. Require the first-boot
 			// completion file and our non-sensitive marker as well. This fixed
 			// command contains no caller input, password, key or user-data.

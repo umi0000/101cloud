@@ -195,7 +195,13 @@ func workerCloudInitDiagnostic(ctx context.Context, a *platform.App, j platform.
 	if stage == "login.cloud-ready" {
 		mode = "login"
 	}
-	v, err := a.Agent(probe, j.NodeID, http.MethodPost, workerPath(r, "/exec"), platform.Row{
+	// A recovery may run a fresh read-only diagnostic, never replay a prior exec.
+	// Give each probe its own fenced journal rather than reusing its dispatch marker.
+	key := stage + ".diagnostic." + platform.RandomToken()[:12]
+	if err := a.Step(probe, j, key, "", "running"); err != nil {
+		return cloudInitDiagnosticError(stage, original, -1)
+	}
+	v, err := a.Agent(platform.WithTaskDispatch(probe, j, key), j.NodeID, http.MethodPost, workerPath(r, "/exec"), platform.Row{
 		"command":     []string{"/usr/bin/timeout", "--signal=KILL", "15", "/usr/bin/python3", "-c", CloudInitDiagnosticScript, mode},
 		"environment": platform.Row{"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
 		"interactive": false, "wait-for-websocket": false, "record-output": false,
@@ -218,6 +224,9 @@ func workerCloudInitDiagnostic(ctx context.Context, a *platform.App, j platform.
 	}
 	m, err := workerMetadata(v)
 	if err != nil {
+		return cloudInitDiagnosticError(stage, original, -1)
+	}
+	if err := a.Step(probe, j, key, operation, "succeeded"); err != nil {
 		return cloudInitDiagnosticError(stage, original, -1)
 	}
 	code, ok := initializationExit(m)

@@ -254,6 +254,9 @@ func Owned(c *gin.Context, a *App, table string, id uint64) (Row, error) {
 	if e != nil {
 		return nil, e
 	}
+	if table == "instances" && r["creation_failed_at"] != nil && (!c.GetBool("admin") || c.Request.Method != "GET") {
+		return nil, E(404, "not_found", "resource not found")
+	}
 	if !c.GetBool("admin") && Uint(r["user_id"]) != Current(c).ID {
 		return nil, E(404, "not_found", "resource not found")
 	}

@@ -152,6 +152,8 @@ export const TASK_NEXT_ACTIONS: Record<string, string> = {
   administrator_reconcile: '请管理员核对实际状态，不会重放原操作',
   correct_and_resubmit: '修正失败原因后可重新提交创建，不会自动重试',
   inspect_failure: '请先检查失败原因与资源实际状态，再决定后续操作',
+  none: '无需操作',
+  wait_cleanup: '等待平台自动清理，不会重新创建实例',
 };
 
 export const AUDIT_EVENTS: Record<string, string> = {

@@ -1767,7 +1767,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Administrator deletion requires confirm_name matching the exact instance name and delete_data:true. Running instances additionally require mode:force and confirm_data_loss_risk:true. One durable backend task persists force=true, confirms force stop before Agent DELETE, then obtains fresh GPU occupancy evidence before releasing allocations. Timeouts and unknown outcomes retain reservations and reconcile the recorded operation; clients must not orchestrate stop/delete.",
+        "description": "Administrator deletion requires exact confirm_name and delete_data:true. Normal deletion keeps ready/fresh state gates and strict post-delete GPU evidence. Explicit cleanup_stuck:true additionally requires mode:force and confirm_data_loss_risk:true; it may take over busy/pending/unknown/stale instances, durably revoke old task leases and reuse an active cleanup task. Known native operations must reach terminal state before authoritative target absence; initially absent is success without stop/delete or host-wide GPU metrics. Matching native UUID/ownership is required for present guests. Resources and billing reservations are released once while preserving a deleted_at tombstone, historical charges and audit. Offline/403/timeouts are not absence; unresolved lost operation identity remains unknown with cleanup_native_submission_unknown and recovery guidance.",
         "parameters": [
           {
             "in": "path",
@@ -1855,7 +1855,12 @@
                   },
                   "confirm_data_loss_risk": {
                     "type": "boolean",
-                    "description": "Must be true with mode:force for a running instance. Force stop may lose unsaved data."
+                    "description": "Must be true with mode:force for a running instance or cleanup_stuck:true. Force stop may lose unsaved data."
+                  },
+                  "cleanup_stuck": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Administrator-only explicit recovery cleanup. Requires mode:force, confirm_data_loss_risk:true, exact confirm_name and delete_data:true. Revokes prior tasks, resolves known native operations, and treats verified target absence as sufficient cleanup success without host-wide GPU metrics."
                   }
                 },
                 "required": [
@@ -1866,6 +1871,24 @@
               }
             }
           }
+        }
+      }
+    },
+    "/admin/instances/{id}/delete": {
+      "post": {
+        "operationId": "post_admin_instances_id_delete",
+        "tags": ["admin"],
+        "description": "Submit the same durable admin deletion/cleanup contract as DELETE /admin/instances/{id}.",
+        "parameters": [
+          {"$ref": "#/paths/~1admin~1instances~1{id}/delete/parameters/0"},
+          {"$ref": "#/paths/~1admin~1instances~1{id}/delete/parameters/1"},
+          {"$ref": "#/paths/~1admin~1instances~1{id}/delete/parameters/2"},
+          {"$ref": "#/paths/~1admin~1instances~1{id}/delete/parameters/3"}
+        ],
+        "requestBody": {"$ref": "#/paths/~1admin~1instances~1{id}/delete/requestBody"},
+        "responses": {
+          "202": {"$ref": "#/paths/~1admin~1instances~1{id}/delete/responses/202"},
+          "default": {"$ref": "#/components/responses/ApiError"}
         }
       }
     },
@@ -11736,6 +11759,17 @@
       "Task": {
         "type": "object",
         "properties": {
+          "creation_cleanup": {
+            "type": "object",
+            "description": "Only retired never-delivered instance.create tasks. Original error and instance_id remain available; this safe summary does not expose instance configuration.",
+            "required": ["status", "billing_status", "instance_name"],
+            "properties": {
+              "status": { "type": "string", "enum": ["pending", "cleaning", "unknown", "completed"] },
+              "billing_status": { "type": "string", "enum": ["pending", "refunded"] },
+              "instance_name": { "type": "string" }
+            },
+            "additionalProperties": false
+          },
           "creation_progress": {
             "type": "object",
             "description": "Only instance.create. Read-only journal projection; task success alone does not imply completed initialization.",
@@ -11898,7 +11932,7 @@
               "wait",
               "administrator_reconcile",
               "inspect_failure",
-              "correct_and_resubmit",
+              "wait_cleanup",
               "none"
             ]
           }

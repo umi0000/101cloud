@@ -122,6 +122,9 @@ func ownedQuery(c *gin.Context, a *platform.App, q *gorm.DB) (platform.Row, erro
 	if e != nil {
 		return nil, e
 	}
+	if r["creation_failed_at"] != nil && (!c.GetBool("admin") || (c.Request.Method != "GET" && !c.GetBool("allow_stuck_cleanup"))) {
+		return nil, platform.E(404, "not_found", "Instance not found")
+	}
 	if !c.GetBool("admin") && platform.Uint(r["user_id"]) != platform.Current(c).ID {
 		return nil, platform.E(404, "not_found", "Instance not found")
 	}
@@ -129,7 +132,14 @@ func ownedQuery(c *gin.Context, a *platform.App, q *gorm.DB) (platform.Row, erro
 		if e = lockOwnerAccount(db, platform.Uint(r["user_id"])); e != nil {
 			return nil, e
 		}
-		return platform.Get(db, "instances", id, true)
+		current, err := platform.Get(db, "instances", id, true)
+		if err != nil {
+			return nil, err
+		}
+		if current["creation_failed_at"] != nil && !c.GetBool("allow_stuck_cleanup") {
+			return nil, platform.E(404, "not_found", "Instance not found")
+		}
+		return current, nil
 	}
 	return r, nil
 }
@@ -147,6 +157,11 @@ func permitted(c *gin.Context, r platform.Row, action string) error {
 func instanceDTO(a *platform.App, r platform.Row) platform.Row {
 	out := platform.Public(r, "id", "product_type", "billing_mode", "desired_state", "observed_state", "provisioning_state", "observed_at", "revision", "created_at", "updated_at", "node_id", "user_id")
 	out["policy_versions"] = object(r["policy_versions"])
+	if r["creation_failed_at"] != nil {
+		out["creation_failed_at"] = r["creation_failed_at"]
+		out["creation_failure_task_id"] = platform.Text(r["creation_failure_task_id"])
+		out["creation_cleanup_state"] = platform.Text(r["creation_cleanup_state"])
+	}
 	out["resource_reservations_released"] = platform.Text(r["provisioning_state"]) == "failed" && platform.Bool(object(r["incus_config_snapshot"])["creation_reservations_released"])
 	out["name"] = platform.Text(r["logical_name"])
 	out["instance_type"] = platform.Text(r["image_type"])
@@ -178,7 +193,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 	registerGPU(a, user, admin)
 	for _, g := range []*gin.RouterGroup{user, admin} {
 		g.GET("/instances", platform.Handle(func(c *gin.Context) (any, error) {
-			q := instanceImageQuery(platform.DB(c, a)).Select("id,user_id,node_id,logical_name,product_type,billing_mode,image_type,image_id,instance_plan_id,plan_snapshot,policy_versions,vcpus,memory_bytes,disk_bytes,desired_state,observed_state,provisioning_state,observed_at,allowed_user_actions,incus_config_snapshot,revision,created_at,updated_at,image_os_name,image_os_release").Where("deleted_at IS NULL")
+			q := instanceImageQuery(platform.DB(c, a)).Select("id,user_id,node_id,logical_name,product_type,billing_mode,image_type,image_id,instance_plan_id,plan_snapshot,policy_versions,vcpus,memory_bytes,disk_bytes,desired_state,observed_state,provisioning_state,observed_at,allowed_user_actions,incus_config_snapshot,revision,created_at,updated_at,image_os_name,image_os_release").Where("deleted_at IS NULL AND creation_failed_at IS NULL")
 			if !c.GetBool("admin") {
 				q = q.Where("user_id=?", platform.Current(c).ID)
 			}
@@ -305,6 +320,9 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		taskAccepted(c, r)
 		return nil, nil
 	}))
+	admin.POST("/instances/:id/delete", platform.Handle(func(c *gin.Context) (any, error) {
+		return lifecycle(c, a, "delete")
+	}))
 	admin.POST("/tasks/:id/reconcile", platform.Handle(func(c *gin.Context) (any, error) {
 		id, e := platform.ID(c, "id")
 		if e != nil {
@@ -345,6 +363,9 @@ func packedIP(v any) any {
 	return nil
 }
 func lifecycle(c *gin.Context, a *platform.App, action string) (any, error) {
+	if action == "delete" && c.GetBool("admin") {
+		c.Set("allow_stuck_cleanup", true)
+	}
 	r, e := owned(c, a)
 	if e != nil {
 		return nil, e
@@ -360,6 +381,7 @@ func lifecycle(c *gin.Context, a *platform.App, action string) (any, error) {
 		Confirm        bool      `json:"confirm_data_loss_risk"`
 		ConfirmName    string    `json:"confirm_name"`
 		DeleteData     bool      `json:"delete_data"`
+		CleanupStuck   bool      `json:"cleanup_stuck"`
 		ConfirmRestart bool      `json:"confirm_restart"`
 		Resources      Resources `json:"resources"`
 	}
@@ -375,6 +397,23 @@ func lifecycle(c *gin.Context, a *platform.App, action string) (any, error) {
 			return nil, platform.E(403, "force_not_allowed", "Force action requires administrator permission")
 		}
 		return nil, bad("Confirm data loss risk")
+	}
+	if in.CleanupStuck {
+		if !c.GetBool("admin") {
+			return nil, platform.E(403, "force_not_allowed", "Stuck cleanup requires administrator permission")
+		}
+		if action != "delete" || !force || !in.Confirm || !in.DeleteData || in.ConfirmName != platform.Text(r["logical_name"]) {
+			return nil, bad("Stuck cleanup requires force mode, risk, exact name and delete_data confirmation")
+		}
+		out, err := admitStuckDelete(a, platform.DB(c, a), r)
+		if err != nil {
+			return nil, err
+		}
+		taskAccepted(c, out)
+		return nil, nil
+	}
+	if r["creation_failed_at"] != nil {
+		return nil, platform.E(404, "not_found", "Instance not found")
 	}
 	db := platform.DB(c, a)
 	id := platform.Uint(r["id"])
@@ -523,6 +562,9 @@ func QueueStop(ctx context.Context, a *platform.App, db *gorm.DB, instanceID, us
 	r, e := platform.Get(locked(db), "instances", instanceID, true)
 	if e != nil {
 		return nil, e
+	}
+	if r["creation_failed_at"] != nil {
+		return nil, platform.E(404, "not_found", "Instance not found")
 	}
 	if platform.Uint(r["user_id"]) != userID {
 		return nil, platform.E(403, "forbidden", "Instance owner does not match")
@@ -688,6 +730,11 @@ func instanceView(c *gin.Context, a *platform.App, r platform.Row) (platform.Row
 		caps["gpu_attach"] = false
 		caps["gpu_rebind"] = false
 	}
+	if r["creation_failed_at"] != nil {
+		for key := range caps {
+			caps[key] = false
+		}
+	}
 	return out, nil
 }
 func taskDTO(db *gorm.DB, r platform.Row) (platform.Row, error) {
@@ -731,11 +778,31 @@ func taskDTO(db *gorm.DB, r platform.Row) (platform.Row, error) {
 		out["next_action"] = "administrator_reconcile"
 	} else if platform.Text(r["status"]) == "failed" {
 		out["next_action"] = "inspect_failure"
-		if platform.Bool(object(r["result_redacted"])["creation_reservations_released"]) {
-			out["next_action"] = "correct_and_resubmit"
-		}
 	} else if platform.Text(r["status"]) == "succeeded" || platform.Text(r["status"]) == "cancelled" {
 		out["next_action"] = "none"
+	}
+	if platform.Text(r["task_type"]) == "instance.create" {
+		instance, err := platform.Get(db, "instances", platform.Uint(r["instance_id"]), false)
+		if err != nil {
+			return nil, err
+		}
+		if instance["creation_failed_at"] != nil {
+			pending, err := billing.FailedCreationBillingPending(db.Statement.Context, db, instance)
+			if err != nil {
+				return nil, err
+			}
+			billingStatus := "refunded"
+			if pending {
+				billingStatus = "pending"
+			}
+			status := platform.Text(instance["creation_cleanup_state"])
+			out["resource_reservations_released"] = status == "completed"
+			out["creation_cleanup"] = platform.Row{"status": status, "billing_status": billingStatus, "instance_name": platform.Text(instance["logical_name"])}
+			out["next_action"] = "wait_cleanup"
+			if status == "completed" && !pending {
+				out["next_action"] = "inspect_failure"
+			}
+		}
 	}
 	return out, nil
 }

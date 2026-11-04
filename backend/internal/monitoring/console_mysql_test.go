@@ -42,7 +42,7 @@ func consoleTestService(t *testing.T) (*consoleService, consoleSession) {
 	definitions := map[string]string{
 		"users":            "id BIGINT PRIMARY KEY,status VARCHAR(24),role VARCHAR(24),revision BIGINT DEFAULT 1",
 		"user_sessions":    "id BIGINT PRIMARY KEY,user_id BIGINT,revoked_at DATETIME(6),expires_at DATETIME(6),created_at DATETIME(6)",
-		"instances":        "id BIGINT PRIMARY KEY,user_id BIGINT,node_id BIGINT,observed_state VARCHAR(24),provisioning_state VARCHAR(24),deleted_at DATETIME(6),product_type VARCHAR(24),allowed_user_actions JSON,image_type VARCHAR(24),revision BIGINT DEFAULT 1",
+		"instances":        "id BIGINT PRIMARY KEY,user_id BIGINT,node_id BIGINT,observed_state VARCHAR(24),provisioning_state VARCHAR(24),deleted_at DATETIME(6),creation_failed_at DATETIME(6),product_type VARCHAR(24),allowed_user_actions JSON,image_type VARCHAR(24),revision BIGINT DEFAULT 1",
 		"console_sessions": "id CHAR(43) PRIMARY KEY,user_id BIGINT,auth_session_id BIGINT,instance_id BIGINT,node_id BIGINT,instance_owner_id BIGINT,is_admin BOOLEAN,kind VARCHAR(16),status VARCHAR(16),cols INT,`rows` INT,operation_path VARCHAR(255),secrets_ciphertext BLOB,prepare_task_id BIGINT,prepare_started_at DATETIME(6),connected_at DATETIME(6),closed_at DATETIME(6),revision BIGINT,created_at DATETIME(6),updated_at DATETIME(6),KEY ix_console_user_status(user_id,status)",
 		"tasks":            "id BIGINT AUTO_INCREMENT PRIMARY KEY,task_type VARCHAR(64),idempotency_scope VARCHAR(64),idempotency_key VARCHAR(64),user_id BIGINT,node_id BIGINT,instance_id BIGINT,is_instance_mutation BOOLEAN,status VARCHAR(24),priority INT,parameters_redacted JSON",
 		"audit_logs":       "id BIGINT AUTO_INCREMENT PRIMARY KEY,event_type VARCHAR(128),resource_type VARCHAR(64),resource_id BIGINT,actor_user_id BIGINT,task_id BIGINT,result VARCHAR(24),result_redacted JSON,occurred_at DATETIME(6)",
@@ -142,7 +142,7 @@ func consoleTestBridge() (*consoleBridge, func()) {
 }
 
 func TestMySQLConsoleGuardClosesOnRevocation(t *testing.T) {
-	for _, reason := range []string{"logout", "login_expired", "user_disabled", "permission_revoked", "instance_stopped", "admin_demoted"} {
+	for _, reason := range []string{"logout", "login_expired", "user_disabled", "permission_revoked", "instance_stopped", "creation_retired", "admin_demoted"} {
 		t.Run(reason, func(t *testing.T) {
 			s, row := consoleTestService(t)
 			var result *gorm.DB
@@ -157,6 +157,8 @@ func TestMySQLConsoleGuardClosesOnRevocation(t *testing.T) {
 				result = s.a.DB.Table("instances").Where("id=3").Update("allowed_user_actions", `[]`)
 			case "instance_stopped":
 				result = s.a.DB.Table("instances").Where("id=3").Update("observed_state", "stopped")
+			case "creation_retired":
+				result = s.a.DB.Table("instances").Where("id=3").Update("creation_failed_at", s.a.Time())
 			case "admin_demoted":
 				row.IsAdmin = true
 				result = s.a.DB.Table("console_sessions").Where("id=?", row.ID).Update("is_admin", true)
