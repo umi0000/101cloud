@@ -259,6 +259,12 @@ func (a *App) finishTask(ctx context.Context, j Job, owner, status string, finis
 			if err = tx.Table("task_steps").Where("task_id=? AND attempt=? AND status IN ?", j.ID, j.LeaseGeneration, []string{"running", "waiting", "unknown"}).Updates(Row{"status": status, "finished_at": finished, "error_code": code, "result_redacted": result}).Error; err != nil {
 				return err
 			}
+			// Exec validation may have already closed the active step as failed.
+			// Fill its missing error without rewriting it to the task's unknown
+			// status, or touching any older/different failed step.
+			if err = tx.Table("task_steps").Where("task_id=? AND attempt=? AND step_key=? AND status='failed' AND error_code IS NULL AND JSON_EXTRACT(COALESCE(result_redacted, JSON_OBJECT()), '$.error') IS NULL", j.ID, j.LeaseGeneration, Text(task["phase"])).Updates(Row{"error_code": code, "result_redacted": result}).Error; err != nil {
+				return err
+			}
 		} else {
 			changes["result_redacted"] = gorm.Expr("JSON_REMOVE(COALESCE(result_redacted, JSON_OBJECT()), '$.error')")
 		}

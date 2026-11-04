@@ -552,6 +552,9 @@ export interface PlanSnapshot extends Resources {
 
 export interface Instance {
   active_task_id: ID | null;
+  creation_task_id?: ID | null;
+  initialization_pending?: boolean;
+  login_mode?: 'none' | 'password' | 'password_and_ssh_key' | 'ssh_key' | 'unknown';
   billing_mode: 'admin_exempt' | 'credit';
   capabilities: Capabilities;
   created_at: Time;
@@ -747,7 +750,23 @@ export interface TaskStep {
   status: TaskStatus;
 }
 
+export type CreationStageKey = 'preflight' | 'native' | 'gpu' | 'start' | 'cloud_init' | 'script' | 'verify';
+export type CreationStageStatus = 'pending' | 'running' | 'succeeded' | 'skipped' | 'failed' | 'unknown';
+
+export interface CreationStage {
+  key: CreationStageKey;
+  status: CreationStageStatus;
+  started_at?: null | Time;
+  finished_at?: null | Time;
+}
+
+export interface CreationProgress {
+  stages: CreationStage[];
+  initialization_pending: boolean;
+}
+
 export interface Task {
+  creation_progress?: CreationProgress | null;
   error?: null | PublicError;
   created_at: Time;
   error_code: null | string;

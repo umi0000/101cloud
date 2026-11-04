@@ -33,14 +33,20 @@ apps/web-antd/src/
 - 卡片复用 `OsIcon` 及已有本地系统 SVG，依据实例接口 `image_os_name/image_os_release` 选择真实来源镜像图标，停用/退役镜像不影响已有实例展示。GPU 的 `configured` 表示挂载配置，`observed` 表示进程上下文/设备引用；已配置但空闲时仍显示“已挂载”，不因 `observed=false` 误报未挂载。
 - 规格下方显示“内网 IPv4”，读取本人 `/instances/{id}/network` 并仅展示已绑定的 RFC1918 私网地址。网络异步加载，失败保留旧值并提示，过期状态有标记；未绑定及仅预留地址不冒充可用地址，无地址显示“未分配内网 IPv4”。
 - 顶栏通过 `/credits/account` 显示 `available_pt`（Pt），浮层展示 `remaining_pt`、`reserved_pt`、`outstanding_debt_pt`、服务端停机提示及手动刷新；页面可见时每 30 秒更新。剩余为内部余额扣除未偿欠款，可用再扣除预留；前端原样显示带符号的精确十进制字符串，不钳制负数，不重复扣除欠款或预留。额度失败不显示为 0，已有值保留并明确标记更新失败；实例列表及 GPU 刷新失败同样保留上次结果并提示。
-- 首页“创建实例”进入弹性容器配置页；配置页按钮只跳转 `/instances/create/confirm` 核对订单，最终确认页按钮才提交创建。配置支持精确资源滑块/输入、兼容镜像、GPU及网络，服务端实时报价与前端BigInt估时；详情/生命周期操作、账单、通知及个人设置仍未开放。
-- 2026-11-03 已仅发布到 `192.168.0.111`，当前前端目录 `/srv/101cloud/releases/20261103-order-confirmation-r2`；详情及回滚位置见文末发布记录。
+- 首页“创建实例”进入弹性容器配置页；配置页按钮只跳转 `/instances/create/confirm` 核对订单，最终确认页按钮才提交创建。配置支持精确资源滑块/输入、兼容镜像、GPU及网络，服务端实时报价与前端BigInt估时。成员只读实例详情通过 `/instances?instance=ID` 打开抽屉，复用成员卡片信息，不开放管理员或生命周期操作；账单、通知及个人设置仍未开放。
+- 2026-11-03 初始化窗口已发布到 `192.168.0.111`，当前前端目录 `/srv/101cloud/releases/20261103-initialization-window`。前后端、配置及数据库备份在 `/var/backups/101cloud/20261103-initialization-window/`，`frontend.link` 记录原发布目录。本次无需新增迁移；HTTPS 健康接口及真实成员任务 97 的阶段接口/窗口只读验证通过，临时验收会话已撤销，未创建或重跑实例。历史任务缺少最终核验标记会保守显示初始化尚未完成，不代表本次实际重新执行或初始化失败。
+- 2026-11-04 初始化错误响应已发布到 `192.168.0.111`，当前目录 `/srv/101cloud/releases/20261104-initialization-errors`；前后端、配置、数据库备份在 `/var/backups/101cloud/20261104-initialization-errors/`。无新增迁移，后端构建校验和一致，HTTPS ready 正常；真实发布资源搭配浏览器隔离诊断响应验证了具体 ssh-keygen 原因、退出码、整体待核对与重复错误去重。未重跑初始化或修改历史任务；旧任务不会自动补写诊断。
+- 2026-11-04 精简初始化及失败弹窗已仅前端部署 `.111`，当前目录 `/srv/101cloud/releases/20261104-initialization-failure-modal`；原入口记录在 `/var/backups/101cloud/20261104-initialization-failure-modal/frontend.link`。后端校验和未变、健康接口正常；发布资源配合隔离诊断响应验证主页面无摘要和原因、unknown 显示失败、点击失败按钮可查看原因和原退出码。未改动实例或任务。
 
-确认页只读展示配置、费用明细、额度、首窗口预留和报价倒计时，最终提交前复核报价/账户；条款变化只更新展示，必须再次确认。返回修改保留选择。冻结快照仅当前会话持有，无快照或刷新后提示重新选配，不生成虚构订单号/支付记录。不确定结果锁定原payload/key重试，受理后跟踪任务并返回首页；换号不会泄露前一账号配置。
+确认页只读展示配置、费用明细、额度、首窗口预留和报价倒计时，最终提交前复核报价/账户；条款变化只更新展示，必须再次确认。返回修改保留选择。冻结快照仅当前会话持有，无快照或刷新后提示重新选配，不生成虚构订单号/支付记录。不确定结果锁定原payload/key重试；受理后使用任务 ID 跳转 `/instances/initialization/:taskId`，换号不会泄露前一账号配置。
 
 报价和预计时长只依赖资源等配置，不要求也不发送名称或 `login`；输入、清空名称或修改密码/公钥不重新报价、不清空时长。前往确认和真正创建要求有效名称及登录凭据。可用余额不重复扣预留，估时不包含其他实例消耗及未来额度变化，也不承诺实际到期时间。
 
-### 创建时的 root 登录凭据（本次改动未部署）
+初始化窗口：居中最大 720px，三点仅为标题栏装饰；显示实例名称、任务 ID 和真实时间戳耗时，不再显示系统/资源/安全登录摘要。通过本人 `GET /tasks/{id}` 的 `creation_progress.stages` 展示真实阶段；GPU 不适用时省略，脚本不适用明确跳过。底部细线只表示活动，不表示百分比；不展示日志、脚本输出或模拟命令。精简及失败弹窗改动已部署 `.111`。
+
+刷新或直接访问从任务与本人 `GET /instances/{id}` 恢复，不依赖订单内存。实例卡片使用持久 `creation_task_id` 重入；当前会话任务中心也有“查看初始化”。只有任务 succeeded、所有必要阶段完成、verify 成功且 `initialization_pending=false` 才展示完成；停止后 pending、失败、unknown、状态查询中断分别呈现，绝不自动重放创建。成功后手动“进入实例”，同时核验当前账号、任务 `instance_id` 与实例 `creation_task_id`，再打开成员详情抽屉；不会自动跳走。账号/任务变化即清空旧数据并隔离异步旧响应；网络恢复只重新查询。
+
+### 创建时的 root 登录凭据
 
 - 沿用两步创建与现有布局，默认推荐 SSH 公钥，也可选择 root 密码并再次确认。密码按 8–128 个 Unicode 字符校验、保留首尾空格且禁止所有控制字符；公钥每行一条，最多 10 条、每条最多 8192 字节，仅接受 ed25519、RSA（至少 2048 位）、ECDSA nistp256/384/521 的 OpenSSH 公钥。禁止私钥、authorized_keys 选项及脚本；同一公钥按 SHA-256 指纹去重。
 - 只在最终 `POST /instances` 附加 `login: {root_password? , ssh_public_keys?}`。所有 `POST /quotes` 均显式排除 `login`，未填写/无效凭据以及不支持 cloud-init 的所选节点镜像不影响资源报价，但阻止进入确认与创建。确认页只展示“密码已设置”或公钥类型/指纹，不展示密码和公钥原文。
@@ -56,6 +62,12 @@ apps/web-antd/src/
 - 任务 API 通过 `TaskSchema` / `TaskStepSchema` 校验可选可空 `error: {code,message,details}`，兼容保留 `error_code` 的历史记录。任务中心通知、任务列表/详情、实例任务标签页与创建失败横幅展示具体原因及建议，而非只显示 `unknown` 或错误码。
 - `unknown` 仍为结果待核对，绝不自动重放；`failed` 无盲目重试按钮。只有 `resource_reservations_released=true` 的实例显示已确认创建前失败及 IP/GPU/计费预留释放，并优先显示创建失败；false/缺失明确提示预留未确认释放。已就绪实例仍以真实 `state_stale` 显示状态未知，不伪造运行状态。
 - 登录表单、控制台准备和指标查询保留完整错误说明与请求 ID；CSRF 原键重试、If-Match、幂等键和危险操作确认规则保持不变。历史任务与真实实例不会因前端展示更新而删除、重置或重试。
+- 初始化诊断使用独立白名单：`initialization_cloud_init_degraded/cloud_init_failed/tool_missing/marker_missing/script_failed/timeout/result_unknown/diagnostic_unavailable`（每项均带 `initialization_` 前缀）。固定中文标题不回显上游 message；只展示整数 `exit_code`、固定分类 `reason`、固定 `cloud_init_status` 的中文映射及 `login.cloud-ready/init.cloud-ready/init.template` 中文阶段。未知值与任意 action、日志、密码、哈希、user-data、环境等 details 字段均不展示；`done` 不代表所有初始化步骤成功，不改变放行策略。
+- 初始化窗口只在 failed/unknown 时提供“查看失败信息”按钮；点击弹窗查看去重后的任务/步骤安全错误及必要的核对说明，主页面不展开失败原因或技术详情。成功、执行中、排队或仅网络查询异常不显示此按钮。账号/任务切换或离开失败状态会关闭弹窗，不改变后端状态或重试规则。
+- 行为边界测试：`apps/web-antd/src/locales/errors.test.ts` 覆盖八类固定码、降级但 done、整数退出码、未知/原型键过滤、敏感文本不泄露与 unknown 文案；`views/member/instances/initialization.test.ts` 覆盖 failed/unknown 步骤原因与禁止进入。统一验收建议：`pnpm exec vitest run apps/web-antd/src/locales/errors.test.ts apps/web-antd/src/views/member/instances/initialization.test.ts`，以及应用 typecheck/lint/build。
+- `command_terminated` 仅表示命令被终止：退出码 137 不直接判定超时，提示管理员核对超时/资源限制等原因；`template_timeout_invalid` 表示模板超时配置无效，两者仍归初始化脚本失败。对应边界测试保留原整数退出码，不混同已确认 timeout。
+- degraded 明确显示“cloud-init 已带警告完成”，与 cloud-init 错误失败区分。`ssh_host_key_generation_missing_tool` 固定说明 SSH 主机密钥生成失败、缺少 ssh-keygen，建议检查并安装 OpenSSH，不武断断言软件未安装；普通缺工具仍使用 `required_tool_missing`。该特定原因有独立白名单/敏感文本过滤测试。
+- 后端任务 unknown 仍保留待核对及禁止自动重放语义，但初始化页面标题与对应阶段统一显示“初始化失败”/“失败”；核对说明仅在失败弹窗中显示。错误按安全格式化后的 code、中文 stage、标题及说明去重，不合并不同阶段的诊断。
 
 
 ## 环境

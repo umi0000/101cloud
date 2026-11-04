@@ -130,7 +130,10 @@ func workerStep(ctx context.Context, a *platform.App, j platform.Job, key string
 
 // workerOperation commits intent before dispatch, then commits the operation ID
 // before waiting. A missing ID after dispatch can only be resolved by observation.
-func workerOperation(ctx context.Context, a *platform.App, j platform.Job, key string, send func() (map[string]any, error), confirmed func() (bool, error)) (platform.Row, error) {
+func workerOperation(ctx context.Context, a *platform.App, j platform.Job, key string, send func() (map[string]any, error), confirmed func() (bool, error)) (out platform.Row, operationErr error) {
+	if initializationStage(key) {
+		defer func() { operationErr = initializationOperationError(ctx, key, operationErr) }()
+	}
 	old, err := workerStep(ctx, a, j, key)
 	if err != nil {
 		return nil, err
@@ -157,6 +160,9 @@ func workerOperation(ctx context.Context, a *platform.App, j platform.Job, key s
 			m, e := workerMetadata(v)
 			if e != nil {
 				return nil, platform.Unknown(e)
+			}
+			if e = workerValidateOperation(ctx, a, j, key, op, m); e != nil {
+				return nil, e
 			}
 			if e = a.Step(ctx, j, key, op, "succeeded"); e != nil {
 				return nil, platform.Unknown(e)
@@ -244,6 +250,9 @@ func workerOperation(ctx context.Context, a *platform.App, j platform.Job, key s
 	m, err := workerMetadata(v)
 	if err != nil {
 		return nil, platform.Unknown(err)
+	}
+	if err = workerValidateOperation(ctx, a, j, key, op, m); err != nil {
+		return nil, err
 	}
 	if err = a.Step(ctx, j, key, op, "succeeded"); err != nil {
 		return nil, platform.Unknown(err)
@@ -673,7 +682,20 @@ func runCreate(ctx context.Context, a *platform.App, j platform.Job) error {
 	if finalState != "running" && finalState != "stopped" {
 		return workerUnknown(ctx, a, j, r, errors.New("created instance final state is not stable"))
 	}
+	current, err = workerInstance(ctx, a, j)
+	if err != nil {
+		return err
+	}
+	if finalState != "running" || platform.Text(current["desired_state"]) != "running" {
+		return a.TaskResult(ctx, j, platform.Row{"instance_id": strconv.FormatUint(j.InstanceID, 10), "observed_state": finalState, "initialization": "pending"})
+	}
 	if err = workerConfirm(ctx, a, j, r, finalState, finalState, platform.Row{"provisioning_state": "ready"}); err != nil {
+		return workerUnknown(ctx, a, j, r, err)
+	}
+	if err = a.Step(ctx, j, "state.start", "", "succeeded"); err != nil {
+		return workerUnknown(ctx, a, j, r, err)
+	}
+	if err = a.Step(ctx, j, "create.verify", "", "succeeded"); err != nil {
 		return workerUnknown(ctx, a, j, r, err)
 	}
 	return a.TaskResult(ctx, j, platform.Row{"instance_id": strconv.FormatUint(j.InstanceID, 10), "observed_state": finalState})
@@ -929,16 +951,16 @@ func workerInitialize(ctx context.Context, a *platform.App, j platform.Job, r pl
 		return err
 	}
 	if status := platform.Text(template["status"]); status != "active" && status != "retired" {
-		return errors.New("initialization template was never published")
+		return initializationError("init.template", "initialization_script_failed", "template_status_mismatch", "unknown", nil)
 	}
 	script := platform.Text(template["script_content"])
 	sum := sha256.Sum256([]byte(script))
 	if workerFingerprint(template["script_sha256"]) != hex.EncodeToString(sum[:]) {
-		return errors.New("initialization template digest mismatch")
+		return initializationError("init.template", "initialization_script_failed", "template_hash_mismatch", "unknown", nil)
 	}
 	seconds := platform.Uint(template["timeout_seconds"])
 	if seconds == 0 {
-		return errors.New("initialization timeout missing")
+		return initializationError("init.template", "initialization_script_failed", "template_timeout_invalid", "unknown", nil)
 	}
 	params := object(r["init_parameters"])
 	env := platform.Row{"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}
@@ -1009,7 +1031,7 @@ func workerInitialize(ctx context.Context, a *platform.App, j platform.Job, r pl
 		}, nil)
 	}
 	if platform.Text(template["phase"]) == "cloud_init" {
-		result, e := exec("init.cloud-ready", []string{"/usr/bin/timeout", "--signal=KILL", strconv.FormatUint(seconds, 10), "/usr/bin/cloud-init", "status", "--wait"})
+		result, e := exec("init.cloud-ready", []string{"/usr/bin/timeout", "--signal=KILL", strconv.FormatUint(seconds, 10), "/bin/sh", "-c", "/usr/bin/cloud-init status --wait >/dev/null 2>&1"})
 		if e != nil {
 			return workerInitFailure(ctx, a, j, e)
 		}
@@ -1025,6 +1047,36 @@ func workerInitialize(ctx context.Context, a *platform.App, j platform.Job, r pl
 		return workerInitFailure(ctx, a, j, err)
 	}
 	return a.DB.WithContext(ctx).Table("instance_init_runs").Where("instance_id = ? AND task_id = ?", j.InstanceID, j.ID).Updates(platform.Row{"status": "succeeded", "exit_code": 0, "finished_at": a.Time(), "revision": gorm.Expr("revision + 1")}).Error
+}
+
+// Exec operation completion only proves transport completion. Persist success
+// only after inspecting the process exit status, including during recovery.
+func workerValidateOperation(ctx context.Context, a *platform.App, j platform.Job, key, op string, result platform.Row) error {
+	if !initializationStage(key) {
+		return nil
+	}
+	n, known := initializationExit(result)
+	if !known || n != 0 {
+		status := "failed"
+		var err error
+		if !known {
+			status = "unknown"
+			err = initializationError(key, "initialization_result_unknown", "result_unknown", "unknown", nil)
+		} else if key != "init.template" {
+			err = workerCloudInitDiagnostic(ctx, a, j, key, n)
+		} else if n == 124 {
+			err = initializationError(key, "initialization_timeout", "timeout", "unknown", &n)
+		} else if n == 137 {
+			err = initializationTerminatedError(key, n)
+		} else {
+			err = initializationError(key, "initialization_script_failed", "script_exit_nonzero", "unknown", &n)
+		}
+		if stepErr := a.Step(context.WithoutCancel(ctx), j, key, op, status); stepErr != nil {
+			return platform.Unknown(err)
+		}
+		return platform.Unknown(err)
+	}
+	return nil
 }
 func workerExit(operation platform.Row) error {
 	metadata := object(operation["metadata"])

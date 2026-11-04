@@ -113,12 +113,33 @@ func TestMySQLLoginUnknownWaitDoesNotRedispatch(t *testing.T) {
 
 func TestMySQLLoginFailedCloudInitDoesNotMarkInitialized(t *testing.T) {
 	var execs atomic.Int64
+	var probes atomic.Int64
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/exec"):
-			execs.Add(1)
-			_ = json.NewEncoder(w).Encode(platform.Row{"operation": "/1.0/operations/failed-login-wait"})
+			var body platform.Row
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Error(err)
+				return
+			}
+			if strings.Contains(jsonText(body["command"]), "statuses =") {
+				probes.Add(1)
+				command := rows(body["command"])
+				want := []any{"/usr/bin/timeout", "--signal=KILL", "15", "/usr/bin/python3", "-c", CloudInitDiagnosticScript, "login"}
+				if !reflect.DeepEqual(command, want) || platform.Bool(body["record-output"]) || platform.Bool(body["interactive"]) || len(object(body["environment"])) != 1 {
+					t.Error("diagnostic was not fixed, output-disabled and credential-free")
+				}
+				_ = json.NewEncoder(w).Encode(platform.Row{"operation": "/1.0/operations/read-only-diagnostic"})
+			} else {
+				execs.Add(1)
+				_ = json.NewEncoder(w).Encode(platform.Row{"operation": "/1.0/operations/failed-login-wait"})
+			}
+		case r.Method == http.MethodGet && r.URL.Path == "/1.0/operations/read-only-diagnostic/wait":
+			if r.URL.Query().Get("project") == "" {
+				t.Error("diagnostic operation lost project scope")
+			}
+			_ = json.NewEncoder(w).Encode(platform.Row{"metadata": platform.Row{"status_code": 200, "metadata": platform.Row{"return": 58}}})
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/wait"):
 			_ = json.NewEncoder(w).Encode(platform.Row{"metadata": platform.Row{"status_code": 200, "metadata": platform.Row{"return": 1}}})
 		case r.Method == http.MethodGet && r.URL.Path == "/1.0/instances/test-pending":
@@ -132,12 +153,24 @@ func TestMySQLLoginFailedCloudInitDoesNotMarkInitialized(t *testing.T) {
 	r["login_config_ciphertext"] = []byte("wait-does-not-decrypt-credentials")
 	if err := workerInitialize(t.Context(), a, job, r); err == nil {
 		t.Fatal("failed cloud-init was accepted as completed")
+	} else {
+		public := platform.PublicError(err, true)
+		if public["code"] != "initialization_tool_missing" || public["details"].(map[string]any)["reason"] != "ssh_host_key_generation_missing_tool" {
+			t.Fatalf("safe root cause was lost: %+v", public)
+		}
 	}
 	if err := workerInitialize(t.Context(), a, job, r); err == nil || execs.Load() != 1 {
 		t.Fatal("failed recorded cloud-init wait was blindly redispatched")
 	}
+	if probes.Load() != 2 {
+		t.Fatal("recovery must inspect the original operation without replaying it; only the read-only diagnostic may be repeated")
+	}
 	current, err := workerInstance(t.Context(), a, job)
 	if err != nil || !platform.Stamp(current["login_initialized_at"]).IsZero() {
 		t.Fatal("failed cloud-init wrote successful initialization checkpoint")
+	}
+	step, err := workerStep(t.Context(), a, job, "login.cloud-ready")
+	if err != nil || platform.Text(step["status"]) != "failed" {
+		t.Fatal("failed exec was persisted as successful stage")
 	}
 }

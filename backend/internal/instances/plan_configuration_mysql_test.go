@@ -37,12 +37,13 @@ import (
 // every real migration, foreign key, billing reservation and mutation transaction.
 // Only an isolated database is seeded; no existing database rows are modified.
 type planConfigurationFixture struct {
-	t        *testing.T
-	db       *gorm.DB
-	a        *platform.App
-	router   *gin.Engine
-	requests int
-	reads    atomic.Int64
+	t             *testing.T
+	db            *gorm.DB
+	a             *platform.App
+	router        *gin.Engine
+	requests      int
+	requestUserID uint64
+	reads         atomic.Int64
 }
 
 func newPlanConfigurationFixture(t *testing.T) *planConfigurationFixture {
@@ -155,7 +156,14 @@ func newPlanConfigurationFixture(t *testing.T) *planConfigurationFixture {
 	}
 	f.router = gin.New()
 	f.router.Use(platform.RequestMiddleware())
-	user := f.router.Group("/api/v1", func(c *gin.Context) { c.Set("user", platform.User{ID: 2, Role: "user"}); c.Next() }, f.a.Mutations())
+	user := f.router.Group("/api/v1", func(c *gin.Context) {
+		id := f.requestUserID
+		if id == 0 {
+			id = 2
+		}
+		c.Set("user", platform.User{ID: id, Role: "user"})
+		c.Next()
+	}, f.a.Mutations())
 	admin := f.router.Group("/api/v1/admin", func(c *gin.Context) { c.Set("user", platform.User{ID: 1, Role: "admin"}); c.Next() }, platform.Admin(), f.a.Mutations())
 	Register(f.a, user, admin)
 	catalog.Register(f.a, user, admin)

@@ -112,6 +112,7 @@ export const memberApi = {
   creditAccount: () => detail<CreditAccount>('/credits/account'),
   gpuAllocations: (id: ID) =>
     detail<GPUAllocation[]>(`/instances/${id}/gpu-allocations`),
+  instance: (id: ID) => detail<Instance>(`/instances/${encodeURIComponent(id)}`),
   instances: (q?: Query) => list<Instance>('/instances', q),
   network: (id: ID) => detail<InstanceNetwork[]>(`/instances/${id}/network`),
   images: (q?: Query) => list<Image>('/catalog/images', q),

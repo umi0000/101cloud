@@ -287,6 +287,11 @@ Fedora 使用 `dnf install -y openssh-server` 和 systemd 的 `sshd.service`；�
 
 worker 仅在内存解密，原生创建前设置带 `#cloud-config` 前缀的 JSON/YAML `cloud-init.user-data`，使用标准 root `hashed_passwd`、`lock_passwd:false`、`ssh_authorized_keys`、`disable_root:false`、`ssh_pwauth` 和 `chpasswd.expire:false`。仅公钥时写不可用密码 `*`，不使用可能阻止 UsePAM=no 公钥登录的 `!` 账号锁。首次启动独立等待 `cloud-init status --wait`（600 秒界限），成功后持久化非敏感完成时间；即使套餐没有管理员模板，也不会在 cloud-init 未成功时宣告 ready。等待失败/结果不确定保留 existing unknown/reconcile 语义，不盲目重派；后续启动尊重首次完成标记，不重设密码、不重跑 cloud-init。
 
+初始化失败现提供受控诊断：保留原 `cloud-init status --wait`/脚本退出码，失败后仅追加固定、有界、只读且 `record-output=false` 的状态探测。探测在 guest 内解析 `cloud-init status --format json`、检查完成标记与工具存在性，仅通过有限退出码回传分类；不读取或持久化原始日志，不把状态 JSON、stderr、密码、哈希、user-data、环境变量写进任务结果。Arch 的 `ssh-keygen` 缺失只有与当前 cloud-init 的特定 host-key 生成警告同时存在，才报告“缺少 ssh-keygen 导致 SSH 主机密钥生成失败”；仅缺工具不推断因果。无 Python/无 JSON/无法探测为 `initialization_diagnostic_unavailable`，原始失败退出码不变。退出 137 只表示命令被终止，不假称已证实超时。
+
+公开错误为 `initialization_cloud_init_degraded/cloud_init_failed/tool_missing/marker_missing/script_failed/timeout/result_unknown/diagnostic_unavailable`（每项均带 `initialization_` 前缀），`details` 仅含固定 `stage/reason/cloud_init_status/action`、可选整数原始 `exit_code` 与白名单工具/host-key 证据。模板未发布、摘要不符、无效超时分别明确归因，未执行脚本；脚本非零退出只报告实际退出码和检查建议，不声称掌握 stderr。原任务 `unknown`、资源保留及禁止重放策略不变，旧 operation 不按新协议重解码。当前 attempt/phase 已置 failed 的步骤仅补缺失安全错误，保留原 failed 终态与时间；不改其他历史步骤。
+
+
 凭据明文、密码哈希和解密 user-data 不进入任务参数/结果、审计、幂等明文、普通 DTO 或 incus_config_snapshot；原生观测和 resize 的 writable 配置只在内存保留 user-data，以免 PUT 删除已有首次启动配置。幂等层只存 MasterKey-HMAC 请求摘要和不含秘密的响应：结果不确定时必须保留完全相同的原始 body/key 重试，不可换 key 重建实例。前端敏感输入仅保存在内存，受理/注销/换账号清空，报价和持久化草稿中不得包含凭据。
 
 **主机留存风险：** 生成的密码哈希仍是敏感凭据，Incus 实例配置以及 guest `/var/lib/cloud/instance/user-data.txt`、`cloud-config.txt`、seed/cache、`/etc/shadow` 和主机/实例备份可能留存它。后端数据库加密不消除这些副本，节点管理员和 guest root 仍可访问；限制 Incus/guest/备份权限，使用高强度唯一密码，优先公钥。平台不自动删除 cloud-init 缓存或执行 `cloud-init clean`，后者会改变首次启动语义。参考官方 [cloud-init 模块](https://docs.cloud-init.io/en/latest/reference/modules.html) 与 [Incus cloud-init](https://linuxcontainers.org/incus/docs/main/cloud-init/)。

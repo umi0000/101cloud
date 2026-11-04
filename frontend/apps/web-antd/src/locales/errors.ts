@@ -91,6 +91,53 @@ const MESSAGES: Record<string, string> = {
   unsupported_resolution: '不支持的数据粒度',
 };
 
+const INITIALIZATION_MESSAGES: Record<string, string> = {
+  initialization_cloud_init_degraded: 'cloud-init 已带警告完成',
+  initialization_cloud_init_failed: 'cloud-init 初始化失败',
+  initialization_tool_missing: '初始化所需工具缺失',
+  initialization_marker_missing: '初始化完成标记缺失，尚不能确认完成',
+  initialization_script_failed: '初始化脚本执行失败',
+  initialization_timeout: '等待初始化结果超时，请联系管理员核对；不要重复创建',
+  initialization_result_unknown: '初始化结果尚未确认，请联系管理员核对；不会自动重新执行',
+  initialization_diagnostic_unavailable: '初始化诊断暂不可用，请联系管理员核对',
+};
+const INITIALIZATION_REASONS: Record<string, string> = {
+  cloud_init_degraded: 'cloud-init 已完成，但报告可恢复警告',
+  cloud_init_errors: 'cloud-init 报告初始化错误',
+  required_tool_missing: '缺少初始化必需工具',
+  ssh_host_key_generation_missing_tool: 'SSH 主机密钥生成失败：缺少 ssh-keygen，请检查并安装 OpenSSH',
+  completion_marker_missing: '未找到预期的初始化完成标记',
+  script_exit_nonzero: '初始化脚本以非零退出码结束',
+  command_terminated: '初始化命令被终止，请核对是否存在超时或资源限制等原因',
+  template_timeout_invalid: '初始化模板超时配置无效',
+  timeout: '等待初始化完成超时',
+  result_unknown: '初始化执行结果待核对',
+  diagnostic_unavailable: '无法取得可靠的初始化诊断',
+  template_hash_mismatch: '初始化模板校验不一致',
+  template_status_mismatch: '初始化模板状态不一致',
+};
+const INITIALIZATION_STAGES: Record<string, string> = {
+  'login.cloud-ready': '登录配置初始化检查',
+  'init.cloud-ready': '实例初始化完成检查',
+  'init.template': '初始化模板执行',
+};
+const CLOUD_INIT_STATUSES: Record<string, string> = {
+  not_run: '尚未运行', running: '运行中', done: '已完成', degraded: '已降级',
+  error: '失败', disabled: '已禁用', unknown: '待核对',
+};
+
+// 初始化错误使用独立白名单，不复用可包含任意业务文本的 details/action。
+const InitializationDetailsSchema = z.object({
+  stage: z.string().optional().catch(undefined),
+  reason: z.string().optional().catch(undefined),
+  cloud_init_status: z.string().optional().catch(undefined),
+  exit_code: z.number().int().optional().catch(undefined),
+});
+
+function initializationLabel(labels: Record<string, string>, key?: string): string {
+  return key && Object.hasOwn(labels, key) ? labels[key]! : '';
+}
+
 const DecimalSchema = z.string().regex(/^-?\d+(?:\.\d+)?$/);
 const FieldIssueSchema = z.object({ field: z.string(), message: z.string() });
 
@@ -151,6 +198,22 @@ const hasChinese = (text: string) => /[\u3400-\u9fff]/.test(text);
 const GENERIC_MESSAGE = '操作未能完成，请联系管理员并提供请求 ID';
 
 function publicErrorText(error: PublicError, requestId = ''): ErrorText {
+  if (error.code.startsWith('initialization_')) {
+    const parsed = InitializationDetailsSchema.safeParse(error.details);
+    const d = parsed.success ? parsed.data : undefined;
+    const details: string[] = [];
+    const reason = initializationLabel(INITIALIZATION_REASONS, d?.reason);
+    const status = initializationLabel(CLOUD_INIT_STATUSES, d?.cloud_init_status);
+    if (reason) details.push(`原因：${reason}`);
+    if (status) details.push(`cloud-init 状态：${status}`);
+    if (d?.exit_code !== undefined) details.push(`退出码：${d.exit_code}`);
+    details.push('请联系管理员检查镜像依赖与初始化配置，并核对实例实际状态；不会自动重试。');
+    return {
+      code: error.code, details, requestId,
+      stage: initializationLabel(INITIALIZATION_STAGES, d?.stage),
+      text: initializationLabel(INITIALIZATION_MESSAGES, error.code) || GENERIC_MESSAGE,
+    };
+  }
   const message = error.message.trim();
   // 后端公开的中文业务说明优先；历史英文 message 使用中文码表兜底。
   const fullText =

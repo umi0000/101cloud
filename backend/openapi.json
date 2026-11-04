@@ -11633,22 +11633,38 @@
         ],
         "additionalProperties": false
       },
+      "InitializationFailureDetails": {
+        "description": "Safe initialization diagnostic only. exit_code is the ORIGINAL wait/script process exit, never the diagnostic probe exit. Absence means no valid original exit was observed. A fixed, output-disabled read-only probe interprets cloud-init status JSON locally; raw JSON, logs, stderr, credentials, hashes, user-data and environment never leave the guest or enter task results. ssh_host_key_generation_missing_tool requires BOTH a current cloud-init host-key warning and missing ssh-keygen; missing tool alone is not a cause. Exit 137 means terminated, not proven timeout. Existing unknown/no-replay/resource-retention semantics are unchanged.",
+        "type": "object",
+        "properties": {
+          "stage": {"type": "string", "enum": ["login.cloud-ready", "init.cloud-ready", "init.template"]},
+          "reason": {"type": "string", "enum": ["cloud_init_degraded", "cloud_init_errors", "required_tool_missing", "ssh_host_key_generation_missing_tool", "completion_marker_missing", "script_exit_nonzero", "command_terminated", "timeout", "result_unknown", "diagnostic_unavailable", "template_hash_mismatch", "template_status_mismatch", "template_timeout_invalid"]},
+          "cloud_init_status": {"type": "string", "enum": ["not_run", "running", "done", "degraded", "error", "disabled", "unknown"]},
+          "exit_code": {"type": "integer", "minimum": 0, "maximum": 255},
+          "action": {"type": "string", "description": "Fixed safe Chinese administrator guidance; never raw script output."},
+          "missing_tool": {"type": "string", "enum": ["cloud-init", "ssh-keygen"]},
+          "host_key_generation_failed": {"type": "boolean", "const": true}
+        },
+        "required": ["stage", "reason", "cloud_init_status", "action"],
+        "additionalProperties": false
+      },
       "PublicTaskError": {
         "description": "Explicitly public safe error only. Resource amounts in details are decimal strings, never floating-point numbers; no raw upstream output or parameters. For unknown deletion tasks, gpu_reclamation_unverified means native deletion is confirmed but independent post-deletion GPU evidence is not: details include stage=delete.verify_reclamation, safe reason, native_deletion_confirmed=true, resource_reservations_released=false and a Chinese action. Keep all reservations and reconcile the original task; do not issue another DELETE. No raw GPU process data is exposed.",
         "type": "object",
         "properties": {
           "code": {
-            "type": "string"
+            "type": "string",
+            "description": "Initialization codes: initialization_cloud_init_degraded, initialization_cloud_init_failed, initialization_tool_missing, initialization_marker_missing, initialization_script_failed, initialization_timeout, initialization_result_unknown, initialization_diagnostic_unavailable. Task status remains unknown when outcome/resource release is uncertain."
           },
           "message": {
             "type": "string"
           },
           "details": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "additionalProperties": true
+            "anyOf": [
+              {"$ref": "#/components/schemas/InitializationFailureDetails"},
+              {"type": "object", "additionalProperties": true},
+              {"type": "null"}
+            ]
           }
         },
         "required": [
@@ -11720,6 +11736,27 @@
       "Task": {
         "type": "object",
         "properties": {
+          "creation_progress": {
+            "type": "object",
+            "description": "Only instance.create. Read-only journal projection; task success alone does not imply completed initialization.",
+            "required": ["stages", "initialization_pending"],
+            "properties": {
+              "initialization_pending": { "type": "boolean" },
+              "stages": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["key", "status"],
+                  "properties": {
+                    "key": { "type": "string", "enum": ["preflight", "native", "gpu", "start", "cloud_init", "script", "verify"] },
+                    "status": { "type": "string", "enum": ["pending", "running", "succeeded", "skipped", "failed", "unknown"] },
+                    "started_at": { "type": "string", "format": "date-time" },
+                    "finished_at": { "type": "string", "format": "date-time" }
+                  }
+                }
+              }
+            }
+          },
           "id": {
             "type": "string",
             "pattern": "^[1-9][0-9]*$"
@@ -11990,6 +12027,9 @@
           "state_stale": {
             "type": "boolean"
           },
+          "creation_task_id": { "type": ["string", "null"], "description": "Stable original creation task ID; null for imported instances." },
+          "initialization_pending": { "type": "boolean", "description": "Present for instances with a creation task; missing journal evidence remains pending." },
+          "login_mode": { "type": "string", "enum": ["none", "password", "ssh_key", "password_and_ssh_key", "unknown"], "description": "Frozen non-sensitive summary only; legacy configurations may be unknown." },
           "active_task_id": {
             "anyOf": [
               {

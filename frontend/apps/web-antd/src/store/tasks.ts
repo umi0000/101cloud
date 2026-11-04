@@ -9,6 +9,7 @@ import { memberApi, opsApi } from '#/api/backend';
 import ErrorFeedback from '#/components/error-feedback.vue';
 import { TASK_TYPES } from '#/locales/enums';
 import { describeTaskError } from '#/locales/errors';
+import { creationState } from '#/utils/creation-progress';
 
 import { useAuthStore } from './auth';
 
@@ -61,7 +62,11 @@ export const useTaskStore = defineStore('tasks', () => {
         if (before !== r.data.status) {
           const name = TASK_TYPES[r.data.type] ?? t.label;
           if (r.data.status === 'succeeded') {
-            notification.success({ duration: 4, message: `${name}：成功` });
+            if (r.data.type === 'instance.create' && creationState(r.data) !== 'succeeded') {
+              notification.warning({ duration: 6, message: `${name}：初始化尚未确认完成` });
+            } else {
+              notification.success({ duration: 4, message: `${name}：成功` });
+            }
           } else {
             notification.error({
               description: () => h(ErrorFeedback, { feedback: describeTaskError(r.data, r.requestId) }),

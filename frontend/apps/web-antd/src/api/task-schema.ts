@@ -23,8 +23,23 @@ export const TaskErrorSourceSchema = TaskStepSchema.pick({
   status: true,
 });
 
+export const CreationProgressSchema = z.object({
+  initialization_pending: z.boolean(),
+  stages: z.array(z.object({
+    key: z.enum(['preflight', 'native', 'gpu', 'start', 'cloud_init', 'script', 'verify']),
+    status: z.enum(['pending', 'running', 'succeeded', 'skipped', 'failed', 'unknown']),
+    started_at: z.string().nullable().optional(),
+    finished_at: z.string().nullable().optional(),
+  })).superRefine((stages, context) => {
+    if (new Set(stages.map((stage) => stage.key)).size !== stages.length) {
+      context.addIssue({ code: z.ZodIssueCode.custom, message: '初始化阶段重复' });
+    }
+  }),
+});
+
 
 export const TaskSchema = z.object({
+  creation_progress: CreationProgressSchema.nullable().optional(),
   created_at: z.string(),
   error: PublicErrorSchema.nullable().optional(),
   error_code: z.string().nullable(),

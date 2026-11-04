@@ -118,7 +118,7 @@ async function confirmOrder() {
   const userId = identity.value;
   const accepted = await store.submit();
   if (accepted && !disposed && session === token && userId !== null && identity.value === userId) {
-    await router.replace('/instances');
+    await router.replace({ name: 'MemberInstanceInitialization', params: { taskId: accepted.task_id } });
   }
 }
 

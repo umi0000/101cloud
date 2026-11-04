@@ -639,6 +639,24 @@ func lockOwnerAccount(db *gorm.DB, owner uint64) error {
 }
 func instanceView(c *gin.Context, a *platform.App, r platform.Row) (platform.Row, error) {
 	out := instanceDTO(a, r)
+	creation := object(object(r["incus_config_snapshot"])["creation"])
+	out["login_mode"] = "unknown"
+	if mode := platform.Text(creation["login_mode"]); mode == "none" || mode == "password" || mode == "ssh_key" || mode == "password_and_ssh_key" {
+		out["login_mode"] = mode
+	}
+	var creationTasks []platform.Row
+	if err := platform.DB(c, a).Table("tasks").Where("instance_id=? AND task_type='instance.create'", r["id"]).Order("id").Limit(1).Find(&creationTasks).Error; err != nil {
+		return nil, err
+	}
+	out["creation_task_id"] = nil
+	if len(creationTasks) > 0 {
+		out["creation_task_id"] = strconv.FormatUint(platform.Uint(creationTasks[0]["id"]), 10)
+		progress, err := creationProgress(platform.DB(c, a), creationTasks[0])
+		if err != nil {
+			return nil, err
+		}
+		out["initialization_pending"] = progress["initialization_pending"]
+	}
 	caps := out["capabilities"].(platform.Row)
 	for key, value := range caps {
 		caps[key] = platform.Bool(value) && permitted(c, r, key) == nil
@@ -675,6 +693,13 @@ func instanceView(c *gin.Context, a *platform.App, r platform.Row) (platform.Row
 func taskDTO(db *gorm.DB, r platform.Row) (platform.Row, error) {
 	out := platform.Public(r, "id", "instance_id", "node_id", "user_id", "status", "phase", "created_at", "started_at", "finished_at", "error_code", "revision")
 	out["type"] = platform.Text(r["task_type"])
+	if platform.Text(r["task_type"]) == "instance.create" {
+		progress, err := creationProgress(db, r)
+		if err != nil {
+			return nil, err
+		}
+		out["creation_progress"] = progress
+	}
 	if platform.Text(r["task_type"]) == "image.prepare" {
 		result := object(r["result_redacted"])
 		safeResult := platform.Row{}

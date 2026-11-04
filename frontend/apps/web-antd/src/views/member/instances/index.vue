@@ -4,11 +4,12 @@ import type { Instance } from '#/api/types';
 import type { ErrorText } from '#/locales/errors';
 
 import { computed, onMounted, ref, shallowRef, watch } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
+import { useAccessStore } from '@vben/stores';
 
-import { Alert, Button, Card, Empty, Select, Skeleton } from 'ant-design-vue';
+import { Alert, Button, Card, Drawer, Empty, Select, Skeleton, Spin } from 'ant-design-vue';
 
 import { memberApi } from '#/api/backend';
 import CursorPager from '#/components/cursor-pager.vue';
@@ -16,12 +17,49 @@ import ErrorFeedback from '#/components/error-feedback.vue';
 import { useCursorList, usePolling } from '#/composables/api';
 import { ENUMS } from '#/locales/enums';
 import { describeError } from '#/locales/errors';
+import { useAuthStore } from '#/store/auth';
 import { useTaskStore } from '#/store/tasks';
 
 import InstanceCard from './components/instance-card.vue';
 
 type Filters = Record<'observed_state' | 'product_type', string | undefined>;
 const router = useRouter();
+const route = useRoute();
+const auth = useAuthStore();
+const access = useAccessStore();
+const identity = computed(() => auth.me?.user.role === 'user' && !access.loginExpired ? auth.me.user.id : null);
+const detailId = computed(() => typeof route.query.instance === 'string' ? route.query.instance : '');
+const detail = shallowRef<Instance | null>(null);
+const detailError = shallowRef<ErrorText | null>(null);
+const detailLoading = ref(false);
+let detailSequence = 0;
+
+function viewInstance(instance: Instance) {
+  void router.push({ path: '/instances', query: { ...route.query, instance: instance.id } });
+}
+
+function closeDetail() {
+  const { instance: _instance, ...query } = route.query;
+  void router.replace({ path: '/instances', query });
+}
+
+watch([identity, detailId], async ([userId, id]) => {
+  const token = ++detailSequence;
+  detail.value = null;
+  detailError.value = null;
+  detailLoading.value = false;
+  if (!userId || !id) return;
+  detailLoading.value = true;
+  try {
+    const response = await memberApi.instance(id);
+    if (token !== detailSequence || identity.value !== userId || detailId.value !== id) return;
+    if (response.data.id === id && response.data.user_id === userId) detail.value = response.data;
+  } catch (error) {
+    if (token === detailSequence) detailError.value = describeError(error);
+  } finally {
+    if (token === detailSequence) detailLoading.value = false;
+  }
+}, { immediate: true, flush: 'sync' });
 const tasks = useTaskStore();
 const filters = ref<Filters>({ observed_state: undefined, product_type: undefined });
 const loadError = shallowRef<ErrorText | null>(null);
@@ -52,6 +90,13 @@ async function fetchInstances(query: Query) {
 }
 
 const list = useCursorList<Instance, Filters>(fetchInstances, filters, 20);
+const visibleInstances = computed(() => list.items.value.filter((instance) => instance.user_id === identity.value));
+watch(identity, () => {
+  ++fetchSequence;
+  hasLoaded.value = false;
+  loadError.value = null;
+  list.reset();
+}, { flush: 'sync' });
 const productOptions = Object.entries(ENUMS.productType ?? {}).map(([value, label]) => ({ label: label.text, value }));
 const stateOptions = Object.entries(ENUMS.observed ?? {}).map(([value, label]) => ({ label: label.text, value }));
 const filtered = computed(() => !!(filters.value.observed_state || filters.value.product_type));
@@ -118,12 +163,13 @@ watch(
         <Skeleton active :paragraph="{ rows: 6 }" />
       </Card>
     </div>
-    <div v-else-if="list.items.value.length" :aria-busy="list.loading.value" class="instance-grid">
+    <div v-else-if="visibleInstances.length" :aria-busy="list.loading.value" class="instance-grid">
       <InstanceCard
-        v-for="instance in list.items.value"
+        v-for="instance in visibleInstances"
         :key="instance.id"
         :instance="instance"
         :refresh-key="gpuRefreshKey"
+        @view="viewInstance"
       />
     </div>
     <Card v-else-if="hasLoaded && !loadError" size="small">
@@ -141,6 +187,12 @@ watch(
         @refresh="list.load"
       />
     </div>
+    <Drawer :open="!!detailId && !!identity" title="实例详情" width="min(600px, 100vw)" @close="closeDetail">
+      <Spin v-if="detailLoading" aria-label="正在读取实例详情" />
+      <ErrorFeedback v-else-if="detailError" :feedback="detailError" />
+      <InstanceCard v-else-if="detail" :instance="detail" :refresh-key="gpuRefreshKey" detail />
+      <Empty v-else description="实例不存在或当前账号无权访问" />
+    </Drawer>
   </Page>
 </template>
 

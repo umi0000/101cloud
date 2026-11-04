@@ -4,8 +4,9 @@ import type { EnumLabel } from '#/locales/enums';
 import type { ErrorText } from '#/locales/errors';
 
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
+import { useRouter } from 'vue-router';
 
-import { Card, Spin, Tag } from 'ant-design-vue';
+import { Button, Card, Spin, Tag } from 'ant-design-vue';
 
 import { memberApi } from '#/api/backend';
 import ErrorFeedback from '#/components/error-feedback.vue';
@@ -17,7 +18,9 @@ import { formatBytes, formatFullTime } from '#/utils/format';
 import { gpuAttachmentState } from '#/utils/gpu-attachment';
 import { isPrivateIPv4 } from '#/utils/private-ipv4';
 
-const props = defineProps<{ instance: Instance; refreshKey: number }>();
+const props = defineProps<{ detail?: boolean; instance: Instance; refreshKey: number }>();
+const emit = defineEmits<{ view: [instance: Instance] }>();
+const router = useRouter();
 const allocations = shallowRef<GPUAllocation[]>([]);
 const gpuLoading = ref(false);
 const gpuLoaded = ref(false);
@@ -193,6 +196,11 @@ const enforcementMessage = computed(() => {
           </li>
         </ul>
       </section>
+
+      <footer class="flex flex-wrap gap-2 border-t pt-3">
+        <Button v-if="!detail" size="small" @click="emit('view', instance)">查看详情</Button>
+        <Button v-if="instance.creation_task_id" size="small" @click="router.push({ name: 'MemberInstanceInitialization', params: { taskId: instance.creation_task_id } })">查看初始化</Button>
+      </footer>
     </article>
   </Card>
 </template>

@@ -33,6 +33,17 @@ const routes: RouteRecordRaw[] = [
     name: 'MemberInstanceConfirm',
     path: '/instances/create/confirm',
   },
+  {
+    component: () => import('#/views/member/instances/initialization.vue'),
+    meta: {
+      activePath: '/instances',
+      authority: ['user'],
+      hideInMenu: true,
+      title: '实例初始化',
+    },
+    name: 'MemberInstanceInitialization',
+    path: '/instances/initialization/:taskId',
+  },
 ];
 
 export default routes;
