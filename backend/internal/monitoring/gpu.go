@@ -259,10 +259,6 @@ func evaluateGPUInstance(ctx context.Context, a *platform.App, id uint64) error 
 			uuid := platform.Text(g["gpu_uuid"])
 			seen = append(seen, uuid)
 			safe := fresh && platform.Bool(sample["collection_complete"]) && platform.Bool(sample["attribution_complete"]) && platform.Text(sample["instance_state"]) == "running" && !runtime.IsZero() && platform.Bool(g["attribution_complete"]) && platform.Text(g["reference_scan_quality"]) == "complete" && platform.Text(g["gpu_state"]) == "idle_candidate" && g["process_count"] != nil && platform.Uint(g["process_count"]) == 0 && g["reference_count"] != nil && platform.Uint(g["reference_count"]) == 0 && g["memory_used_bytes"] != nil && platform.Uint(g["memory_used_bytes"]) == 0
-			if sm, known := metricDecimal(g["utilization_pct"]); known {
-				threshold, ok := metricDecimal(idle["gpu_utilization_threshold_pct"])
-				safe = safe && ok && sm.LessThanOrEqual(threshold)
-			}
 			var prior platform.Row
 			e := tx.Table("metric_gpu_idle_windows").Clauses(clause.Locking{Strength: "UPDATE"}).Where("instance_id=? AND gpu_uuid=?", id, uuid).Take(&prior).Error
 			if e != nil && !errors.Is(e, gorm.ErrRecordNotFound) {

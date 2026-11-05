@@ -104,9 +104,34 @@ export const authApi = {
   me: (silent = false) => api.get<Me>('/me', { silentAuth: silent }),
 };
 
-/* ---------------- 普通用户：实例首页与额度 ---------------- */
+/* ---------------- 普通用户：实例管理与额度 ---------------- */
 
 export const memberApi = {
+  attachGPU: (id: ID, body: Omit<AttachBody, 'fixed_uuids'>, w: Write) =>
+    post<TaskAccepted>(`/instances/${id}/gpu-attachments`, body, w),
+  detachGPU: (id: ID, body: { allocation_ids: ID[]; allow_live: boolean }, w: Write) =>
+    post<TaskAccepted>(`/instances/${id}/gpu-detachments`, body, w),
+  rebindGPU: (id: ID, body: { allocation_ids: ID[]; allow_live: boolean; max_hourly_pt: string }, w: Write) =>
+    post<TaskAccepted>(`/instances/${id}/gpu-rebindings`, body, w),
+  gpuPolicy: (id: ID) => detail<GPUPolicy>(`/instances/${id}/gpu-policy`),
+  putGPUPolicy: (id: ID, body: GPUPolicyConfig, w: Write) =>
+    put<GPUPolicy>(`/instances/${id}/gpu-policy`, body, w),
+  latest: (id: ID) => detail<LatestMetrics>(`/instances/${id}/metrics/latest`),
+  history: (id: ID, q: Query) => api.get<MetricsHistory>(`/instances/${id}/metrics/history`, { params: clean(q) }),
+  rename: (id: ID, name: string, w: Write) => patch<Instance>(`/instances/${id}`, { name }, w),
+  power: (id: ID, action: 'restart' | 'start' | 'stop', body: { mode?: 'graceful' }, w: Write) =>
+    post<TaskAccepted>(`/instances/${id}/${action}`, body, w),
+  delete: (id: ID, body: { confirm_name: string; delete_data: true }, w: Write) =>
+    del<TaskAccepted>(`/instances/${id}`, body, w),
+  resize: (id: ID, body: { confirm_restart?: boolean; resources: Resources }, w: Write) =>
+    post<TaskAccepted>(`/instances/${id}/resize`, body, w),
+  resizeLimits: (id: ID) => detail<ResizeLimits>(`/instances/${id}/resize-limits`),
+  tasks: async (q?: Query): Promise<ApiResult<Page<Task>>> => {
+    const result = await api.get<unknown>('/tasks', { params: clean(q) });
+    const parsed = TaskPageSchema.safeParse(result.data);
+    if (!parsed.success) throw new ApiError(result.status, { code: 'invalid_response', details: null, message: '任务列表数据格式异常，请联系管理员' }, result.requestId, null);
+    return { ...result, data: parsed.data };
+  },
   create: (body: CreateElasticSpec & { policy_versions: PolicyVersions }, w: Write) =>
     post<TaskAccepted>('/instances', body, w),
   creditAccount: () => detail<CreditAccount>('/credits/account'),
@@ -127,6 +152,13 @@ export const memberApi = {
     }
     return { ...result, data: parsed.data };
   },
+};
+
+export const memberConsoleApi = {
+  create: (id: ID, body: { cols?: number; kind: ConsoleKind; rows?: number }, w: Write) =>
+    post<ConsoleSession>(`/instances/${id}/console-sessions`, body, w),
+  get: (id: string) => detail<ConsoleSession>(`/console-sessions/${id}`),
+  close: (id: string, w: Write) => del<null>(`/console-sessions/${id}`, {}, w),
 };
 
 /* ---------------- 管理端：用户 ---------------- */

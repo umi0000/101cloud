@@ -4,12 +4,12 @@ import type { Instance } from '#/api/types';
 import type { ErrorText } from '#/locales/errors';
 
 import { computed, onMounted, ref, shallowRef, watch } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
+import { useRouter } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
 import { useAccessStore } from '@vben/stores';
 
-import { Alert, Button, Card, Drawer, Empty, Select, Skeleton, Spin } from 'ant-design-vue';
+import { Alert, Button, Card, Empty, Select, Skeleton } from 'ant-design-vue';
 
 import { memberApi } from '#/api/backend';
 import CursorPager from '#/components/cursor-pager.vue';
@@ -24,42 +24,12 @@ import InstanceCard from './components/instance-card.vue';
 
 type Filters = Record<'observed_state' | 'product_type', string | undefined>;
 const router = useRouter();
-const route = useRoute();
 const auth = useAuthStore();
 const access = useAccessStore();
 const identity = computed(() => auth.me?.user.role === 'user' && !access.loginExpired ? auth.me.user.id : null);
-const detailId = computed(() => typeof route.query.instance === 'string' ? route.query.instance : '');
-const detail = shallowRef<Instance | null>(null);
-const detailError = shallowRef<ErrorText | null>(null);
-const detailLoading = ref(false);
-let detailSequence = 0;
-
 function viewInstance(instance: Instance) {
-  void router.push({ path: '/instances', query: { ...route.query, instance: instance.id } });
+  void router.push({ name: 'MemberInstanceDetail', params: { id: instance.id } });
 }
-
-function closeDetail() {
-  const { instance: _instance, ...query } = route.query;
-  void router.replace({ path: '/instances', query });
-}
-
-watch([identity, detailId], async ([userId, id]) => {
-  const token = ++detailSequence;
-  detail.value = null;
-  detailError.value = null;
-  detailLoading.value = false;
-  if (!userId || !id) return;
-  detailLoading.value = true;
-  try {
-    const response = await memberApi.instance(id);
-    if (token !== detailSequence || identity.value !== userId || detailId.value !== id) return;
-    if (response.data.id === id && response.data.user_id === userId) detail.value = response.data;
-  } catch (error) {
-    if (token === detailSequence) detailError.value = describeError(error);
-  } finally {
-    if (token === detailSequence) detailLoading.value = false;
-  }
-}, { immediate: true, flush: 'sync' });
 const tasks = useTaskStore();
 const filters = ref<Filters>({ observed_state: undefined, product_type: undefined });
 const loadError = shallowRef<ErrorText | null>(null);
@@ -187,12 +157,6 @@ watch(
         @refresh="list.load"
       />
     </div>
-    <Drawer :open="!!detailId && !!identity" title="实例详情" width="min(600px, 100vw)" @close="closeDetail">
-      <Spin v-if="detailLoading" aria-label="正在读取实例详情" />
-      <ErrorFeedback v-else-if="detailError" :feedback="detailError" />
-      <InstanceCard v-else-if="detail" :instance="detail" :refresh-key="gpuRefreshKey" detail />
-      <Empty v-else description="实例不存在或当前账号无权访问" />
-    </Drawer>
   </Page>
 </template>
 

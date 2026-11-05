@@ -28,7 +28,7 @@ import {
   TypographyText,
 } from 'ant-design-vue';
 
-import { catalogApi, instancesApi, nodesApi, opsApi } from '#/api/backend';
+import { catalogApi, consoleApi, instancesApi, nodesApi, opsApi } from '#/api/backend';
 import { ApiError } from '#/api/request';
 import ConfirmAction from '#/components/confirm-action.vue';
 import ErrorFeedback from '#/components/error-feedback.vue';
@@ -41,12 +41,12 @@ import { describeTaskError } from '#/locales/errors';
 import { useTaskStore } from '#/store/tasks';
 import { formatAge, formatBytes, secondsSince } from '#/utils/format';
 
-import ConsoleDrawer from './components/console-drawer.vue';
+import ConsoleDrawer from '#/components/instances/console-drawer.vue';
 import GpuPanel from './components/gpu-panel.vue';
 import GpuPolicyPanel from './components/gpu-policy-panel.vue';
 import GraceTag from './components/grace-tag.vue';
 import MetricsPanel from './components/metrics-panel.vue';
-import ResizeDialog from './components/resize-dialog.vue';
+import ResizeDialog from '#/components/instances/resize-dialog.vue';
 import { useNow } from './components/shared';
 import TaskPanel from './components/task-panel.vue';
 
@@ -455,7 +455,7 @@ function resourcesText(x: Instance) {
         </div>
       </ConfirmAction>
 
-      <ResizeDialog v-model:open="resizeOpen" :etag="inst.etag.value" :instance="i" @done="conflict" />
+      <ResizeDialog v-model:open="resizeOpen" :api="instancesApi" :etag="inst.etag.value" :instance="i" @done="conflict" />
 
       <ConfirmAction
         :key="deleteRecovery ? 'cleanup' : 'ordinary-delete'"
@@ -470,7 +470,7 @@ function resourcesText(x: Instance) {
         :title="deleteRecovery ? '强制清理删除实例' : '销毁实例'"
       />
 
-      <ConsoleDrawer ref="consoleRef" :etag="inst.etag.value" :instance="i" />
+      <ConsoleDrawer ref="consoleRef" :api="consoleApi" :etag="inst.etag.value" :instance="i" :disabled="busy || !lifecycleReady" />
     </template>
   </Page>
 </template>

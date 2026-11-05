@@ -4,7 +4,17 @@
 
 后端自身提供 **HTTP**，默认 `127.0.0.1:8080`。浏览器入口的 HTTPS 交给 Nginx/Caddy；Host Agent 仍使用独立的 HTTPS 和证书指纹认证。当前不提供 NAT 或端口映射。
 
+2026-11-05 成员实例详情配套接口已实现（未部署）：用户和管理员 `GET/PUT /instances/:id/gpu-policy` 返回只读 `gpu_binding: null | {policy_version_id,model,access_mode,gpu_hourly_pt}`，仅按实例冻结的 GPU 定价绑定解析，不依赖当前套餐或已有分配；没有绑定时返回 null，异常绑定返回既有错误，不自动回退。无数据库迁移、授权语义不变。隔离 MySQL 回归覆盖套餐修改后原绑定、无分配读取、本人和他人隔离、无绑定与异常绑定；真实本地 Router 浏览器完成策略保存及卸载任务受理，不声称执行物理 GPU worker。
+
+上述配套接口已随成员详情发布到 `.111`，发布目录 `/srv/101cloud/releases/20261105-member-instance-detail`，回退资料 `/var/backups/101cloud/20261105-member-instance-detail/`；无迁移。新程序SHA256 `6e81ac1e4f900a1f2a48349360fff33d4b26da8fdd77a089c722add113a096b4`，服务active且HTTPS ready正常。只更新后端和静态前端，未变更Host Agent或Nginx配置，未执行生产实例变更。
+
 2026-11-04 已部署 `.111`：确认实例停止后，CPU、内存、磁盘、GPU全部停止计费；GPU保持绑定并继续占用容量，不自动解绑或释放。再次确认运行后恢复全部应计费资源，磁盘free和admin_exempt仍豁免。停止失败、状态未知及节点离线不能提前视为停止；offline政策只处理未确认停止的离线区间。停机前费用保留、不追溯退款，未交付创建失败退款规则不变。
+
+2026-11-05 已将移除 GPU 空闲利用率/显存百分比配置发布至 `.111`，前后端目录 `/srv/101cloud/releases/20261105-remove-gpu-idle-thresholds`，已执行前向迁移 `20261105_00_remove_gpu_idle_thresholds.sql`。只清理 gpu-idle 政策两项 JSON 字段和 idle_policy_versions 对应来源列，保留 CPU CHECK、其他政策及空闲超时/动作/开关；受影响公开政策 revision 增加以使旧 ETag 失效。政策 ID 5、12 已清理，实例及套餐的状态/规格/登录凭据哈希/策略绑定和实例 GPU 配置基线一致。固定的完整新鲜归属证据、零进程/零设备引用/零显存安全要求保持不变；历史 init.sql 和已应用迁移未改。
+
+验收：隔离 MySQL 8.4.13 下全量 `go test -race -p 1 ./... -count=1`、vet、原生及 Linux/amd64 构建通过，涵盖新装/升级/重复迁移、政策数据保留和14类不安全证据清空闲置窗口。实际本地后端 CLI migrate 与 HTTP 创建/读取/编辑七字段配置成功，旧阈值字段提交返回422；OpenAPI 321个内部引用有效。前端政策测试9项、类型检查、构建，以及线上静态页面配合隔离 API 的管理员政策新建/编辑、管理员 GPU 安全规则、成员首页进入 GPU 配置和390px无溢出验证通过；没有执行生产实例或GPU操作。现有成员GPU组件9处非空断言导致oxlint未通过，未在本次修改或重跑确认。
+
+完整全库（含事件/存储过程/触发器）、旧程序、配置、原前端入口及验收证据备份位于 `/var/backups/101cloud/20261105-remove-gpu-idle-thresholds/`，本机副本 `/Users/nagisa/developer/101cloud-backups/20261105-remove-gpu-idle-thresholds/`；gzip及两端SHA256一致。后端已重启且HTTPS ready正常，Agent与Nginx未改。恢复旧后端必须配套恢复迁移前兼容表结构及政策字段，不能只替换旧二进制；数据库恢复须考虑备份后新增业务数据。
 
 新增前向迁移 `20261104_10_stopped_resources_free.sql`：将credit来源和公开credit config中旧存储模式转换为running_only，并收窄数据库CHECK为running_only/free（旧宽松CHECK无需删除）；活动宽限事件快照只同步存储模式，原deadline与其他选择保持。套餐/实例持有政策ID，plan_snapshot与usage_sessions.config_snapshot只存资源，不嵌入存储规则，无须改写。历史完成事件、账单/流水、价格和账户余额不修改。旧历史迁移保持原样。
 

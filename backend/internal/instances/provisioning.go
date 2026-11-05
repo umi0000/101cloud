@@ -407,6 +407,7 @@ type gpuPolicyBounds struct {
 	Idle       billing.IdleConfig
 	Scheduling billing.SchedulingConfig
 	Versions   map[string]string
+	Binding    platform.Row
 }
 
 func policyBounds(c *gin.Context, a *platform.App, instance platform.Row) (gpuPolicyBounds, error) {
@@ -430,7 +431,39 @@ func policyBounds(c *gin.Context, a *platform.App, instance platform.Row) (gpuPo
 	if out.Idle.Min <= 0 || out.Idle.Max < out.Idle.Min || out.Idle.Default < out.Idle.Min || out.Idle.Default > out.Idle.Max || len(out.Idle.Actions) == 0 {
 		return out, platform.E(500, "invalid_stored_policy", "stored GPU idle bounds are invalid")
 	}
-	return out, nil
+	var e error
+	out.Binding, e = gpuPolicyBinding(c, a, instance)
+	return out, e
+}
+
+// gpuPolicyBinding exposes only the instance's explicit pricing source, even
+// before its first allocation. Never infer a binding from its current plan.
+func gpuPolicyBinding(c *gin.Context, a *platform.App, instance platform.Row) (platform.Row, error) {
+	version, bound := object(instance["policy_versions"])["gpu-pricing"]
+	if !bound {
+		return nil, nil
+	}
+	db := platform.DB(c, a)
+	policy, source, e := platform.PolicySource(db, "gpu-pricing", platform.Text(version), false)
+	if e != nil {
+		return nil, e
+	}
+	price, e := platform.Get(db, "gpu_price_versions", source, false)
+	if e != nil {
+		if he, ok := e.(*platform.HTTPError); ok && he.Status == http.StatusNotFound {
+			return nil, conflict("policy_not_configured", "instance-bound GPU pricing source is missing")
+		}
+		return nil, e
+	}
+	model, access := platform.Text(price["gpu_model"]), platform.Text(price["access_mode"])
+	if strings.TrimSpace(model) == "" || access != "shared" && access != "exclusive" {
+		return nil, platform.E(500, "invalid_stored_policy", "实例绑定的 GPU 定价型号或访问模式无效。")
+	}
+	rate, e := policyMoney(platform.Text(price["gpu_hourly_pt"]))
+	if e != nil {
+		return nil, platform.E(500, "invalid_stored_policy", "实例绑定的 GPU 价格无效。")
+	}
+	return platform.Row{"policy_version_id": strconv.FormatUint(platform.Uint(policy["id"]), 10), "model": model, "access_mode": access, "gpu_hourly_pt": rate.StringFixed(6)}, nil
 }
 func policyConfiguration(r platform.Row, b gpuPolicyBounds) (instanceGPUPolicy, error) {
 	cfg := instanceGPUPolicy{Idle: storedIdlePolicy{TimeoutSeconds: uint64(b.Idle.Default), Action: "detach_gpu"}, Rebalance: storedRebalancePolicy{MaxHourlyPT: platform.Text(r["max_gpu_hourly_pt"])}}
@@ -528,7 +561,8 @@ func gpuPolicyDTO(c *gin.Context, a *platform.App, r platform.Row, b gpuPolicyBo
 		}
 		actions = append(actions, action)
 	}
-	out := platform.Row{"idle": cfg.Idle, "rebalance": cfg.Rebalance, "effective_policy": platform.Row{"idle": effective.Idle, "rebalance": effective.Rebalance, "safety": platform.Row{"complete_fresh_ownership_required": true, "gpu_processes_must_be_zero": true, "gpu_memory_must_be_zero": true, "device_references_must_be_zero": true, "gpu_utilization_threshold_pct": b.Idle.Util, "gpu_memory_threshold_pct": b.Idle.Memory, "metrics_max_age_seconds": b.Scheduling.MaxAge, "cooldown_seconds": b.Scheduling.Cooldown, "graceful_stop_timeout_seconds": b.Idle.StopTimeout, "allow_force_stop": b.Idle.Force, "allow_price_increase": b.Scheduling.AllowIncrease}}, "allowed_ranges": platform.Row{"idle": platform.Row{"enabled": b.Idle.Enabled, "default_timeout_seconds": b.Idle.Default, "min_timeout_seconds": b.Idle.Min, "max_timeout_seconds": b.Idle.Max, "allowed_actions": actions}, "rebalance": platform.Row{"min_hourly_pt": "0.000000", "max_hourly_pt": "99999999999999.999999", "allow_price_increase": b.Scheduling.AllowIncrease}, "editable": editable}, "policy_versions": b.Versions, "revision": strconv.FormatUint(platform.Uint(r["revision"]), 10), "idle_since": nil, "last_rebound_at": nil, "blocked_reasons": blocked, "allowed_user_actions": rows(r["allowed_user_actions"]), "gpu_user_permissions": object(r["gpu_user_permissions"])}
+	out := platform.Row{"idle": cfg.Idle, "rebalance": cfg.Rebalance, "effective_policy": platform.Row{"idle": effective.Idle, "rebalance": effective.Rebalance, "safety": platform.Row{"complete_fresh_ownership_required": true, "gpu_processes_must_be_zero": true, "gpu_memory_must_be_zero": true, "device_references_must_be_zero": true, "metrics_max_age_seconds": b.Scheduling.MaxAge, "cooldown_seconds": b.Scheduling.Cooldown, "graceful_stop_timeout_seconds": b.Idle.StopTimeout, "allow_force_stop": b.Idle.Force, "allow_price_increase": b.Scheduling.AllowIncrease}}, "allowed_ranges": platform.Row{"idle": platform.Row{"enabled": b.Idle.Enabled, "default_timeout_seconds": b.Idle.Default, "min_timeout_seconds": b.Idle.Min, "max_timeout_seconds": b.Idle.Max, "allowed_actions": actions}, "rebalance": platform.Row{"min_hourly_pt": "0.000000", "max_hourly_pt": "99999999999999.999999", "allow_price_increase": b.Scheduling.AllowIncrease}, "editable": editable}, "policy_versions": b.Versions, "revision": strconv.FormatUint(platform.Uint(r["revision"]), 10), "idle_since": nil, "last_rebound_at": nil, "blocked_reasons": blocked, "allowed_user_actions": rows(r["allowed_user_actions"]), "gpu_user_permissions": object(r["gpu_user_permissions"])}
+	out["gpu_binding"] = b.Binding
 	for _, key := range []string{"idle_since", "last_rebound_at"} {
 		if !platform.Stamp(r[key]).IsZero() {
 			out[key] = platform.Stamp(r[key]).In(a.Location).Format(time.RFC3339Nano)

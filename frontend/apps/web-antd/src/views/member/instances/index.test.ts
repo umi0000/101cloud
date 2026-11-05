@@ -81,34 +81,7 @@ beforeEach(() => {
 });
 afterEach(() => { app?.unmount(); root?.remove(); });
 
-describe('hidden member instance detail access', () => {
-  it('shows no instance information for a hidden direct link returning 404', async () => {
-    runtime.route.query.instance = 'retired-instance';
-    mount();
-    await flush();
-    expect(runtime.instance).toHaveBeenCalledWith('retired-instance');
-    expect(root.querySelector('[role="dialog"] [role="alert"]')).not.toBeNull();
-    expect(root.querySelector('[data-instance]')).toBeNull();
-    expect(root.textContent).not.toContain('private-name');
-    expect(root.textContent).toContain('暂无实例');
-  });
-
-  it('clears the previous detail before resolving a hidden direct link', async () => {
-    runtime.route.query.instance = 'delivered';
-    runtime.instance.mockResolvedValueOnce({ data: instance('delivered') });
-    mount();
-    await flush();
-    expect(root.querySelector('[role="dialog"]')?.textContent).toContain('private-name-delivered');
-    const pending = Promise.withResolvers<never>();
-    runtime.instance.mockReturnValueOnce(pending.promise);
-    runtime.route.query.instance = 'retired-instance';
-    await nextTick();
-    expect(root.querySelector('[role="dialog"]')?.textContent).not.toContain('private-name-delivered');
-    pending.reject(unavailable());
-    await flush();
-    expect(root.querySelector('[role="dialog"] [data-instance]')).toBeNull();
-  });
-
+describe('member instance list', () => {
   it('renders the backend member list without inferring failed-creation visibility from provisioning state', async () => {
     runtime.instances.mockResolvedValue({ data: { items: [instance('backend-visible')] } });
     mount();

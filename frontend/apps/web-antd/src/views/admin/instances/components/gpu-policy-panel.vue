@@ -98,9 +98,7 @@ const SAFETY_NAMES: Record<string, string> = {
   cooldown_seconds: '冷却时间（秒）',
   device_references_must_be_zero: '设备引用必须为 0',
   gpu_memory_must_be_zero: '显存占用必须为 0',
-  gpu_memory_threshold_pct: '显存阈值（%）',
   gpu_processes_must_be_zero: 'GPU 进程必须为 0',
-  gpu_utilization_threshold_pct: 'SM 利用率阈值（%）',
   graceful_stop_timeout_seconds: '正常停止超时（秒）',
   metrics_max_age_seconds: '指标最大时效（秒）',
 };

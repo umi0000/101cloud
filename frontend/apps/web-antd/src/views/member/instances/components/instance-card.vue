@@ -18,7 +18,7 @@ import { formatBytes, formatFullTime } from '#/utils/format';
 import { gpuAttachmentState } from '#/utils/gpu-attachment';
 import { isPrivateIPv4 } from '#/utils/private-ipv4';
 
-const props = defineProps<{ detail?: boolean; instance: Instance; refreshKey: number }>();
+const props = defineProps<{ instance: Instance; refreshKey: number }>();
 const emit = defineEmits<{ view: [instance: Instance] }>();
 const router = useRouter();
 const allocations = shallowRef<GPUAllocation[]>([]);
@@ -198,7 +198,7 @@ const enforcementMessage = computed(() => {
       </section>
 
       <footer class="flex flex-wrap gap-2 border-t pt-3">
-        <Button v-if="!detail" size="small" @click="emit('view', instance)">查看详情</Button>
+        <Button size="small" @click="emit('view', instance)">进入实例</Button>
         <Button v-if="instance.creation_task_id" size="small" @click="router.push({ name: 'MemberInstanceInitialization', params: { taskId: instance.creation_task_id } })">查看初始化</Button>
       </footer>
     </article>

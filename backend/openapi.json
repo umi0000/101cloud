@@ -12830,6 +12830,7 @@
       },
       "GPUIdlePolicy": {
         "type": "object",
+        "description": "GPU idle timing and permitted actions. Reclamation requires complete, fresh ownership evidence with zero GPU processes, device references and memory usage; percentage thresholds cannot override these fixed safety requirements.",
         "properties": {
           "enabled": {
             "type": "boolean"
@@ -12856,16 +12857,6 @@
               ]
             }
           },
-          "gpu_utilization_threshold_pct": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 100
-          },
-          "gpu_memory_threshold_pct": {
-            "type": "number",
-            "minimum": 0,
-            "maximum": 100
-          },
           "graceful_stop_timeout_seconds": {
             "type": "integer",
             "minimum": 0
@@ -12880,8 +12871,6 @@
           "min_timeout_seconds",
           "max_timeout_seconds",
           "allowed_actions",
-          "gpu_utilization_threshold_pct",
-          "gpu_memory_threshold_pct",
           "graceful_stop_timeout_seconds",
           "allow_force_stop"
         ],
@@ -13442,7 +13431,25 @@
         },
         "GPUPolicyView": {
           "type": "object",
+          "description": "GPU policy view includes the immutable pricing binding captured on this instance. gpu_binding is null when no pricing profile is bound; it never comes from the current plan or administrator catalog.",
           "properties": {
+            "gpu_binding": {
+              "oneOf": [
+                {"type": "null"},
+                {
+                  "type": "object",
+                  "properties": {
+                    "policy_version_id": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+                    "model": {"type": "string"},
+                    "access_mode": {"type": "string", "enum": ["shared", "exclusive"]},
+                    "gpu_hourly_pt": {"type": "string", "pattern": "^(0|[0-9]+)(\\.[0-9]{1,6})?$"}
+                  },
+                  "required": ["policy_version_id", "model", "access_mode", "gpu_hourly_pt"],
+                  "additionalProperties": false
+                }
+              ],
+              "description": "Immutable instance-bound gpu-pricing source and rate; null only when the instance has no gpu-pricing binding."
+            },
             "idle": {
               "$ref": "#/components/schemas/GPUPolicy/properties/idle"
             },
@@ -13514,6 +13521,7 @@
             }
           },
           "required": [
+            "gpu_binding",
             "idle",
             "rebalance",
             "effective_policy",

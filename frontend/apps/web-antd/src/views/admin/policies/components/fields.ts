@@ -116,8 +116,6 @@ export const POLICY_FIELDS: Record<PolicyKind, PolicyField[]> = {
     seconds('min_timeout_seconds', '最短空闲时长'),
     seconds('max_timeout_seconds', '最长空闲时长'),
     { key: 'allowed_actions', label: '允许的动作', options: IDLE_ACTIONS, type: 'actions' },
-    pct('gpu_utilization_threshold_pct', 'GPU 利用率阈值'),
-    pct('gpu_memory_threshold_pct', '显存占用阈值'),
     seconds('graceful_stop_timeout_seconds', '正常停止超时'),
     { key: 'allow_force_stop', label: '允许强制停止', type: 'bool' },
   ],

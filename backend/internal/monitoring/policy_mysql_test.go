@@ -63,7 +63,7 @@ func TestMySQLPolicyPollCannotRewindIdleContinuity(t *testing.T) {
 	if e = tx.Exec("CREATE TEMPORARY TABLE policy_versions (id BIGINT PRIMARY KEY,kind VARCHAR(32),config JSON NOT NULL)").Error; e != nil {
 		t.Fatal(e)
 	}
-	if e = tx.Exec(`INSERT INTO policy_versions VALUES (1,'gpu-idle','{"enabled":true,"min_timeout_seconds":60,"max_timeout_seconds":86400,"gpu_utilization_threshold_pct":0}'),(2,'gpu-scheduling','{"evaluation_window_seconds":5,"metrics_max_age_seconds":3600}')`).Error; e != nil {
+	if e = tx.Exec(`INSERT INTO policy_versions VALUES (1,'gpu-idle','{"enabled":true,"min_timeout_seconds":60,"max_timeout_seconds":86400}'),(2,'gpu-scheduling','{"evaluation_window_seconds":5,"metrics_max_age_seconds":3600}')`).Error; e != nil {
 		t.Fatal(e)
 	}
 	if e = tx.Exec(`UPDATE instances SET policy_versions=JSON_SET(policy_versions,'$."gpu-idle"','1','$."gpu-scheduling"','2') WHERE id=?`, id).Error; e != nil {

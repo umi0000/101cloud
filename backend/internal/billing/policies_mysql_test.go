@@ -124,7 +124,7 @@ func TestMySQLPolicyProfilesEditDelete(t *testing.T) {
 		"gpu-pricing":    map[string]any{"gpu_model": "NVIDIA A100", "access_mode": "shared", "gpu_hourly_pt": "3.000000"},
 		"credit":         validCreditPolicy(),
 		"gpu-scheduling": map[string]any{"poll_interval_seconds": 10, "metrics_max_age_seconds": 60, "sm_weight": 0.5, "memory_weight": 0.5, "source_high_load_pct": 90, "target_low_load_pct": 30, "evaluation_window_seconds": 300, "min_improvement_pct": 10, "cooldown_seconds": 600, "rebindings_window_seconds": 3600, "max_rebindings_per_window": 2, "max_concurrent_per_node": 1, "allow_price_increase": false},
-		"gpu-idle":       map[string]any{"enabled": true, "default_timeout_seconds": 1800, "min_timeout_seconds": 300, "max_timeout_seconds": 7200, "allowed_actions": []string{"release_gpu", "stop_instance"}, "gpu_utilization_threshold_pct": 5, "gpu_memory_threshold_pct": 5, "graceful_stop_timeout_seconds": 60, "allow_force_stop": false},
+		"gpu-idle":       map[string]any{"enabled": true, "default_timeout_seconds": 1800, "min_timeout_seconds": 300, "max_timeout_seconds": 7200, "allowed_actions": []string{"release_gpu", "stop_instance"}, "graceful_stop_timeout_seconds": 60, "allow_force_stop": false},
 		"metrics":        map[string]any{"raw_retention_days": 7, "rollup_retention_days": 30, "bucket_seconds": 60, "collection_interval_seconds": 5},
 	}
 	create := func(kind, code string) profile {

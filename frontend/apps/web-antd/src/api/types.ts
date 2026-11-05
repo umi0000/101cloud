@@ -628,6 +628,7 @@ export interface GPUPolicyConfig {
 }
 
 export interface GPUPolicy extends GPUPolicyConfig {
+  gpu_binding: null | { policy_version_id: ID; model: string; access_mode: AccessMode; gpu_hourly_pt: Pt };
   allowed_ranges: {
     editable: Record<'allow_live' | 'idle' | 'idle_action' | 'idle_timeout' | 'max_hourly_pt' | 'rebalance', boolean>;
     idle: {

@@ -105,6 +105,31 @@ func encodedPolicy(t *testing.T, p map[string]any) json.RawMessage {
 	}
 	return b
 }
+func TestIdlePolicyRequiresTimingAndRejectsRemovedThresholds(t *testing.T) {
+	valid := map[string]any{"enabled": true, "default_timeout_seconds": 1800, "min_timeout_seconds": 60, "max_timeout_seconds": 7200, "allowed_actions": []string{"release_gpu", "stop_instance"}, "graceful_stop_timeout_seconds": 60, "allow_force_stop": false}
+	typed, err := validatePolicy("gpu-idle", encodedPolicy(t, valid))
+	if err != nil {
+		t.Fatalf("threshold-free idle policy rejected: %v", err)
+	}
+	idle := typed.(IdleConfig)
+	if idle.Default != 1800 || idle.Min != 60 || idle.Max != 7200 || idle.StopTimeout != 60 || !idle.Enabled || idle.Force || len(idle.Actions) != 2 {
+		t.Fatalf("idle timing or safety permissions changed: %+v", idle)
+	}
+	for _, field := range []string{"gpu_utilization_threshold_pct", "gpu_memory_threshold_pct"} {
+		valid[field] = 0
+		if _, err := validatePolicy("gpu-idle", encodedPolicy(t, valid)); err == nil {
+			t.Errorf("removed idle field %s accepted", field)
+		}
+		delete(valid, field)
+	}
+	for _, timeout := range []int{0, 59, 7201} {
+		valid["default_timeout_seconds"] = timeout
+		if _, err := validatePolicy("gpu-idle", encodedPolicy(t, valid)); err == nil {
+			t.Errorf("out-of-range idle timeout %d accepted", timeout)
+		}
+	}
+}
+
 func TestPolicyValidationRejectsUnconfirmedEconomics(t *testing.T) {
 	if _, e := validatePolicy("credit", encodedPolicy(t, validCreditPolicy())); e != nil {
 		t.Fatalf("explicit valid policy rejected: %v", e)

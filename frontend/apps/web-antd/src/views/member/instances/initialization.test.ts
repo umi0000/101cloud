@@ -92,7 +92,7 @@ describe('initialization route recovery and isolation', () => {
     expect(runtime.push).not.toHaveBeenCalled();
     const enter = [...root.querySelectorAll('button')].find((button) => button.textContent === '进入实例');
     enter!.click();
-    expect(runtime.push).toHaveBeenCalledWith({ path: '/instances', query: { instance: 'instance-user-a' } });
+    expect(runtime.push).toHaveBeenCalledWith({ name: 'MemberInstanceDetail', params: { id: 'instance-user-a' } });
   });
 
   it('discards a previous account response and clears its data synchronously', async () => {

@@ -16,6 +16,7 @@ const runtime = vi.hoisted(() => ({
 vi.mock('vue-router', () => ({ useRoute: () => ({ params: { id: '42' } }), useRouter: () => ({ replace: runtime.replace }) }));
 vi.mock('#/api/backend', () => ({
   instancesApi: { get: runtime.get, delete: runtime.remove, network: async () => ({ data: [] }) },
+  consoleApi: {},
   opsApi: {}, catalogApi: {}, nodesApi: {},
 }));
 vi.mock('#/store/tasks', () => ({ useTaskStore: () => ({ track: vi.fn() }) }));
@@ -49,12 +50,12 @@ vi.mock('#/components/error-feedback.vue', () => ({ default: () => null }));
 vi.mock('#/components/status-tag.vue', () => ({ default: () => null }));
 vi.mock('#/components/time-text.vue', () => ({ default: () => null }));
 vi.mock('#/components/user-name.vue', () => ({ default: () => null }));
-vi.mock('./components/console-drawer.vue', () => ({ default: () => null }));
+vi.mock('#/components/instances/console-drawer.vue', () => ({ default: () => null }));
 vi.mock('./components/gpu-panel.vue', () => ({ default: () => null }));
 vi.mock('./components/gpu-policy-panel.vue', () => ({ default: () => null }));
 vi.mock('./components/grace-tag.vue', () => ({ default: () => null }));
 vi.mock('./components/metrics-panel.vue', () => ({ default: () => null }));
-vi.mock('./components/resize-dialog.vue', () => ({ default: () => null }));
+vi.mock('#/components/instances/resize-dialog.vue', () => ({ default: () => null }));
 vi.mock('./components/task-panel.vue', () => ({ default: () => null }));
 vi.mock('./components/shared', () => ({ useNow: () => ref(Date.now()) }));
 

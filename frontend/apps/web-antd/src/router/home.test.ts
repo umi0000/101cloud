@@ -16,13 +16,15 @@ describe('role landing and login redirects', () => {
     expect(getLoginRedirect(encodeURIComponent('/instances/create?plan=2'), 'user'))
       .toBe('/instances/create?plan=2');
     expect(getLoginRedirect('/instances/create/confirm', 'user')).toBe('/instances/create/confirm');
+    expect(getLoginRedirect('/instances/42?tab=gpu', 'user')).toBe('/instances/42?tab=gpu');
+    expect(getLoginRedirect('/instances/initialization/43', 'user')).toBe('/instances/initialization/43');
   });
 
   it.each([
     undefined,
     '/admin/dashboard',
     '/admin/instances/42',
-    '/instances/42',
+    '/instances/not-an-id',
     '/member-pending',
     '/auth/login',
     '/instances/../admin/dashboard',

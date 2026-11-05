@@ -14,7 +14,8 @@ export function getLoginRedirect(value: unknown, role: Role): string {
     const url = new URL(path, 'http://localhost');
     const allowed = role === 'admin'
       ? url.pathname === '/admin' || url.pathname.startsWith('/admin/')
-      : url.pathname === '/instances' || url.pathname === '/instances/create' || url.pathname === '/instances/create/confirm';
+      : url.pathname === '/instances' || url.pathname === '/instances/create' || url.pathname === '/instances/create/confirm'
+        || /^\/instances\/\d+$/.test(url.pathname) || /^\/instances\/initialization\/\d+$/.test(url.pathname);
     return allowed ? `${url.pathname}${url.search}${url.hash}` : home;
   } catch {
     return home;

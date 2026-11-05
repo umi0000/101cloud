@@ -9,24 +9,28 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue';
 
 import { Alert, Button, Form, FormItem, InputNumber } from 'ant-design-vue';
 
-import { instancesApi } from '#/api/backend';
+import type { instancesApi } from '#/api/backend';
+import { ApiError, newIdempotencyKey } from '#/api/request';
 import ConfirmAction from '#/components/confirm-action.vue';
 import ErrorFeedback from '#/components/error-feedback.vue';
-import { trackAccepted, useAction } from '#/composables/api';
+import { errorToast, trackAccepted } from '#/composables/api';
 import { describeError } from '#/locales/errors';
 import { bytesToGib, formatBytes, gibToBytes } from '#/utils/format';
 
-const props = defineProps<{ etag: null | string; instance: Instance }>();
-const emit = defineEmits<{ done: [] }>();
+const props = defineProps<{ api: Pick<typeof instancesApi, 'resize' | 'resizeLimits'>; etag: null | string; instance: Instance; disabled?: boolean }>();
+const emit = defineEmits<{ done: []; unresolved: [value: boolean] }>();
 const open = defineModel<boolean>('open', { default: false });
 
 const GIB = 1024n ** 3n;
 const form = ref({ disk_gib: 0, memory_gib: 0, vcpus: 0 });
-const action = useAction();
+const pending = ref(false);
+const frozen = ref<null | { id: string; body: { confirm_restart?: boolean; resources: Resources }; etag: string | null; key: string }>(null);
+watch(frozen, (value) => emit('unresolved', !!value), { flush: 'sync' });
+let generation = 0;
 const elastic = computed(() => props.instance.product_type === 'elastic');
 const snapshot = computed(() => props.instance.plan_snapshot);
 const running = computed(() => props.instance.observed_state === 'running');
-const lifecycleDisabled = computed(() => props.instance.provisioning_state !== 'ready'
+const lifecycleDisabled = computed(() => props.disabled || props.instance.provisioning_state !== 'ready'
   || props.instance.state_stale || !!props.instance.active_task_id || !props.instance.capabilities.resize
   || !['running', 'stopped'].includes(props.instance.observed_state));
 
@@ -42,7 +46,7 @@ async function loadLimits() {
   limitsError.value = null;
   limitsLoading.value = true;
   try {
-    const result = await instancesApi.resizeLimits(id);
+    const result = await props.api.resizeLimits(id);
     if (request === limitsRequest && open.value && props.instance.id === id) limits.value = result.data;
   } catch (error) {
     if (request === limitsRequest && open.value && props.instance.id === id) limitsError.value = error;
@@ -52,6 +56,8 @@ async function loadLimits() {
 }
 
 watch([open, () => props.instance.id], ([visible]) => {
+  if (frozen.value && frozen.value.id === props.instance.id) return;
+  ++generation;
   ++limitsRequest;
   limits.value = null;
   limitsError.value = null;
@@ -59,12 +65,10 @@ watch([open, () => props.instance.id], ([visible]) => {
   if (!visible) return;
   const r = props.instance.resources;
   form.value = { disk_gib: gibLimit(BigInt(r.disk_bytes), 'ceil'), memory_gib: bytesToGib(r.memory_bytes), vcpus: r.vcpus };
-  action.resetKey();
+  frozen.value = null;
   void loadLimits();
 }, { flush: 'sync', immediate: true });
-onBeforeUnmount(() => { ++limitsRequest; });
-watch(form, () => action.resetKey(), { deep: true });
-watch(running, () => action.resetKey());
+onBeforeUnmount(() => { ++limitsRequest; ++generation; });
 
 type ResKey = Exclude<OverrideKey, 'gpu_count'>;
 interface Bound {
@@ -115,7 +119,7 @@ function unavailable(key: ResKey): boolean {
   return b.max < b.min || inputLimit(key, 'max') < inputLimit(key, 'min');
 }
 
-const inputsDisabled = computed(() => !limits.value || limitsLoading.value || (elastic.value && !snapshot.value));
+const inputsDisabled = computed(() => !!frozen.value || pending.value || !limits.value || limitsLoading.value || (elastic.value && !snapshot.value));
 
 function toBytes(gib: number): null | string {
   try {
@@ -171,18 +175,33 @@ const stepGib = (key: 'disk_bytes' | 'memory_bytes') => {
 };
 
 async function submit() {
-  const r = resources.value;
-  if (!r || lifecycleDisabled.value || problems.value.length > 0) return false;
-  const body: Parameters<typeof instancesApi.resize>[1] = { resources: r };
-  if (running.value) body.confirm_restart = true;
-  const res = await action.run((key) => instancesApi.resize(props.instance.id, body, { ifMatch: props.etag, key }), {
-    onConflict: () => emit('done'),
-    success: '已提交修改实例规格',
-  });
-  if (!res) return false;
-  trackAccepted(res.data, '修改实例规格', () => emit('done'));
-  emit('done');
-  return true;
+  if (pending.value) return false;
+  if (!frozen.value) {
+    const r = resources.value;
+    if (!r || lifecycleDisabled.value || problems.value.length > 0) return false;
+    const body: { confirm_restart?: boolean; resources: Resources } = { resources: { ...r } };
+    if (running.value) body.confirm_restart = true;
+    frozen.value = { id: props.instance.id, body, etag: props.etag, key: newIdempotencyKey() };
+  }
+  const request = frozen.value;
+  const token = generation;
+  pending.value = true;
+  try {
+    const res = await props.api.resize(request.id, request.body, { ifMatch: request.etag, key: request.key });
+    if (token !== generation) return false;
+    frozen.value = null;
+    trackAccepted(res.data, '修改实例规格');
+    emit('done');
+    return true;
+  } catch (failure) {
+    if (token !== generation) return false;
+    if (failure instanceof ApiError && failure.status > 0 && failure.status !== 408 && failure.status < 500) {
+      frozen.value = null;
+      emit('done');
+    }
+    errorToast(failure);
+    return false;
+  } finally { if (token === generation) pending.value = false; }
 }
 </script>
 
@@ -190,11 +209,12 @@ async function submit() {
   <ConfirmAction
     v-model:open="open"
     :description="`${running ? '执行此操作将重启实例：正常停止后修改规格，再重新启动。' : ''}${elastic ? '标准实例受创建时冻结的套餐范围限制，后续套餐编辑不会改变此范围。' : '自定义实例不受套餐范围限制。'}允许总量按用户配额、节点容量及常驻预算计算，已排除当前实例占用；提交时重新校验。`"
-    :disabled="lifecycleDisabled || inputsDisabled || problems.length > 0"
+    :disabled="pending || (!frozen && (lifecycleDisabled || inputsDisabled || problems.length > 0))"
     :on-confirm="submit"
     :risk-text="running ? '我确认执行此操作将重启实例，期间服务会中断' : ''"
     title="修改实例规格"
   >
+    <Alert v-if="frozen" class="mb-3" type="warning" message="提交结果尚未确认，原配置和请求已锁定。再次确认仅重试原请求，请勿重复发起规格修改。" show-icon />
     <Alert v-if="limitsLoading" class="mb-3" message="正在读取所有者配额和节点可用容量，暂不可提交。" show-icon type="info" />
     <Alert v-else-if="limitsError" class="mb-3" :message="describeError(limitsError).text" show-icon type="error">
       <template #description><ErrorFeedback :feedback="describeError(limitsError)" hide-message /></template>

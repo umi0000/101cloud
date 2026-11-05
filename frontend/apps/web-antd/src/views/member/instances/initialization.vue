@@ -170,7 +170,7 @@ onBeforeUnmount(() => {
 });
 
 function enterInstance() {
-  if (canEnter.value && task.value?.instance_id) void router.push({ path: '/instances', query: { instance: task.value.instance_id } });
+  if (canEnter.value && task.value?.instance_id) void router.push({ name: 'MemberInstanceDetail', params: { id: task.value.instance_id } });
 }
 </script>
 

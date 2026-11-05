@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 /**
- * 终端 / 控制台（frontend/前端设计.md 6.5，管理端接口）。
+ * 终端 / 控制台，调用方显式传入当前角色的会话 API。
  * 容器 terminal（xterm）；虚拟机 vga（noVNC，默认）或 serial（xterm）。
  * 流程：POST 会话（幂等键、实例 ETag）→ 每秒查询至 ready（最多 30 秒）→ WebSocket（子协议 = protocol）。
  * 关闭：ws.close(1000) → GET 会话取 ETag → DELETE；404/410 忽略。不记录终端内容。
@@ -18,7 +18,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
 import { Alert, Button, Drawer, RadioButton, RadioGroup, Space, Spin } from 'ant-design-vue';
 
-import { consoleApi } from '#/api/backend';
+import type { consoleApi } from '#/api/backend';
 import { ApiError, newIdempotencyKey, websocketURL } from '#/api/request';
 import ConfirmAction from '#/components/confirm-action.vue';
 import ErrorFeedback from '#/components/error-feedback.vue';
@@ -26,7 +26,7 @@ import { errorToast, useAction } from '#/composables/api';
 import { enumLabel } from '#/locales/enums';
 import { describeError } from '#/locales/errors';
 
-const props = defineProps<{ etag: null | string; instance: Instance }>();
+const props = defineProps<{ api: typeof consoleApi; etag: null | string; instance: Instance; disabled?: boolean }>();
 
 type Phase = 'connected' | 'connecting' | 'ended' | 'failed' | 'preparing';
 
@@ -53,12 +53,14 @@ let fitTimer: number | undefined;
 const encoder = new TextEncoder();
 
 function start() {
+  if (props.disabled || !props.instance.capabilities.console) return;
   kind.value = isVM.value ? 'vga' : 'terminal';
   confirmOpen.value = true;
 }
 defineExpose({ start });
 
 async function onConfirm() {
+  if (props.disabled || !props.instance.capabilities.console) return false;
   drawerOpen.value = true;
   void connect();
   return true;
@@ -116,6 +118,7 @@ const clamp = (n: number) => Math.min(1000, Math.max(1, n));
 /* ---------- 会话 ---------- */
 
 async function connect() {
+  if (props.disabled || !props.instance.capabilities.console) return;
   teardownConnection();
   const mine = ++gen;
   phase.value = 'preparing';
@@ -136,7 +139,7 @@ async function connect() {
       : { kind: k };
   createAction.resetKey();
   const r = await createAction.run((key) =>
-    consoleApi.create(props.instance.id, body, { ifMatch: props.etag, key }),
+    props.api.create(props.instance.id, body, { ifMatch: props.etag, key }),
   );
   if (mine !== gen) {
     if (r) void closeSession(r.data);
@@ -155,7 +158,7 @@ async function waitReady(initial: ConsoleSession, mine: number) {
       if (Date.now() > deadline) return fail(mine, '控制台准备超时，请重新连接');
       await new Promise((resolve) => window.setTimeout(resolve, 1000));
       if (mine !== gen) return;
-      s = (await consoleApi.get(s.session_id)).data;
+      s = (await props.api.get(s.session_id)).data;
       if (mine !== gen) return;
       session.value = s;
     }
@@ -257,9 +260,9 @@ async function closeSession(s: ConsoleSession) {
   const terminal = (st: string) => st === 'closed' || st === 'expired' || st === 'failed';
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const r = await consoleApi.get(s.session_id);
+      const r = await props.api.get(s.session_id);
       if (terminal(r.data.status)) return;
-      await consoleApi.close(s.session_id, { ifMatch: r.etag, key: newIdempotencyKey() });
+      await props.api.close(s.session_id, { ifMatch: r.etag, key: newIdempotencyKey() });
       return;
     } catch (error) {
       if (error instanceof ApiError && (error.status === 404 || error.status === 410)) return;
@@ -290,6 +293,14 @@ watch(drawerOpen, (open) => {
   disposeTerminal();
 });
 
+watch(() => props.disabled, (disabled) => {
+  if (!disabled) return;
+  confirmOpen.value = false;
+  drawerOpen.value = false;
+  teardownConnection();
+  disposeTerminal();
+});
+
 onBeforeUnmount(() => {
   teardownConnection();
   disposeTerminal();
@@ -307,7 +318,7 @@ function sendCtrlAltDel() {
 <template>
   <ConfirmAction
     v-model:open="confirmOpen"
-    description="管理员控制台会话会记入审计。"
+    description="控制台会话会记入审计。"
     ok-text="连接"
     :on-confirm="onConfirm"
     title="打开控制台"

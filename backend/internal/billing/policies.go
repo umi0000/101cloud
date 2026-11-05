@@ -56,8 +56,6 @@ type IdleConfig struct {
 	Min         int      `json:"min_timeout_seconds"`
 	Max         int      `json:"max_timeout_seconds"`
 	Actions     []string `json:"allowed_actions"`
-	Util        float64  `json:"gpu_utilization_threshold_pct"`
-	Memory      float64  `json:"gpu_memory_threshold_pct"`
 	StopTimeout int      `json:"graceful_stop_timeout_seconds"`
 	Force       bool     `json:"allow_force_stop"`
 }
@@ -169,10 +167,10 @@ func validatePolicy(kind string, raw json.RawMessage) (any, error) {
 		return p, nil
 	case "gpu-idle":
 		var p IdleConfig
-		if e := strictConfig(raw, &p, "enabled", "default_timeout_seconds", "min_timeout_seconds", "max_timeout_seconds", "allowed_actions", "gpu_utilization_threshold_pct", "gpu_memory_threshold_pct", "graceful_stop_timeout_seconds", "allow_force_stop"); e != nil {
+		if e := strictConfig(raw, &p, "enabled", "default_timeout_seconds", "min_timeout_seconds", "max_timeout_seconds", "allowed_actions", "graceful_stop_timeout_seconds", "allow_force_stop"); e != nil {
 			return nil, e
 		}
-		if !positive(p.Min, p.Default, p.Max, p.StopTimeout) || p.Default < p.Min || p.Default > p.Max || !percent(p.Util, p.Memory) || len(p.Actions) == 0 || len(p.Actions) > 2 {
+		if !positive(p.Min, p.Default, p.Max, p.StopTimeout) || p.Default < p.Min || p.Default > p.Max || len(p.Actions) == 0 || len(p.Actions) > 2 {
 			return nil, invalid("invalid GPU idle policy bounds")
 		}
 		seen := map[string]bool{}
@@ -213,7 +211,7 @@ func sourceFields(kind string, p any) row {
 	case CreditConfig:
 		return row{"daily_allowance_pt": v.Daily, "bonus_cap_pt": "99999999999999.999999", "timezone": v.Timezone, "reset_time": v.GrantTime, "redemption_validity_seconds": nil, "billing_window_seconds": v.Window, "daily_validity_seconds": v.Validity, "shutdown_grace_seconds": v.Grace, "grace_charge_mode": v.GraceMode, "restore_action": v.Restore, "storage_charge_mode": v.Storage, "offline_charge_mode": v.Offline}
 	case IdleConfig:
-		return row{"sample_interval_seconds": 1, "evaluation_window_seconds": v.Default, "consecutive_idle_windows": 1, "cpu_utilization_threshold_pct": 0, "gpu_utilization_threshold_pct": v.Util, "gpu_memory_threshold_pct": v.Memory, "network_bytes_threshold": 0, "action": v.Actions[0]}
+		return row{"sample_interval_seconds": 1, "evaluation_window_seconds": v.Default, "consecutive_idle_windows": 1, "cpu_utilization_threshold_pct": 0, "network_bytes_threshold": 0, "action": v.Actions[0]}
 	}
 	return nil
 }
