@@ -51,6 +51,8 @@ apps/web-antd/src/
 ## 普通用户实例首页
 
 - 首页点击实例名称进入独立详情，移除卡片底部“进入实例”和“查看初始化”按钮；初始化页面保留在创建流程。每个内网 IPv4 后提供复制按钮和成功反馈。已仅前端部署 `.111` `/srv/101cloud/releases/20261105-member-home-name-copy`，旧入口记录于 `/var/backups/101cloud/20261105-member-home-name-copy/frontend.link`。保留此前 GPU 空闲配置精简；线上静态资源配合浏览器隔离只读响应验证名称导航、复制成功及旧按钮移除，无运行错误或业务写入。HTML校验和一致、健康接口正常，后端程序/PID及Nginx配置未变，无服务重启。
+- 首页卡片轻度紧凑版已仅前端发布 `.111` `/srv/101cloud/releases/20261105-compact-member-cards`：内边距16px、区块间距12px、系统图标32px，保留信息和名称字号。类型检查/构建通过；线上静态资源配合隔离响应实测padding16px、gap12px。健康正常、后端PID未变；旧入口保存在 `/var/backups/101cloud/20261105-compact-member-cards/frontend.link`。
+- 卡片横向收窄版已发布 `.111` `/srv/101cloud/releases/20261105-narrow-member-cards`：1200px起三列，间距20px；平板两列、手机单列，内部16px留白不变。类型检查及构建通过，线上静态资源配合隔离数据在1440px实测三列约381px、gap20px、无横向溢出，健康接口正常。旧入口位于 `/var/backups/101cloud/20261105-narrow-member-cards/frontend.link`，仅更新前端。
 
 - 登录及根地址按 `/me.user.role` 分流；登录回跳只允许当前角色已开放的站内页面。退出或重新登录切换账号/角色会清理前一账号的状态。任务中心按角色分别查询本人 `/tasks/{id}` 或管理员 `/admin/tasks/{id}`，异步旧响应不会污染新账号。
 - `/instances` 使用本人接口，每页 20 条，支持运行状态、产品类型筛选、刷新和游标上一页/下一页。卡片展示实例名、ID、类型、组合状态、分配 CPU/内存/磁盘、状态过期及额度停机提示。GPU 分配通过 `/instances/{id}/gpu-allocations` 独立加载，按型号及分配状态汇总数量，不把历史释放/取消记录算作当前分配。

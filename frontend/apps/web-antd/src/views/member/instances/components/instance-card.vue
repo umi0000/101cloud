@@ -117,12 +117,12 @@ const enforcementMessage = computed(() => {
 
 <template>
   <Card class="instance-card h-full min-w-0" size="small">
-    <article class="flex min-w-0 flex-col gap-5" :aria-label="`实例 ${instance.name}`">
+    <article class="flex min-w-0 flex-col gap-3" :aria-label="`实例 ${instance.name}`">
       <header class="flex min-w-0 items-start gap-3">
-        <div class="flex size-10 shrink-0 items-center justify-center rounded-lg" aria-hidden="true">
-          <OsIcon :name="instance.image_os_name" class="text-2xl" />
+        <div class="flex size-8 shrink-0 items-center justify-center rounded-lg" aria-hidden="true">
+          <OsIcon :name="instance.image_os_name" class="text-xl" />
         </div>
-        <div class="flex min-w-0 flex-1 flex-col gap-2">
+        <div class="flex min-w-0 flex-1 flex-col gap-1">
           <h2 class="m-0 break-words text-lg font-semibold [overflow-wrap:anywhere]"><button type="button" class="cursor-pointer text-left hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary" @click="emit('view', instance)">{{ instance.name }}</button></h2>
           <p class="text-muted-foreground m-0 break-all text-xs">
             <template v-if="instance.image_os_name">{{ instance.image_os_name }} {{ instance.image_os_release }} · </template>
@@ -176,8 +176,8 @@ const enforcementMessage = computed(() => {
         {{ enforcementMessage }}
       </p>
 
-      <section class="min-w-0 border-t pt-3" aria-label="GPU 分配">
-        <h3 class="m-0 mb-2 text-sm font-medium">GPU 分配</h3>
+      <section class="min-w-0 border-t pt-2" aria-label="GPU 分配">
+        <h3 class="m-0 mb-1 text-xs font-normal text-muted-foreground">GPU 分配</h3>
         <div v-if="gpuLoading" class="text-muted-foreground mb-2 flex items-center gap-2 text-xs" role="status">
           <Spin size="small" />
           <span>{{ gpuLoaded ? '正在更新 GPU 分配…' : '正在加载 GPU 分配…' }}</span>
@@ -201,6 +201,6 @@ const enforcementMessage = computed(() => {
 
 <style scoped>
 .instance-card :deep(.ant-card-body) {
-  padding: 1.25rem;
+  padding: 1rem;
 }
 </style>

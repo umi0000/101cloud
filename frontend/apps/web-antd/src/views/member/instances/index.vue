@@ -168,7 +168,7 @@ watch(
 .instance-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 1rem;
+  gap: 1.25rem;
 }
 
 @media (min-width: 768px) {
@@ -177,7 +177,7 @@ watch(
   }
 }
 
-@media (min-width: 1536px) {
+@media (min-width: 1200px) {
   .instance-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
