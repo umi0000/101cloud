@@ -61,7 +61,7 @@ Instance DTO暴露plan_snapshot（custom为null）。resize仅接受resources及
 推荐使用 Linux 服务器，准备：
 
 - MySQL 8.4 LTS，以及独立数据库和数据库用户。
-- 构建环境 Go 1.25 或更新版本、Node.js 22.18+ 或 24、Corepack/pnpm 10，以及已安装的前端依赖；也可以在其他机器构建后上传二进制。
+- 构建环境 Go 1.25 或更新版本、Node.js 22.18+ 或 24、pnpm 10.33.4，以及已安装的前端依赖；也可以在其他机器构建后上传二进制。
 - Nginx 或 Caddy，以及浏览器入口使用的域名和 HTTPS 证书。
 - 已安装、初始化好的 Host Agent。后端不会通过 SSH 自动安装 Incus、驱动或修改宿主网络。
 
@@ -69,7 +69,25 @@ Instance DTO暴露plan_snapshot（custom为null）。resize仅接受resources及
 
 ## 2. 构建程序
 
-在完整仓库中构建，不能只复制 backend 源码：go.mod 引用了相邻的 host-agent 客户端包。先按 [前端环境说明](../frontend/README.md#环境) 安装依赖；构建脚本不安装或下载依赖。
+在完整仓库中构建，不能只复制 backend 源码：go.mod 引用了相邻的 host-agent 客户端包。构建机需要 Go 1.25+、Node.js 22.18+ 或 24，以及 PATH 中可用的 pnpm 10.33.4，不要求 Corepack。运行服务器不需要 Node.js、pnpm 或前端源码。
+
+### 2.1 首次准备依赖
+
+从仓库根目录执行（首次构建或前端依赖锁文件变化后执行）：
+
+```bash
+npm install -g pnpm@10.33.4
+cd frontend
+pnpm install --frozen-lockfile
+cd ../backend
+go mod download
+```
+
+前端使用仓库 `packageManager` 指定的 pnpm 版本。上述步骤需要能访问依赖源；`build.sh` 直接调用 `pnpm`，不安装 pnpm 或前端依赖，因此应先完成依赖准备。Go 构建缺少模块时仍可能访问模块代理。
+
+### 2.2 编译当前机器版本
+
+以下命令从仓库根目录执行；如果已在 `backend` 目录，直接执行 `./build.sh`：
 
 ```bash
 cd backend
@@ -78,13 +96,30 @@ cd backend
 
 脚本可从任意工作目录调用，先用 Vite production 模式在临时目录构建真实前端，再替换 `internal/webui/dist/`，最后编译 Go。失败的前端构建不覆盖旧 bundle，成功构建不会残留已删除的资源；生成目录不提交版本库。默认输出 `backend/bin/101cloud-backend`，额外参数透传给 `go build`（放在 package 前），例如 `./build.sh -o /tmp/101cloud-backend`。不改变 Vite 本地开发配置。
 
-交叉构建 Linux amd64（保留调用者的 `GOOS`、`GOARCH`、`CGO_ENABLED`）：
+### 2.3 交叉编译 Linux 服务器版本
+
+以下命令均在 `backend` 目录执行，可在 macOS 构建后上传至 Linux。Linux amd64（当前 `.111` 服务器）：
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 ./build.sh
 ```
 
-ARM64 服务器将 `GOARCH` 改为 `arm64`。前端资源与 SQL 迁移均嵌入同一个二进制，运行不依赖工作目录或磁盘静态目录，不提供磁盘资源回退。发布只需替换该二进制，不再单独上传前端；仍需 MySQL、运行配置和原 master key，Host Agent 仍独立安装和更新。构建及启动不会自动执行数据库迁移，应按升级步骤显式执行 `migrate`。
+Linux ARM64：
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 ./build.sh
+```
+
+两条命令默认都写入 `backend/bin/101cloud-backend`，后一次构建会覆盖前一次。需要同时保留不同架构时指定输出文件：
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 ./build.sh -o bin/101cloud-backend-linux-amd64
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 ./build.sh -o bin/101cloud-backend-linux-arm64
+```
+
+前端资源与 SQL 迁移均嵌入同一个二进制，运行不依赖工作目录或磁盘静态目录，不提供磁盘资源回退。发布只需替换对应架构的二进制，不再单独上传前端；仍需 MySQL、运行配置和原 master key，Host Agent 仍独立安装和更新。构建及启动不会自动执行数据库迁移，应按升级步骤显式执行 `migrate`。首次切换内嵌前端时，先安装新二进制，再按[第9节](#9-配置-nginx-反向代理)替换 Nginx 配置。
+
+### 2.4 仅构建前端资源与运行测试
 
 首次检出后直接 `go test`/`go build` 会因缺少嵌入资源失败；先准备 bundle，再测试：
 
@@ -96,6 +131,63 @@ go test ./...
 此为新的构建/部署方式，当前线上尚未切换到内嵌前端；历史发布记录中的独立静态目录保留为当时状态，不代表本次已部署。
 
 本地已验证统一脚本可从仓库外调用，默认原生构建及 `GOOS=linux GOARCH=amd64 CGO_ENABLED=0` 构建均成功，重建清除旧资源哨兵。实际 `backend` CLI 在无前端目录的临时工作目录完成隔离库迁移及serve，浏览器直接加载Go提供的登录页与深链接，366个真实资源HTTP字节与构建文件一致；缺失JS404、未知API JSON404、不支持API方法405、HEAD及缓存行为通过。完整真实MySQL `go test -race -p 1 ./... -count=1` 和 `go vet ./...` 通过。未部署线上、未改变当前Nginx或业务数据。
+
+### 2.5 构建命令行参数
+
+```text
+./build.sh [go build 参数...]
+./build.sh --frontend-only
+```
+
+| 参数 | 用途与限制 |
+|---|---|
+| 不传参数 | 先构建前端，再编译当前平台后端，默认输出 `bin/101cloud-backend` |
+| `--frontend-only` | 只生成 `internal/webui/dist/`，不编译 Go；必须是第一个且唯一参数 |
+| `-o <路径>` | 指定二进制输出路径；相对路径以 `backend` 目录为基准，不是调用脚本的工作目录 |
+| `-ldflags '<参数>'` | 透传 Go 链接参数，例如 `-ldflags '-s -w'` 去除符号表和调试信息以缩小体积，但降低原生调试能力 |
+| `-tags '<标签>'` | 透传 Go 构建标签，只有确实需要启用对应条件编译代码时使用 |
+| `-race` | 启用 Go 数据竞争检测，用于调试；要求支持的平台和 C 工具链，不能与 `CGO_ENABLED=0` 组合 |
+| `-v` | 输出参与编译的 Go 包；不控制前端构建日志 |
+| `-p <数量>` | 限制 Go 构建并行任务数，例如内存受限机器使用 `-p 1` |
+
+除 `--frontend-only` 外，参数原样传给 `go build`。脚本已指定 `-trimpath` 和入口 `./cmd/backend`，不要再追加包路径，也不要将 Vite 参数传给脚本。其他 Go 参数查阅 `go help build`；脚本没有独立的 `--help`/`--version` 选项。
+
+`GOOS`、`GOARCH`、`CGO_ENABLED` 是环境变量，放在命令前，不是 `--os`/`--arch` 等命令行选项。Linux amd64 精简构建示例（在 `backend` 目录执行）：
+
+```bash
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 ./build.sh \
+  -o bin/101cloud-backend-linux-amd64 \
+  -ldflags '-s -w'
+```
+
+### 2.6 二进制运行子命令
+
+构建参数不适用于运行程序。二进制只接受一个位置子命令：
+
+```text
+101cloud-backend install
+101cloud-backend migrate
+101cloud-backend serve
+```
+
+| 子命令 | 行为 |
+|---|---|
+| `install` | 首次空库安装：创建数据库、执行迁移、创建受限业务 MySQL 账号；需要额外的 `CLOUD_MYSQL_ADMIN_DSN`，已有表或同名账号时拒绝覆盖 |
+| `migrate` | 对已有安装执行嵌入的 SQL 迁移；`CLOUD_MYSQL_DSN` 必须使用有迁移权限的账号，不启动 HTTP 服务 |
+| `serve` | 检查迁移状态，必要时创建首个管理员，启动 HTTP 服务（内嵌页面、API、WebSocket）和后台 Worker；不会自动迁移 |
+
+运行配置全部通过 `CLOUD_*` 环境变量传入，详见[第6节](#6-配置环境文件)。程序不支持 `--port`、`--config`、`--help` 或 `--version`，也不会自动读取 `.env`。无参数或多参数时打印用法并非零退出；不要把数据库密码写成命令行参数。
+
+手工运行时，先在有权限的 Bash 会话中加载环境文件，再启动（与 systemd 二选一，不要重复占用端口）：
+
+```bash
+set -a
+. /usr/local/etc/101cloud/backend.env
+set +a
+/usr/local/bin/101cloud-backend serve
+```
+
+首次安装、升级所需的数据库权限与凭据处理见[第7节](#7-自动初始化数据库及首个面板管理员)；日常 `serve` 仍使用受限业务账号，不保留安装用管理员凭据。
 
 ## 3. 创建运行用户和目录
 

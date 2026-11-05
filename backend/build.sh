@@ -20,7 +20,7 @@ trap 'rm -rf "$stage"' 0
 trap 'exit 1' HUP INT TERM
 (
     cd "$repo_dir/frontend"
-    COREPACK_ENABLE_NETWORK=0 corepack pnpm --dir apps/web-antd exec vite build --mode production --outDir "$stage/dist" --emptyOutDir
+    pnpm --dir apps/web-antd exec vite build --mode production --outDir "$stage/dist" --emptyOutDir
 )
 if [ ! -s "$stage/dist/index.html" ] || [ ! -s "$stage/dist/_app.config.js" ]; then
     echo 'Frontend build must produce nonempty index.html and _app.config.js' >&2
