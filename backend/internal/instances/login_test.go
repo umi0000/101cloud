@@ -136,6 +136,9 @@ func assertMinimalCloudConfig(t *testing.T, data string, password bool) platform
 	if json.Unmarshal([]byte(strings.TrimPrefix(data, "#cloud-config\n")), &cloud) != nil {
 		t.Fatal("cloud-config is not valid JSON/YAML")
 	}
+	if cloud["preserve_hostname"] != true {
+		t.Fatal("cloud-config must preserve the Incus-assigned hostname")
+	}
 	if cloud["ssh_deletekeys"] != false || cloud["ssh_keys"] == nil || len(object(cloud["ssh_keys"])) != 0 || object(cloud["ssh"])["emit_keys_to_console"] != false || cloud["no_ssh_fingerprints"] != true || cloud["allow_public_ssh_keys"] != false || object(cloud["ssh_publish_hostkeys"])["enabled"] != false {
 		t.Fatal("cloud-config does not suppress SSH generation, publication and fingerprints")
 	}
@@ -144,7 +147,7 @@ func assertMinimalCloudConfig(t *testing.T, data string, password bool) platform
 			t.Fatalf("unexpected cloud-config field %s", forbidden)
 		}
 	}
-	want := 6
+	want := 7
 	if password {
 		want += 2
 		if _, supplied := object(rows(cloud["users"])[0])["ssh_authorized_keys"]; supplied {

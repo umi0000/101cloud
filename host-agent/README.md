@@ -100,6 +100,7 @@ defer response.Body.Close()
 | `GET /agent/v1/health` | 实时检查 Incus 连通性，不允许匿名访问 |
 | `GET /agent/v1/resources` | 完整硬件、GPU负载，以及各接口IP/网段/默认路由/DNS的 `network_interfaces`、`system_dns`、`network_errors` |
 | `PUT /agent/v1/instances/{name}/gpu?project=default` | 使用 UUID 配置 GPU，PCI 解析留在本机 |
+| `POST /agent/v1/instances/cloud-init/prepare` | 仅为新建、尚未首次启动的停止容器核实 cloud-init 并移除固定禁用标记；虚拟机不适用 |
 | `POST /agent/v1/network/ip-probe` | 在指定网卡上探测单个直连 IPv4 的 ARP 冲突，不分配、不预留地址 |
 | `GET /agent/v1/instances/metrics?project=default` | 连续采样的实例CPU/内存与隐私安全GPU归属聚合，含新鲜度和质量 |
 | `GET /agent/v1/instances/metrics/samples` | 有界内存快照增量补采，按Agent启动ID/序号去重，显式报告重启和缺口 |
@@ -147,6 +148,25 @@ CPU用累计计数差分和独立观测时间窗，首次/重启/缺测不构造
 - CPU 工作空间以后要在线接卡，应在首次启动前准备 `nvidia.runtime=true` 和库环境；热插卡不重新执行 NVIDIA 启动 hook。
 - 使用 ETag 防止覆盖配置；返回 `operation_id`、`operation_completed`、`configuration_state`、`actual`、`etag`，失败不假定已回滚。
 - `resource_release` 始终是 `not_verified`，配置成功不等于设备挂载和进程状态一致。配额、共享人数、计费和实际占用核验仍由业务层组织。
+
+### 新实例首次启动前的 cloud-init 准备
+
+受信任后端仅在创建流程、身份与配置核实完成后、首次启动前调用：
+
+```http
+POST /agent/v1/instances/cloud-init/prepare
+Content-Type: application/json
+
+{"project":"tenant","name":"new-instance","expected_uuid":"INCUS-UUID","expected_instance_id":"42","expected_image_fingerprint":"完整的64位镜像指纹"}
+```
+
+成功返回 `{"checked":true,"disabled_marker_removed":true}`；标记已经不存在（包括并发删除返回类型化 404）时返回 `disabled_marker_removed:false`。五个字段均必填且为非空字符串；拒绝未知字段、重复字段、尾随 JSON 和查询参数，项目必须显式提供，不默认到 `default`。
+
+Agent 在指定项目内读取实例，并严格要求名称、项目、`volatile.uuid`、本地 `user.101cloud.instance_id` 归属标记及完整 `volatile.base_image` 均匹配，且状态文字和状态码均为 Stopped。只支持 `container`；停止虚拟机文件访问不受支持，返回 422，后端必须显式跳过虚拟机，不能把此能力当作所有实例的必需启动前置条件。身份/状态冲突返回 409，未安装 cloud-init 返回 422，其余文件访问/权限/传输错误失败关闭。
+
+通过 Incus 文件 API 读取固定 `/usr/bin/cloud-init`、`/etc/cloud/cloud.cfg` 两个安装凭据（均须为文件），以及固定 `/etc/cloud/cloud-init.disabled`。在移除禁用标记前，检查 `/etc`、`/etc/cloud`、`/etc/cloud/cloud.cfg.d` 均为 root:root 所有且非组/其他可写的真实目录，然后仅在固定 `/etc/cloud/cloud.cfg.d/99-101cloud-preserve-hostname.cfg` 缺失时写入固定 `preserve_hostname: true\n`（root:root、0644）。已有文件仅在类型/所有权/模式和内容全部精确匹配时幂等跳过；冲突返回409，不覆盖客机配置。该系统级配置保证 cloud-init local 阶段早于 user-data 合并时也保留 Incus 分配的 hostname；仅 user-data 设置不足以阻止该早期动作。写入前及删除标记前再次核实身份和停止状态，写后只读确认。只有 Incus SDK 的类型化 HTTP404才表示缺失；403、超时或无效响应均失败关闭。同项目同名称操作使用现有实例锁串行化。不执行 guest exec、SSH、包安装、SSH keygen，也不改密码/密钥或管理脚本。
+
+此端点不是通用修复接口：调用者负责将它限定在新建任务首次启动前，不得对源镜像、既有实例、重启或登录配置更新调用。它不会修改镜像、启动实例或执行首次启动逻辑；Incus 原生 API 的外部并发写入不受 Agent 实例锁保护。
 
 ## 构建与部署
 

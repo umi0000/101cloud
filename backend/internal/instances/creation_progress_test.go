@@ -120,3 +120,17 @@ func TestCreationProgressUsesRecoveryStepOwnerStatus(t *testing.T) {
 		t.Fatal("historical task uncertainty overrode confirmed reconciliation")
 	}
 }
+
+func TestCreationProgressPreparationDoesNotCompleteStart(t *testing.T) {
+	for _, status := range []string{"running", "succeeded", "failed", "unknown"} {
+		steps := []platform.Row{{"step_key": cloudInitPrepareStep, "status": status}}
+		progress := creationProgressView(platform.Row{"status": "running"}, platform.Row{}, steps)
+		want := status
+		if status == "succeeded" {
+			want = "pending"
+		}
+		if progress["stages"].([]platform.Row)[3]["status"] != want {
+			t.Fatalf("preparation %s incorrectly completed first start: %v", status, progress)
+		}
+	}
+}

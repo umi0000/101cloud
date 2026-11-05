@@ -133,7 +133,8 @@ func loginUserData(a *platform.App, r platform.Row) (string, error) {
 	// An explicit empty ssh_keys mapping selects cc_ssh's non-generation branch.
 	// ssh_genkeytypes: [] is rejected by supported cloud-init schemas as minItems=1.
 	cloud := platform.Row{
-		"ssh_deletekeys": false, "ssh_keys": platform.Row{},
+		"preserve_hostname": true,
+		"ssh_deletekeys":    false, "ssh_keys": platform.Row{},
 		"ssh":                 platform.Row{"emit_keys_to_console": false},
 		"no_ssh_fingerprints": true, "allow_public_ssh_keys": false,
 		"ssh_publish_hostkeys": platform.Row{"enabled": false},

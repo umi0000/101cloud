@@ -714,6 +714,12 @@ func runCreateWork(ctx context.Context, a *platform.App, j platform.Job) error {
 		}
 		return a.TaskResult(ctx, j, platform.Row{"instance_id": strconv.FormatUint(j.InstanceID, 10), "observed_state": "stopped", "initialization": "pending"})
 	}
+	if err = workerPrepareCloudInit(ctx, a, j, current); err != nil {
+		if errors.Is(err, workerSkipped) {
+			return a.TaskResult(ctx, j, platform.Row{"instance_id": strconv.FormatUint(j.InstanceID, 10), "skipped": true, "reason": "superseded or no longer authorized"})
+		}
+		return workerUnknown(ctx, a, j, r, err)
+	}
 	start := j
 	start.Type = "instance.start"
 	start.Parameters = json.RawMessage(`{"force":false}`)

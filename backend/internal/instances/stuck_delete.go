@@ -58,7 +58,7 @@ func stuckDeleteQuiescent(ctx context.Context, a *platform.App, j platform.Job, 
 		op := platform.Text(step["operation_id"])
 		if op == "" {
 			key, status := platform.Text(step["step_key"]), platform.Text(step["status"])
-			mutation := key == "create.native" || strings.HasPrefix(key, "state.") || key == "resize.native" || key == "gpu.configure" || initializationStage(key)
+			mutation := key == "create.native" || key == cloudInitPrepareStep || strings.HasPrefix(key, "state.") || key == "resize.native" || key == "gpu.configure" || initializationStage(key)
 			terminal := status == "succeeded" || status == "failed" || (status == "cancelled" && platform.Text(step["error_code"]) != "superseded_by_cleanup")
 			if mutation && !terminal && !platform.Bool(object(step["result_redacted"])["native_dispatch_fenced"]) {
 				return unresolvedStuckSubmission()

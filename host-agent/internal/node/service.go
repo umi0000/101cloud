@@ -123,6 +123,12 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
+	case "/agent/v1/instances/cloud-init/prepare":
+		if !requireMethod(w, r, http.MethodPost) {
+			return
+		}
+		s.prepareCloudInit(w, r)
+		return
 	case "/agent/v1/instances/metrics":
 		s.metricsAPI(w, r, false)
 		return

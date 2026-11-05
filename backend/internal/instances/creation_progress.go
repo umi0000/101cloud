@@ -48,7 +48,7 @@ func creationProgressView(task, instance platform.Row, steps []platform.Row) pla
 		{"preflight", []string{"create.preflight"}, false},
 		{"native", []string{"create.native"}, false},
 		{"gpu", []string{"gpu.configure"}, hasGPU && platform.Uint(creation["gpu_count"]) == 0},
-		{"start", []string{"state.start"}, false},
+		{"start", []string{cloudInitPrepareStep, "state.start"}, false},
 		{"cloud_init", []string{"login.cloud-ready", "init.cloud-ready"}, hasCloud && !platform.Bool(creation["cloud_init"])},
 		{"script", []string{"init.template"}, platform.Uint(instance["init_template_version_id"]) == 0},
 		{"verify", []string{"create.verify"}, false},
@@ -93,6 +93,9 @@ func creationProgressView(task, instance platform.Row, steps []platform.Row) pla
 					stage["finished_at"] = step["finished_at"]
 				}
 			}
+		}
+		if definition.key == "start" && latest["state.start"] == nil && stage["status"] == "succeeded" {
+			stage["status"] = "pending"
 		}
 		if stage["status"] == "running" || stage["status"] == "pending" || stage["status"] == "unknown" {
 			delete(stage, "finished_at")
