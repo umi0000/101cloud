@@ -1,5 +1,6 @@
 <script lang="ts" setup>
 import { computed, ref } from 'vue';
+import { useRouter } from 'vue-router';
 
 import { AuthenticationLoginExpiredModal } from '@vben/common-ui';
 import { BasicLayout, UserDropdown } from '@vben/layouts';
@@ -13,6 +14,12 @@ import LoginForm from '#/views/_core/authentication/login.vue';
 
 const authStore = useAuthStore();
 const accessStore = useAccessStore();
+const router = useRouter();
+const userMenus = computed(() => memberUserId.value ? [{
+  text: '修改密码',
+  icon: 'lucide:key-round',
+  handler: () => router.push({ name: 'MemberPasswordChange' }),
+}] : []);
 const loggingOut = ref(false);
 const memberUserId = computed(() =>
   authStore.me?.user.role === 'user' && !accessStore.loginExpired && !loggingOut.value
@@ -44,7 +51,7 @@ async function handleLogout() {
         avatar=""
         :description="roleText"
         :enable-shortcut-key="false"
-        :menus="[]"
+        :menus="userMenus"
         :text="username"
         @logout="handleLogout"
       />

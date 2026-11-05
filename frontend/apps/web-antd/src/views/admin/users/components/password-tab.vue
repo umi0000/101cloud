@@ -10,7 +10,7 @@ import ConfirmAction from '#/components/confirm-action.vue';
 import { useAction } from '#/composables/api';
 import { useAuthStore } from '#/store';
 
-import { PASSWORD_MAX, passwordError, randomPassword } from '../password';
+import { PASSWORD_MAX, passwordError, randomPassword } from '#/utils/password';
 import PasswordReveal from './password-reveal.vue';
 
 const props = defineProps<{ etag: null | string; user: User }>();

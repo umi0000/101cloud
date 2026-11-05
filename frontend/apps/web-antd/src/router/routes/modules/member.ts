@@ -50,6 +50,12 @@ const routes: RouteRecordRaw[] = [
     name: 'MemberInstanceDetail',
     path: '/instances/:id(\\d+)',
   },
+  {
+    component: () => import('#/views/member/account/password.vue'),
+    meta: { authority: ['user'], hideInMenu: true, keepAlive: false, title: '修改密码' },
+    name: 'MemberPasswordChange',
+    path: '/account/password',
+  },
 ];
 
 export default routes;

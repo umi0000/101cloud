@@ -18,6 +18,7 @@ describe('role landing and login redirects', () => {
     expect(getLoginRedirect('/instances/create/confirm', 'user')).toBe('/instances/create/confirm');
     expect(getLoginRedirect('/instances/42?tab=gpu', 'user')).toBe('/instances/42?tab=gpu');
     expect(getLoginRedirect('/instances/initialization/43', 'user')).toBe('/instances/initialization/43');
+    expect(getLoginRedirect('/account/password', 'user')).toBe('/account/password');
   });
 
   it.each([
@@ -40,6 +41,7 @@ describe('role landing and login redirects', () => {
     expect(getLoginRedirect('/instances', 'admin')).toBe('/admin/dashboard');
     expect(getLoginRedirect('/instances/create', 'admin')).toBe('/admin/dashboard');
     expect(getLoginRedirect('/instances/create/confirm', 'admin')).toBe('/admin/dashboard');
+    expect(getLoginRedirect('/account/password', 'admin')).toBe('/admin/dashboard');
   });
 
   it('rejects repeated redirect query values instead of choosing one', () => {

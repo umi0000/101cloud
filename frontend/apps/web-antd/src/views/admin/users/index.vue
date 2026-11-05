@@ -19,7 +19,7 @@ import { useUserCache } from '#/store/user-cache';
 import { isEffective } from '../finance/components/credit-policy';
 
 import PasswordReveal from './components/password-reveal.vue';
-import { PASSWORD_MAX, passwordError, randomPassword } from './password';
+import { PASSWORD_MAX, passwordError, randomPassword } from '#/utils/password';
 
 const router = useRouter();
 const cache = useUserCache();

@@ -102,6 +102,8 @@ export const authApi = {
     }),
   logout: () => api.post('/auth/logout', { body: {}, silentAuth: true }),
   me: (silent = false) => api.get<Me>('/me', { silentAuth: silent }),
+  changePassword: (body: { current_password: string; new_password: string }, w: Write) =>
+    post<null>('/me/password', body, w),
 };
 
 /* ---------------- 普通用户：实例管理与额度 ---------------- */
