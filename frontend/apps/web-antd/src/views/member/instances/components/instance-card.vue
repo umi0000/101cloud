@@ -4,9 +4,8 @@ import type { EnumLabel } from '#/locales/enums';
 import type { ErrorText } from '#/locales/errors';
 
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
-import { useRouter } from 'vue-router';
 
-import { Button, Card, Spin, Tag } from 'ant-design-vue';
+import { Card, Spin, Tag, TypographyText } from 'ant-design-vue';
 
 import { memberApi } from '#/api/backend';
 import ErrorFeedback from '#/components/error-feedback.vue';
@@ -20,7 +19,6 @@ import { isPrivateIPv4 } from '#/utils/private-ipv4';
 
 const props = defineProps<{ instance: Instance; refreshKey: number }>();
 const emit = defineEmits<{ view: [instance: Instance] }>();
-const router = useRouter();
 const allocations = shallowRef<GPUAllocation[]>([]);
 const gpuLoading = ref(false);
 const gpuLoaded = ref(false);
@@ -125,7 +123,7 @@ const enforcementMessage = computed(() => {
           <OsIcon :name="instance.image_os_name" class="text-2xl" />
         </div>
         <div class="flex min-w-0 flex-1 flex-col gap-2">
-          <h2 class="m-0 break-words text-lg font-semibold [overflow-wrap:anywhere]">{{ instance.name }}</h2>
+          <h2 class="m-0 break-words text-lg font-semibold [overflow-wrap:anywhere]"><button type="button" class="cursor-pointer text-left hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary" @click="emit('view', instance)">{{ instance.name }}</button></h2>
           <p class="text-muted-foreground m-0 break-all text-xs">
             <template v-if="instance.image_os_name">{{ instance.image_os_name }} {{ instance.image_os_release }} · </template>
             {{ enumLabel('instanceType', instance.instance_type).text }} · ID：{{ instance.id }}
@@ -158,7 +156,7 @@ const enforcementMessage = computed(() => {
         <p v-if="networkLoading && !networkLoaded" class="text-muted-foreground m-0 text-sm" role="status">正在加载…</p>
         <ul v-if="privateNetworks.length" class="m-0 list-none space-y-1 p-0">
           <li v-for="network in privateNetworks" :key="network.ip" class="flex flex-wrap items-center gap-2">
-            <span class="select-text break-all font-mono text-sm">{{ network.ip }}</span>
+            <TypographyText class="select-text break-all font-mono text-sm" :copyable="{ text: network.ip }">{{ network.ip }}</TypographyText>
             <span v-if="network.quality.state_stale" class="text-muted-foreground text-xs">状态已过期</span>
           </li>
         </ul>
@@ -197,10 +195,6 @@ const enforcementMessage = computed(() => {
         </ul>
       </section>
 
-      <footer class="flex flex-wrap gap-2 border-t pt-3">
-        <Button size="small" @click="emit('view', instance)">进入实例</Button>
-        <Button v-if="instance.creation_task_id" size="small" @click="router.push({ name: 'MemberInstanceInitialization', params: { taskId: instance.creation_task_id } })">查看初始化</Button>
-      </footer>
     </article>
   </Card>
 </template>
