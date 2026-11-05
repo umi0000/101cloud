@@ -17,7 +17,6 @@ import { Alert, Button, Card, Empty, Input, InputNumber, InputPassword, RadioBut
 import { listAll, memberApi } from '#/api/backend';
 import { ApiError, newIdempotencyKey } from '#/api/request';
 import ErrorFeedback from '#/components/error-feedback.vue';
-import OsIcon from '#/components/os-icon.vue';
 import { usePolling } from '#/composables/api';
 import { describeError } from '#/locales/errors';
 import { useAuthStore } from '#/store';
@@ -27,6 +26,7 @@ import { formatBytes, formatPt, formatTime, ptToMicros } from '#/utils/format';
 import { emptyLoginDraft, imageSupportsLogin, validateLoginDraft } from '#/utils/instance-login';
 
 import ResourceConfigurator from './components/resource-configurator.vue';
+import ImageSelector from './components/image-selector.vue';
 
 const router = useRouter();
 const auth = useAuthStore();
@@ -284,6 +284,7 @@ function restoreSavedForm() {
 async function loadImages() {
   const token = session;
   const sequence = ++imagesSequence;
+  if (!preferredImageId) preferredImageId = imageId.value;
   images.value = [];
   imagesError.value = null;
   const network = selectedNetwork.value;
@@ -403,9 +404,6 @@ watch(availableNetworks, (options) => {
   if (!options.some((item) => item.id === networkId.value)) networkId.value = options.length === 1 ? options[0]?.id : undefined;
 }, { flush: 'sync' });
 watch([selectedPlan, selectedNetwork], () => { void loadImages(); }, { flush: 'sync' });
-watch([availableImages, gpuCount], () => {
-  if (!selectedImage.value) imageId.value = availableImages.value.find((item) => !gpuCount.value || item.gpu_ready)?.id;
-}, { flush: 'sync' });
 watch([fingerprint, resourcesValid, selectedPlan, networkId, imageId, gpuCount, gpuCap], () => {
   invalidateQuote();
   if (spec.value && !locked.value) quoteTimer = window.setTimeout(() => { void requestQuote(); }, 400);
@@ -516,17 +514,10 @@ onBeforeUnmount(() => {
               <ErrorFeedback v-else-if="imagesError" :feedback="imagesError" />
               <Skeleton v-else-if="imagesLoading" active :paragraph="{ rows: 2 }" />
               <Empty v-else-if="!availableImages.length" description="所选网络下暂无套餐允许的就绪镜像"><Button :disabled="locked" @click="loadImages">重新加载镜像</Button></Empty>
-              <div v-else class="space-y-2" role="group" aria-label="选择系统镜像">
-                <button v-for="image in availableImages" :key="image.id" type="button" class="image-option" :class="{ 'is-selected': imageId === image.id }" :disabled="locked || (!!gpuCount && !image.gpu_ready)" :aria-pressed="imageId === image.id" @click="imageId = image.id">
-                  <OsIcon :name="image.os_name" class="text-[28px]" />
-                  <span class="min-w-0 flex-1"><strong class="block break-words">{{ image.os_name || 'Linux' }} {{ image.os_release }}</strong><span class="text-muted-foreground block break-words text-xs">{{ image.name }} · {{ image.architecture }}</span><span v-if="gpuCount && !image.gpu_ready" class="text-destructive block text-xs">未就绪 GPU 支持，不能与 GPU 同时使用</span></span>
-                  <Tag v-if="image.gpu_ready" class="m-0">GPU 就绪</Tag>
-                </button>
-                <p v-if="gpuCount && !selectedImage" class="text-destructive mb-0 text-sm" role="alert">没有支持 GPU 的就绪镜像，请选择其他网络，或将 GPU 数量设为 0。</p>
-              </div>
+              <ImageSelector v-else v-model="imageId" :images="availableImages" :gpu-count="gpuCount ?? 0" :disabled="locked" />
             </div>
             <label class="field-label"><span>实例名称</span><Input v-model:value="name" :disabled="locked" :maxlength="128" placeholder="为此容器起一个便于识别的名称" aria-label="实例名称" /><span v-if="name && nameError" class="text-destructive text-xs">{{ nameError }}</span><span class="text-muted-foreground text-xs">创建时必填，1–128 个字符；不影响报价与时长估算。</span></label>
-            <Alert v-if="selectedPlan?.init_template_version_id" message="此套餐使用管理员预设的初始化模板" description="初始化参数为 {}。" show-icon type="info" />
+            <!-- <Alert v-if="selectedPlan?.init_template_version_id" message="此套餐使用管理员预设的初始化模板" description="初始化参数为 {}。" show-icon type="info" /> -->
           </div>
         </Card>
 
@@ -567,12 +558,12 @@ onBeforeUnmount(() => {
             <Alert v-if="quoteExpired" message="报价已过期，请重新报价并再次确认，不能直接提交旧报价。" show-icon type="warning" />
             <Alert v-if="blockingReasons.length || (matchedQuote && !matchedQuote.admissible)" message="当前配置暂不能创建" show-icon type="warning"><template #description><ul class="mb-0 pl-4"><li v-for="reason in blockingReasons" :key="reason">{{ reason }}</li><li v-if="!blockingReasons.length">服务端暂不允许创建，请重新报价或联系管理员。</li></ul></template></Alert>
             <div class="border-border border-t pt-4">
-              <div class="mb-2 flex items-center justify-between gap-3"><span class="font-medium">预计可用时长</span><Button size="small" :loading="accountLoading" @click="refreshAccount">刷新额度</Button></div>
+              <div class="mb-2 flex items-center justify-between gap-3"><span class="font-medium">如果只运行该实例预计可用时长</span><Button size="small" :loading="accountLoading" @click="refreshAccount">刷新额度</Button></div>
               <p class="mb-2 text-xl font-semibold">{{ runtime }}</p>
               <p class="text-muted-foreground mb-2 text-sm">当前可用额度：<span class="font-mono">{{ formatPt(account?.available_pt) }} Pt</span></p>
               <ErrorFeedback v-if="accountError" :feedback="accountError" />
               <Alert v-else-if="accountBlock" :message="accountBlock" show-icon type="warning" />
-              <p class="text-muted-foreground mb-0 mt-2 text-xs leading-relaxed">仅按此实例的当前报价与可用余额静态估算；可用余额已扣除预留及欠款，不再重复扣除。不包含其他实例消耗、未来额度发放或额度到期，也不保证连续运行。零费率不表示无限时长。</p>
+              <!-- <p class="text-muted-foreground mb-0 mt-2 text-xs leading-relaxed">仅按此实例的当前报价与可用余额静态估算；可用余额已扣除预留及欠款，不再重复扣除。不包含其他实例消耗、未来额度发放或额度到期，也不保证连续运行。零费率不表示无限时长。</p> -->
             </div>
             <div class="desktop-submit"><Button type="primary" block size="large" :disabled="primaryDisabled" @click="proceedToOrder">{{ primaryLabel }}</Button><p class="text-muted-foreground mb-0 mt-2 text-center text-xs">下一步核对配置与费用，不会立即创建</p></div>
           </div>
@@ -590,11 +581,10 @@ onBeforeUnmount(() => {
 .creation-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; padding-bottom: 5.5rem; }
 .creation-main, .creation-sidebar { display: flex; flex-direction: column; gap: 1rem; }
 .plan-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); gap: 0.75rem; }
-.plan-option, .image-option { width: 100%; padding: 0.9rem; border: 1px solid hsl(var(--border)); border-radius: 0.65rem; background: hsl(var(--card)); color: inherit; text-align: left; cursor: pointer; transition: border-color 150ms ease, background-color 150ms ease; }
-.image-option { display: flex; align-items: center; gap: 0.75rem; }
-.plan-option:hover:not(:disabled), .image-option:hover:not(:disabled), .is-selected { border-color: hsl(var(--primary)); background: hsl(var(--primary) / 0.05); }
-.plan-option:focus-visible, .image-option:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 2px; }
-.plan-option:disabled, .image-option:disabled { cursor: not-allowed; opacity: 0.6; }
+.plan-option { width: 100%; padding: 0.9rem; border: 1px solid hsl(var(--border)); border-radius: 0.65rem; background: hsl(var(--card)); color: inherit; text-align: left; cursor: pointer; transition: border-color 150ms ease, background-color 150ms ease; }
+.plan-option:hover:not(:disabled), .is-selected { border-color: hsl(var(--primary)); background: hsl(var(--primary) / 0.05); }
+.plan-option:focus-visible { outline: 2px solid hsl(var(--primary)); outline-offset: 2px; }
+.plan-option:disabled { cursor: not-allowed; opacity: 0.6; }
 .field-label { display: flex; flex-direction: column; gap: 0.45rem; font-size: 0.875rem; }
 .price-row { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; }
 .price-row dd { margin: 0; text-align: right; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
@@ -607,5 +597,5 @@ onBeforeUnmount(() => {
   .desktop-submit { display: block; }
   .mobile-submit { display: none; }
 }
-@media (prefers-reduced-motion: reduce) { .plan-option, .image-option { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .plan-option { transition: none; } }
 </style>

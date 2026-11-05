@@ -216,7 +216,7 @@ onBeforeUnmount(() => {
                 <Alert v-else-if="accountBlock" :message="accountBlock" show-icon type="warning" />
                 <p class="text-muted-foreground mb-0 mt-2 text-xs leading-relaxed">前端仅按此实例的当前报价与可用余额静态估算；不包含其他实例消耗、未来额度发放或额度到期，不保证连续运行。零费率不代表无限时长。</p>
               </div>
-              <Alert message="报价不锁定资源，也不是创建承诺" description="最终确认后才提交创建；服务端会再次校验库存、额度与政策，受理后由任务中心跟踪实际创建结果。" show-icon type="info" />
+              <!-- <Alert message="报价不锁定资源，也不是创建承诺" description="最终确认后才提交创建；服务端会再次校验库存、额度与政策，受理后由任务中心跟踪实际创建结果。" show-icon type="info" /> -->
               <div class="desktop-submit"><Button type="primary" block size="large" :disabled="primaryDisabled" :loading="store.submitting || store.quoteLoading" @click="confirmOrder">{{ primaryLabel }}</Button></div>
             </div>
           </Card>
