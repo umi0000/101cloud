@@ -132,6 +132,14 @@ CPU用累计计数差分和独立观测时间窗，首次/重启/缺测不构造
 
 `in_use / idle_candidate / unknown / not_attached` 是观察状态，不会自动释放或换卡。后端策略需用户开启、连续有效窗口及操作前后核对；`idle_candidate`不是原子安全释放授权，CUDA上下文不会迁移。SM利用率是进程样本聚合的近似值，不是算力份额或计费依据。Stopped实例可能因缺少原进程身份而unknown，不强行填0。必须在宿主PID/cgroup/device视图中运行；非root仅有Incus权限不保证有完整进程观测权限。
 
+2026-11-05 GPU SM身份时间边界修复（尚未部署）：连续一致的PID/start/实例UUID/initStart保留首次身份确认时间，避免NVML延迟但仍新鲜的样本被每帧前移的时间边界误拒。PID复用、实例epoch变更或上下文消失仍重置，缺样本不缓存/补0，不改变maxAge或释放安全规则。全包race/vet、Linux amd64构建及Linux monitor回归通过；独立回环Agent与无网络临时容器实际CUDA分配验收8个采样均显示1进程/172MiB/SM0，设备引用未完全归属仍为null并保留警告。原业务实例和正式Agent未变，测试容器已清理。
+
+上述修复已部署 `.111`，正式Agent SHA256 `91efd7af5a2aa80b27cf04b8e71ef54d312efe2cf205386325910110ead05484`，配置检查通过，重新启动后连续采样可读（HTTP200、collection_complete=true）。后端程序/PID和Nginx配置校验未变，无数据库迁移或业务实例/GPU变更。旧Agent程序、完整配置及前端入口记录保存在 `/var/backups/101cloud/20261105-gpu-monitor-repair/`；缺样本、扫描不完整及Stopped实例的未知值仍保留，不据此放宽释放安全门禁。
+
+2026-11-05 后续空采样分类修复（未部署）：NVML增量查询没有新记录（NOT_FOUND或成功空输出）与unsupported/设备错误分开。只有该卡无context且查询明确无样本时发布 `gpu_utilization_no_samples`；SM仍为null，真实进程数/引用数/显存0保持。明确Stopped且无进程根时发布 `instance_not_running`，归因仍false、数值仍null；Running缺根仍是故障。实际运行且已挂GPU的业务实例通过回环临时Agent连续5点验证仅有no_samples、0进程/0引用/0显存，不再错误附加gpu_metric_unavailable。未启停业务实例。Agent race/vet和Linux monitor回归通过。
+
+上述空采样分类已随前后端同步部署 `.111` `/srv/101cloud/releases/20261105-gpu-empty-sampling`。正式Agent SHA256 `3643d64f0ebe53ac3446cee674baa61c0de00bcb915a87ed7877cd17ddc3b054`，Agent/后端active，目标Running已挂GPU实例新采样仅no_samples、进程/引用/显存0、SMnull。未启停实例或变更挂载；原配置和程序在 `/var/backups/101cloud/20261105-gpu-empty-sampling/`，无迁移。
+
 历史存储新增5张MySQL表（实例/GPU明细、实例/GPU汇总、采集游标），支持可配置bucket_seconds、独立有效时长、加权和/观测峰值及缺测。新库用 [init.sql](../backend/sql/init.sql)，已有库用 [指标升级脚本](../backend/sql/migrations/20261029_instance_metrics.sql)。本次没有实现尚未开发的业务后端入库器、历史查询服务或前端图表；DDL不会自动收集、聚合或清理历史。详细参数、隐私边界、计费与指标区别见使用指南第5.5–5.7节。
 
 ### GPU UUID配置

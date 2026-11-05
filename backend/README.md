@@ -4,6 +4,10 @@
 
 后端自身提供 **HTTP**，默认 `127.0.0.1:8080`。浏览器入口的 HTTPS 交给 Nginx/Caddy；Host Agent 仍使用独立的 HTTPS 和证书指纹认证。当前不提供 NAT 或端口映射。
 
+GPU采样正常空状态传递修复（未部署）：指标原因allowlist保留 `gpu_utilization_no_samples` 与 `instance_not_running`，使新版Agent的无活动采样、停止实例状态可由前端准确解释。只增加安全原因码，不改历史数值、归因、计费或释放授权，无迁移。相关monitoring真实MySQL/race回归和vet通过；上线应同步Agent、后端及前端。
+
+上述原因码传递已随Agent和前端发布 `.111` `/srv/101cloud/releases/20261105-gpu-empty-sampling`，后端SHA256 `dc07ff400aa2c0fd108e89a9a271943fa3efc350ab4f6997c968f41b1761c7ee`。真实实例42的最新GPU采样已持久化no_samples原因、进程/引用/显存0及SM NULL。ready正常，两服务active，无迁移或实例/GPU操作；数据库单事务备份、旧程序及配置位于 `/var/backups/101cloud/20261105-gpu-empty-sampling/`。
+
 2026-11-05 成员实例详情配套接口已实现（未部署）：用户和管理员 `GET/PUT /instances/:id/gpu-policy` 返回只读 `gpu_binding: null | {policy_version_id,model,access_mode,gpu_hourly_pt}`，仅按实例冻结的 GPU 定价绑定解析，不依赖当前套餐或已有分配；没有绑定时返回 null，异常绑定返回既有错误，不自动回退。无数据库迁移、授权语义不变。隔离 MySQL 回归覆盖套餐修改后原绑定、无分配读取、本人和他人隔离、无绑定与异常绑定；真实本地 Router 浏览器完成策略保存及卸载任务受理，不声称执行物理 GPU worker。
 
 上述配套接口已随成员详情发布到 `.111`，发布目录 `/srv/101cloud/releases/20261105-member-instance-detail`，回退资料 `/var/backups/101cloud/20261105-member-instance-detail/`；无迁移。新程序SHA256 `6e81ac1e4f900a1f2a48349360fff33d4b26da8fdd77a089c722add113a096b4`，服务active且HTTPS ready正常。只更新后端和静态前端，未变更Host Agent或Nginx配置，未执行生产实例变更。

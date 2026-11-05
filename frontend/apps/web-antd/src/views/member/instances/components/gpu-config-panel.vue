@@ -12,7 +12,7 @@ import ConfirmAction from '#/components/confirm-action.vue';
 import ErrorFeedback from '#/components/error-feedback.vue';
 import TimeText from '#/components/time-text.vue';
 import { trackAccepted, useAction, usePolling } from '#/composables/api';
-import { enumLabel } from '#/locales/enums';
+import { enumLabel, QUALITY_REASONS } from '#/locales/enums';
 import { describeError } from '#/locales/errors';
 import { useAuthStore } from '#/store/auth';
 import { formatBytes, formatPercent, formatPt, PT_PATTERN, ptToMicros, shortId } from '#/utils/format';
@@ -95,7 +95,10 @@ const canAttach = computed(() => !locked.value && !baseProblem.value && !creditP
 const releaseSafe = (item: GPUAllocation) => {
   const metric = metricsFor(item);
   if (!running.value) return true;
-  return metric?.state === 'idle_candidate' && metric.process_count === 0 && metric.referencing_process_count === 0 && metric.used_memory_bytes !== null && metric.used_memory_bytes !== undefined && /^0+$/.test(metric.used_memory_bytes);
+  const data = latest.value;
+  return Boolean(data && !metricError.value && !data.stale && data.instance_state === 'running' && data.collection_complete && data.quality.complete && data.quality.attribution_complete && data.quality.reference_scan_quality === 'complete'
+    && metric?.quality.complete && metric.quality.attribution_complete && metric.quality.reference_scan_quality === 'complete'
+    && metric.state === 'idle_candidate' && metric.process_count === 0 && metric.referencing_process_count === 0 && metric.used_memory_bytes != null && /^0+$/.test(metric.used_memory_bytes));
 };
 const selectedReleaseSafe = computed(() => activeSelected.value.length > 0 && activeSelected.value.every(releaseSafe));
 const canDetach = computed(() => !locked.value && !baseProblem.value && !allocationProblem.value && selectedReleaseSafe.value && allowed('gpu_detach') && activeSelected.value.length > 0);
@@ -320,11 +323,41 @@ async function confirmDialog() {
   else intent.value = { ...metadata, kind: 'rebind', body: { allocation_ids: activeSelected.value.map((item) => item.id), max_hourly_pt: maxHourly.value, allow_live: running.value } };
   return sendIntent();
 }
-const metricsFor = (item: GPUAllocation) => {
+// Display every returned field independently; optional metrics cannot veto known values.
+const metricsFor = (item: GPUAllocation) => metricError.value ? null : latest.value?.gpus.find((gpu) => gpu.uuid === item.uuid) ?? null;
+const usageText = (item: GPUAllocation) => {
+  const metric = metricsFor(item);
+  if (!metric) return '暂无可用 GPU 采样；占用未知';
+  const sm = metric.sm_utilization_percent === null && metric.quality.reasons.includes('gpu_utilization_no_samples') ? '暂无活动采样' : formatPercent(metric.sm_utilization_percent);
+  return `SM ${sm} · 归因显存 ${metric.used_memory_bytes == null ? '未知' : formatBytes(metric.used_memory_bytes)} · GPU 进程 ${metric.process_count ?? '未知'} · 设备引用 ${metric.referencing_process_count ?? '未知'}`;
+};
+const normalReasons = new Set(['gpu_utilization_no_samples', 'instance_not_running']);
+const metricNotes = (item: GPUAllocation) => {
   const data = latest.value;
-  if (!data || data.stale || !data.collection_complete || !data.quality.complete || !data.quality.attribution_complete || metricError.value) return null;
-  const metric = data.gpus.find((gpu) => gpu.uuid === item.uuid);
-  return metric?.quality.complete && metric.quality.attribution_complete ? metric : null;
+  const metric = metricsFor(item);
+  if (!data || !metric) return [];
+  const reasons = [...new Set([...data.quality.reasons, data.quality.error_code, ...metric.quality.reasons, metric.quality.error_code].filter((reason): reason is string => Boolean(reason)))];
+  const stopped = data.instance_state === 'stopped' && reasons.includes('instance_not_running');
+  const knownActivity = metric.process_count !== null && metric.referencing_process_count !== null && metric.used_memory_bytes !== null
+    && (metric.sm_utilization_percent !== null || metric.quality.reasons.includes('gpu_utilization_no_samples'));
+  const normalOnly = reasons.length > 0 && reasons.every((reason) => normalReasons.has(reason)) && data.collection_complete
+    && (stopped || (data.instance_state === 'running' && knownActivity && data.quality.attribution_complete && metric.quality.attribution_complete
+      && data.quality.reference_scan_quality === 'complete' && metric.quality.reference_scan_quality === 'complete'
+      && (!metric.quality.reasons.includes('gpu_utilization_no_samples') || metric.process_count === 0)));
+  const mountedWithoutActivity = !data.stale && data.instance_state === 'running' && metric.configured === true
+    && metric.process_count === 0 && metric.used_memory_bytes === '0' && metric.referencing_process_count === 0;
+  return [
+    { text: data.instance_state === 'stopped' ? '实例已停止，没有运行态 GPU 占用采样；未知不表示占用为 0' : '', warning: false },
+    { text: mountedWithoutActivity ? 'GPU已挂载，尚无GPU程序活动；运行GPU任务后显示利用率' : '', warning: false },
+    { text: data.stale ? '采样已过期' : '', warning: true },
+    { text: !data.collection_complete ? '采集不完整' : '', warning: true },
+    { text: normalOnly ? '采样状态说明' : '', warning: false },
+    { text: !normalOnly && (!data.quality.complete || !metric.quality.complete) ? '部分指标不可用' : '', warning: true },
+    { text: !normalOnly && (!data.quality.attribution_complete || !metric.quality.attribution_complete) ? '归因不完整' : '', warning: true },
+    { text: !normalOnly && (data.quality.reference_scan_quality !== 'complete' || metric.quality.reference_scan_quality !== 'complete') ? '设备引用扫描未完整确认' : '', warning: true },
+    { text: !stopped && !knownActivity ? '部分 GPU 活动指标未知' : '', warning: true },
+    ...reasons.map((reason) => ({ text: QUALITY_REASONS[reason] ?? reason, warning: !normalReasons.has(reason) })),
+  ].filter((note) => note.text);
 };
 const yesNo = (value: boolean | null) => value === null ? '未知' : value ? '是' : '否';
 const releasePending = (item: GPUAllocation) => item.status === 'releasing' || item.status === 'unknown' || (item.status === 'released' && !item.release_verified);
@@ -402,7 +435,7 @@ onBeforeUnmount(() => { mounted = false; epoch++; allocationSequence++; policySe
             <template v-else-if="column.key === 'status'"><Tag class="m-0">{{ enumLabel('gpuAttachment', gpuAttachmentState(allocationRecord(record))).text }}</Tag></template>
             <template v-else-if="column.key === 'price'">{{ formatPt(allocationRecord(record).gpu_hourly_pt) }} pt/h</template>
             <template v-else-if="column.key === 'flags'">{{ yesNo(allocationRecord(record).configured) }} / {{ yesNo(allocationRecord(record).observed) }}</template>
-            <template v-else-if="column.key === 'usage'"><span v-if="metricsFor(allocationRecord(record))">{{ formatPercent(metricsFor(allocationRecord(record))?.sm_utilization_percent) }} · {{ formatBytes(metricsFor(allocationRecord(record))?.used_memory_bytes) }} · GPU 进程 {{ metricsFor(allocationRecord(record))?.process_count ?? '未知' }} · 引用 {{ metricsFor(allocationRecord(record))?.referencing_process_count ?? '未知' }}</span><span v-else>观测未知、过期或归因不完整</span></template>
+            <template v-else-if="column.key === 'usage'"><span>{{ usageText(allocationRecord(record)) }}</span><div v-for="note in metricNotes(allocationRecord(record))" :key="note.text" class="text-xs"><Tag :color="note.warning ? 'warning' : undefined" class="m-0 whitespace-normal">{{ note.text }}</Tag></div></template>
             <template v-else-if="column.key === 'release'"><span v-if="releasePending(allocationRecord(record))">释放待确认</span><span v-else-if="allocationRecord(record).status === 'released' && allocationRecord(record).release_verified">已独立验证释放 <TimeText :value="allocationRecord(record).released_at" /></span><span v-else>—</span></template>
           </template>
         </Table>
@@ -421,8 +454,8 @@ onBeforeUnmount(() => { mounted = false; epoch++; allocationSequence++; policySe
           <p class="text-sm">已配置 / 已观测：{{ yesNo(allocation.configured) }} / {{ yesNo(allocation.observed) }}</p>
           <p v-if="releasePending(allocation)" class="text-destructive text-sm">释放待确认</p>
           <p v-else-if="allocation.status === 'released' && allocation.release_verified" class="text-sm">已独立验证释放 <TimeText :value="allocation.released_at" /></p>
-          <p v-if="metricsFor(allocation)" class="text-muted-foreground text-xs">本实例归因：{{ formatPercent(metricsFor(allocation)?.sm_utilization_percent) }} · {{ formatBytes(metricsFor(allocation)?.used_memory_bytes) }} · 进程 {{ metricsFor(allocation)?.process_count ?? '未知' }} · 引用 {{ metricsFor(allocation)?.referencing_process_count ?? '未知' }}</p>
-          <p v-else class="text-muted-foreground text-xs">观测未知、过期或归因不完整</p>
+          <p class="text-muted-foreground text-xs">本实例归因：{{ usageText(allocation) }}</p>
+          <p v-for="note in metricNotes(allocation)" :key="note.text" class="text-xs"><Tag :color="note.warning ? 'warning' : undefined" class="m-0 whitespace-normal">{{ note.text }}</Tag></p>
         </article>
       </div>
       <ErrorFeedback class="mt-2" :feedback="allocationError" /><ErrorFeedback class="mt-2" :feedback="metricError" />

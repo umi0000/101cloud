@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import type { EChartsOption } from 'echarts';
 import type { EchartsUIType } from '@vben/plugins/echarts';
-import type { HistoryPoint, LatestMetrics, MetricsHistory } from '#/api/types';
+import type { HistoryPoint, LatestGPUMetric, LatestMetrics, MetricQuality, MetricsHistory } from '#/api/types';
 import type { ErrorText } from '#/locales/errors';
 
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
@@ -42,6 +42,25 @@ const num = (value: null | number | string | undefined): null | number => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 const bytesText = (value: null | string | undefined) => value == null ? '未知' : formatBytes(value);
+const qualityReasons = (quality: MetricQuality) => {
+  const reasons = new Set(quality.reasons);
+  if (quality.error_code) reasons.add(quality.error_code);
+  return [...reasons];
+};
+const normalReason = (reason: string) => reason === 'gpu_utilization_no_samples' || reason === 'instance_not_running';
+const gpuHasKnownActivity = (gpu: LatestGPUMetric) => gpu.process_count !== null && gpu.referencing_process_count !== null && gpu.used_memory_bytes !== null
+  && (gpu.sm_utilization_percent !== null || gpu.quality.reasons.includes('gpu_utilization_no_samples'));
+const normalSampling = computed(() => {
+  const data = latest.value;
+  if (!data || !data.collection_complete) return false;
+  const qualities = [data.quality, ...data.gpus.map((gpu) => gpu.quality)];
+  const reasons = qualities.flatMap(qualityReasons);
+  const stopped = data.instance_state === 'stopped' && reasons.includes('instance_not_running');
+  return reasons.length > 0 && reasons.every(normalReason)
+    && qualities.every((quality) => stopped || (quality.attribution_complete && quality.reference_scan_quality === 'complete'))
+    && (stopped || (data.instance_state === 'running' && data.gpus.every((gpu) => gpuHasKnownActivity(gpu)
+      && (!gpu.quality.reasons.includes('gpu_utilization_no_samples') || gpu.process_count === 0))));
+});
 const range = ref<number | string>(1);
 const customFrom = ref(toShanghaiISO(new Date(Date.now() - 3600_000)).slice(0, 16));
 const customTo = ref(toShanghaiISO(new Date()).slice(0, 16));
@@ -255,16 +274,20 @@ onBeforeUnmount(() => { disposed = true; ++generation; ++historySeq; });
             <Tag :color="latest.stale ? 'warning' : 'success'">{{ latest.stale ? '已过期' : '未过期' }}</Tag>
             <span>采样距今 {{ num(latest.age_seconds) ?? '未知' }} 秒</span>
           </div>
+          <Alert v-if="latest.instance_state === 'stopped'" class="mb-3" message="实例已停止，没有运行态 GPU 占用采样。未知不表示占用为 0；历史监控仍可查看。" show-icon type="info" />
           <div class="grid gap-3 sm:grid-cols-2">
             <div><div class="text-muted-foreground text-xs">CPU 使用率（相对配额，不限制为 100%）</div><strong>{{ formatPercent(latest.cpu.allocation_percent) }}</strong></div>
             <div><div class="text-muted-foreground text-xs">内存已用 / 限额</div><strong>{{ bytesText(latest.memory.used_bytes) }} / {{ bytesText(latest.memory.limit_bytes) }}</strong></div>
           </div>
           <div class="mt-3 flex flex-wrap items-center gap-1 text-xs">
-            <span>采集{{ latest.collection_complete ? '完整' : '不完整' }}；质量{{ latest.quality.complete ? '完整' : '不完整' }}；归因{{ latest.quality.attribution_complete ? '完整' : '不完整' }}</span>
-            <Tag v-for="reason in latest.quality.reasons" :key="reason" color="warning">{{ QUALITY_REASONS[reason] ?? reason }}</Tag>
+            <span v-if="normalSampling">采样状态说明</span>
+            <span v-else>采集{{ latest.collection_complete ? '完整' : '不完整' }}；质量{{ latest.quality.complete ? '完整' : '不完整' }}；归因{{ latest.quality.attribution_complete ? '完整' : '不完整' }}</span>
+            <Tag v-if="!normalSampling && (!latest.collection_complete || !latest.quality.complete || !latest.quality.attribution_complete || latest.quality.reference_scan_quality !== 'complete')" color="warning">部分指标不可用或归因不完整</Tag>
+            <Tag v-for="reason in qualityReasons(latest.quality)" :key="reason" :color="normalReason(reason) ? undefined : 'warning'">{{ QUALITY_REASONS[reason] ?? reason }}</Tag>
           </div>
         </template>
-        <Spin v-else :spinning="latestLoading" />
+        <Spin v-else-if="latestLoading" :spinning="true" />
+        <p v-else class="text-muted-foreground text-sm">暂无最新采样，当前 GPU 占用未知。</p>
       </Card>
 
       <Card size="small" title="历史监控">
@@ -288,14 +311,21 @@ onBeforeUnmount(() => { disposed = true; ++generation; ++historySeq; });
           </div>
           <section class="mt-3 min-w-0">
             <label v-if="gpuOptions.length" class="mb-3 block min-w-0 text-sm">选择 GPU（含历史卡）<Select v-model:value="selectedGPU" class="mt-1 w-full" aria-label="选择监控 GPU" :options="gpuOptions" /></label>
-            <Empty v-else-if="!historyLoading" description="当前采样和所选历史时段均无 GPU 数据" />
+            <Empty v-else-if="!latestLoading && !historyLoading && latest && history && !latestError && !historyError && !rangeError" description="当前采样和所选历史时段均无 GPU 数据（不代表未挂载 GPU）" />
+            <p v-else-if="!gpuOptions.length" class="text-muted-foreground mb-3 text-xs">GPU 数据尚未完整取得，不能据此判断是否挂载 GPU 或当前占用。</p>
             <div v-if="selectedLatest" class="mb-3 flex flex-wrap gap-2 text-xs">
               <span class="break-all">UUID：{{ selectedLatest.uuid }}</span>
-              <span>SM：{{ formatPercent(selectedLatest.sm_utilization_percent) }}</span>
+              <span>SM：{{ selectedLatest.sm_utilization_percent === null && selectedLatest.quality.reasons.includes('gpu_utilization_no_samples') ? '暂无活动采样' : formatPercent(selectedLatest.sm_utilization_percent) }}</span>
               <span>归因显存：{{ bytesText(selectedLatest.used_memory_bytes) }}</span>
-              <span>已配置：{{ selectedLatest.configured ? '是' : '否' }} · 已观测：{{ selectedLatest.observed ? '是' : '否' }} · 归因{{ selectedLatest.quality.attribution_complete ? '完整' : '不完整' }}</span>
-              <Tag v-for="reason in selectedLatest.quality.reasons" :key="reason" color="warning">{{ QUALITY_REASONS[reason] ?? reason }}</Tag>
+              <span>GPU 进程数：{{ selectedLatest.process_count ?? '未知' }}</span>
+              <span>设备引用数：{{ selectedLatest.referencing_process_count ?? '未知' }}</span>
+              <span>已配置：{{ selectedLatest.configured ? '是' : '否' }} · 已观测：{{ selectedLatest.observed ? '是' : '否' }}<template v-if="!normalSampling"> · 归因{{ selectedLatest.quality.attribution_complete ? '完整' : '不完整' }}</template></span>
+              <Tag v-if="!normalSampling && (!selectedLatest.quality.complete || !selectedLatest.quality.attribution_complete || selectedLatest.quality.reference_scan_quality !== 'complete')" color="warning">部分 GPU 指标不可用或归因不完整</Tag>
+              <Tag v-if="latest?.instance_state !== 'stopped' && !gpuHasKnownActivity(selectedLatest)" color="warning">部分 GPU 活动指标未知</Tag>
+              <span v-if="latest?.stale === false && latest.instance_state === 'running' && selectedLatest.configured === true && selectedLatest.process_count === 0 && selectedLatest.used_memory_bytes === '0' && selectedLatest.referencing_process_count === 0" class="text-muted-foreground w-full">GPU已挂载，尚无GPU程序活动；运行GPU任务后显示利用率</span>
+              <Tag v-for="reason in qualityReasons(selectedLatest.quality)" :key="reason" :color="normalReason(reason) ? undefined : 'warning'">{{ QUALITY_REASONS[reason] ?? reason }}</Tag>
             </div>
+            <p v-else-if="selectedGPU && !latest" class="text-muted-foreground mb-3 text-xs">暂无最新 GPU 采样，当前占用未知；以下仅显示所选 UUID 的历史数据。</p>
             <p v-else-if="selectedGPU" class="text-muted-foreground mb-3 text-xs">所选 GPU 在最新采样中不存在；以下仅显示该 UUID 的历史数据。</p>
             <div v-if="selectedGPU && points.length" class="grid min-w-0 gap-3 xl:grid-cols-2">
               <section class="min-w-0"><h3 class="text-sm font-medium">所选 GPU SM 利用率（%）</h3><EchartsUI ref="gpuSMChart" height="250px" /></section>

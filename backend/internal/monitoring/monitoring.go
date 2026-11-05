@@ -513,7 +513,7 @@ func metricReasons(q metricQuality) string {
 	seen := map[string]bool{}
 	for _, r := range q.Reasons {
 		switch r {
-		case "process_scan_incomplete", "instance_inventory_incomplete", "device_inventory_incomplete", "gpu_collection_failed", "gpu_sample_stale", "collection_cancelled", "instance_identity_changed", "gpu_utilization_stale", "gpu_identity_unknown", "gpu_identity_ambiguous", "gpu_attribution_incomplete", "gpu_metric_unavailable", "gpu_utilization_unknown", "gpu_inventory_unavailable", "unattributed_gpu_contexts", "unattributed_gpu_activity", "gpu_reference_scan_incomplete", "gpu_references_unresolved", "instance_attribution_unknown", "gpu_configuration_unresolved", "configured_gpu_unresolved", "gpu_utilization_identity_unconfirmed":
+		case "process_scan_incomplete", "instance_inventory_incomplete", "device_inventory_incomplete", "gpu_collection_failed", "gpu_sample_stale", "collection_cancelled", "instance_identity_changed", "gpu_utilization_stale", "gpu_identity_unknown", "gpu_identity_ambiguous", "gpu_attribution_incomplete", "gpu_metric_unavailable", "gpu_utilization_unknown", "gpu_utilization_no_samples", "gpu_inventory_unavailable", "unattributed_gpu_contexts", "unattributed_gpu_activity", "gpu_reference_scan_incomplete", "gpu_references_unresolved", "instance_attribution_unknown", "instance_not_running", "gpu_configuration_unresolved", "configured_gpu_unresolved", "gpu_utilization_identity_unconfirmed":
 			if !seen[r] {
 				out = append(out, r)
 				seen[r] = true

@@ -327,6 +327,89 @@ func TestIdleCandidateIsNotReleaseAuthorization(t *testing.T) {
 	}
 }
 
+func TestGPUUtilizationNoSamplesClassification(t *testing.T) {
+	requireLinux(t)
+	for _, test := range []struct {
+		name         string
+		noSamples    bool
+		active       bool
+		failure      string
+		otherFailure bool
+	}{
+		{name: "idle_no_samples", noSamples: true},
+		{name: "idle_without_observation_status"},
+		{name: "unsupported", failure: "process utilization unsupported"},
+		{name: "active_missing_sample", noSamples: true, active: true},
+		{name: "empty_utilization_with_other_failure", noSamples: true, failure: "MPS inventory unsupported"},
+		{name: "other_device_failure", noSamples: true, otherFailure: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Unix(1800000000, 0)
+			root := t.TempDir()
+			fixtureProcess(t, root, 101, "/instances/1", 11)
+			device := completeDevice("GPU-a", now)
+			device.UtilizationSupported = false
+			device.UtilizationNoSamples = test.noSamples
+			device.Error = test.failure
+			wantCount, wantMemory, wantState := 0, uint64(0), "idle_candidate"
+			if test.active {
+				fixtureProcess(t, root, 102, "/instances/1/child", 12)
+				wantCount, wantMemory, wantState = 1, 5, "in_use"
+				device.Contexts = []gpu.Process{{PID: 102, UsedMemoryBytes: &wantMemory}}
+			}
+			reader := &fixtureReader{sample: gpu.Sample{CollectedAt: now, Devices: []gpu.Device{device}}}
+			if test.otherFailure {
+				other := completeDevice("GPU-old", now)
+				other.UtilizationSupported = false
+				other.Error = "process utilization unsupported"
+				reader.sample.Devices = append(reader.sample.Devices, other)
+			}
+			snapshot := fixtureEngine(t, root, reader, &now).Sample(context.Background(), []Instance{{Project: "p", Name: "a", Type: "container", State: "Running", InitPID: 101, ConfiguredGPUs: []string{"GPU-a"}}})
+			row := snapshot.Instances[0]
+			card := row.GPUs[0]
+			if row.GPUState != wantState || card.State != wantState || card.ContextCount == nil || *card.ContextCount != wantCount || card.ReferencingProcessCount == nil || *card.ReferencingProcessCount != 0 || card.UsedMemoryBytes == nil || *card.UsedMemoryBytes != wantMemory || card.SMUtilizationPercent != nil {
+				t.Fatalf("empty utilization changed context evidence or fabricated utilization: %+v", row)
+			}
+			for _, q := range []Quality{snapshot.Quality, snapshot.HostQuality, row.Quality, card.Quality} {
+				reasons := "," + strings.Join(q.Reasons, ",") + ","
+				wantNoSamples := test.noSamples && !test.active
+				if q.Complete || !q.AttributionComplete || strings.Contains(reasons, ",gpu_utilization_no_samples,") != wantNoSamples || strings.Contains(reasons, ",gpu_utilization_unknown,") != (!wantNoSamples || test.otherFailure) || strings.Contains(reasons, ",gpu_metric_unavailable,") != (test.failure != "" || test.otherFailure) {
+					t.Fatalf("empty utilization quality misclassified or hid a real failure: %+v", q)
+				}
+			}
+		})
+	}
+}
+
+func TestMissingInstanceRootDistinguishesStoppedFromUnknown(t *testing.T) {
+	requireLinux(t)
+	for _, state := range []string{"Stopped", "stopped", "STOPPED", "Running", "running", "Frozen", ""} {
+		t.Run(state, func(t *testing.T) {
+			now := time.Unix(1800000000, 0)
+			device := completeDevice("GPU-a", now)
+			device.UtilizationSupported = false
+			device.UtilizationNoSamples = true
+			reader := &fixtureReader{sample: gpu.Sample{CollectedAt: now, Devices: []gpu.Device{device}}}
+			snapshot := fixtureEngine(t, t.TempDir(), reader, &now).Sample(context.Background(), []Instance{{Project: "p", Name: "a", Type: "container", State: state, ConfiguredGPUs: []string{"GPU-a"}}})
+			row := snapshot.Instances[0]
+			card := row.GPUs[0]
+			if row.GPUState != "unknown" || card.State != "unknown" || row.Quality.AttributionComplete || card.Quality.AttributionComplete || card.ContextCount != nil || card.ReferencingProcessCount != nil || card.UsedMemoryBytes != nil || card.SMUtilizationPercent != nil {
+				t.Fatalf("missing root gained attribution, numbers, or idle authorization: %+v", row)
+			}
+			for _, q := range []Quality{snapshot.Quality, row.Quality, card.Quality} {
+				reasons := "," + strings.Join(q.Reasons, ",") + ","
+				stopped := strings.EqualFold(state, "stopped")
+				if strings.Contains(reasons, ",instance_not_running,") != stopped || strings.Contains(reasons, ",instance_attribution_unknown,") == stopped {
+					t.Fatalf("missing instance root state %q misclassified: %+v", state, q)
+				}
+			}
+			if !snapshot.HostQuality.AttributionComplete || strings.Contains(strings.Join(snapshot.HostQuality.Reasons, ","), "instance_") {
+				t.Fatalf("missing instance root polluted host evidence: %+v", snapshot.HostQuality)
+			}
+		})
+	}
+}
+
 func TestGPUFileDescriptorsAndGenericControl(t *testing.T) {
 	requireLinux(t)
 	for _, generic := range []bool{false, true} {
@@ -435,9 +518,14 @@ func TestUnsupportedUtilizationRetainsMemoryEvidence(t *testing.T) {
 	}
 	device.UtilizationSupported = true
 	device.Utilization = nil
+	device.UtilizationNoSamples = true
 	metric = aggregateGPU(device, 0, owners, nil, 0, now, time.Second, now)
-	if metric.SMUtilizationPercent != nil {
-		t.Fatal("missing utilization sample fabricated zero")
+	if metric.SMUtilizationPercent != nil || !strings.Contains(strings.Join(metric.Quality.Reasons, ","), "gpu_utilization_unknown") || strings.Contains(strings.Join(metric.Quality.Reasons, ","), "gpu_utilization_no_samples") {
+		t.Fatal("active context with missing sample became normal empty utilization or fabricated zero")
+	}
+	metric = aggregateGPU(device, 1, owners, nil, 0, now, time.Second, now)
+	if metric.SMUtilizationPercent != nil || !strings.Contains(strings.Join(metric.Quality.Reasons, ","), "gpu_utilization_unknown") || strings.Contains(strings.Join(metric.Quality.Reasons, ","), "gpu_utilization_no_samples") {
+		t.Fatal("context owned by another instance became a context-free device")
 	}
 }
 
@@ -484,6 +572,117 @@ func TestUtilizationRequiresPriorProcessIdentityAndNewSample(t *testing.T) {
 	reader.sample.Devices[0].Utilization[0].TimestampMicros = uint64(now.UnixMicro())
 	if card := collect(); card.SMUtilizationPercent == nil || *card.SMUtilizationPercent != 37 {
 		t.Fatalf("new identity never recovered fresh utilization: %+v", card)
+	}
+}
+
+func TestDelayedUtilizationRetainsContinuousProcessIdentity(t *testing.T) {
+	requireLinux(t)
+	firstObserved := time.Unix(1800000000, 0)
+	now := firstObserved
+	root := t.TempDir()
+	fixtureProcess(t, root, 101, "/instances/1", 11)
+	fixtureProcess(t, root, 102, "/instances/1/child", 12)
+	memory := uint64(7)
+	device := completeDevice("GPU-a", now, gpu.Process{PID: 102, UsedMemoryBytes: &memory})
+	device.Utilization[0].SMPercent = 37
+	reader := &fixtureReader{sample: gpu.Sample{CollectedAt: now, Devices: []gpu.Device{device}}}
+	engine := fixtureEngine(t, root, reader, &now)
+	inputs := []Instance{{Project: "p", Name: "a", UUID: "a", Type: "container", InitPID: 101, ConfiguredGPUs: []string{"GPU-a"}}}
+	collect := func() Snapshot {
+		t.Helper()
+		reader.sample.CollectedAt = now
+		return engine.Sample(context.Background(), inputs)
+	}
+	if card := collect().Instances[0].GPUs[0]; card.SMUtilizationPercent != nil {
+		t.Fatal("first observation admitted utilization before identity confirmation")
+	}
+	// NVML can deliver a sample older than the preceding collection, but newer
+	// than the first observation of this uninterrupted identity.
+	reader.sample.Devices[0].Utilization[0].TimestampMicros = uint64(firstObserved.Add(500 * time.Millisecond).UnixMicro())
+	for round := 1; round <= 3; round++ {
+		now = firstObserved.Add(time.Duration(round) * 2 * time.Second)
+		snapshot := collect()
+		card := snapshot.Instances[0].GPUs[0]
+		if card.SMUtilizationPercent == nil || *card.SMUtilizationPercent != 37 || snapshot.Anonymous.UnattributedActivitySamples != 0 {
+			t.Fatalf("round %d rejected delayed utilization for continuous identity: %+v, %+v", round, card, snapshot.Anonymous)
+		}
+	}
+	reader.sample.Devices[0].Utilization[0].TimestampMicros = uint64(firstObserved.Add(-time.Microsecond).UnixMicro())
+	snapshot := collect()
+	card := snapshot.Instances[0].GPUs[0]
+	if card.SMUtilizationPercent != nil || snapshot.Anonymous.UnattributedActivitySamples != 1 || !strings.Contains(strings.Join(card.Quality.Reasons, ","), "gpu_utilization_identity_unconfirmed") {
+		t.Fatalf("sample before first identity observation was admitted: %+v, %+v", card, snapshot.Anonymous)
+	}
+	// Preserving identity must not extend the utilization freshness window.
+	now = firstObserved.Add(engine.maxAge + time.Second)
+	reader.sample.Devices[0].Utilization[0].TimestampMicros = uint64(firstObserved.Add(500 * time.Millisecond).UnixMicro())
+	snapshot = collect()
+	card = snapshot.Instances[0].GPUs[0]
+	if card.SMUtilizationPercent != nil || !strings.Contains(strings.Join(snapshot.Quality.Reasons, ","), "gpu_utilization_stale") {
+		t.Fatalf("continuous identity admitted an expired sample: %+v", snapshot)
+	}
+	reader.sample.Devices[0].Utilization = nil
+	if card := collect().Instances[0].GPUs[0]; card.SMUtilizationPercent != nil {
+		t.Fatalf("missing NVML sample reused earlier utilization: %+v", card)
+	}
+}
+
+func TestDelayedUtilizationResetsAfterIdentityChangeOrDisappearance(t *testing.T) {
+	requireLinux(t)
+	for _, mode := range []string{"pid_reuse", "instance_identity", "instance_epoch", "context_disappeared"} {
+		t.Run(mode, func(t *testing.T) {
+			firstObserved := time.Unix(1800000000, 0)
+			now := firstObserved
+			root := t.TempDir()
+			fixtureProcess(t, root, 101, "/instances/1", 11)
+			fixtureProcess(t, root, 102, "/instances/1/child", 12)
+			memory := uint64(7)
+			process := gpu.Process{PID: 102, UsedMemoryBytes: &memory}
+			device := completeDevice("GPU-a", now, process)
+			device.Utilization[0].SMPercent = 37
+			reader := &fixtureReader{sample: gpu.Sample{CollectedAt: now, Devices: []gpu.Device{device}}}
+			engine := fixtureEngine(t, root, reader, &now)
+			inputs := []Instance{{Project: "p", Name: "a", UUID: "a", Type: "container", InitPID: 101, ConfiguredGPUs: []string{"GPU-a"}}}
+			collect := func() GPUMetrics {
+				t.Helper()
+				reader.sample.CollectedAt = now
+				return engine.Sample(context.Background(), inputs).Instances[0].GPUs[0]
+			}
+			collect()
+			reader.sample.Devices[0].Utilization[0].TimestampMicros = uint64(firstObserved.Add(500 * time.Millisecond).UnixMicro())
+			for round := 1; round <= 2; round++ {
+				now = firstObserved.Add(time.Duration(round) * time.Second)
+				if card := collect(); card.SMUtilizationPercent == nil || *card.SMUtilizationPercent != 37 {
+					t.Fatalf("continuous identity rejected delayed utilization: %+v", card)
+				}
+			}
+			now = now.Add(time.Second)
+			switch mode {
+			case "pid_reuse":
+				fixtureProcess(t, root, 102, "/instances/1/child", 99)
+			case "instance_identity":
+				inputs[0].UUID = "b"
+			case "instance_epoch":
+				fixtureProcess(t, root, 101, "/instances/1", 99)
+			case "context_disappeared":
+				reader.sample.Devices[0].Contexts = nil
+				collect()
+				reader.sample.Devices[0].Contexts = []gpu.Process{process}
+				now = now.Add(time.Second)
+			}
+			identityObserved := now
+			for round := 0; round <= 2; round++ {
+				card := collect()
+				if card.SMUtilizationPercent != nil || !strings.Contains(strings.Join(card.Quality.Reasons, ","), "gpu_utilization_identity_unconfirmed") {
+					t.Fatalf("round %d inherited utilization from an interrupted identity: %+v", round, card)
+				}
+				now = now.Add(time.Second)
+			}
+			reader.sample.Devices[0].Utilization[0].TimestampMicros = uint64(identityObserved.Add(500 * time.Millisecond).UnixMicro())
+			if card := collect(); card.SMUtilizationPercent == nil || *card.SMUtilizationPercent != 37 {
+				t.Fatalf("new continuous identity rejected its own delayed sample: %+v", card)
+			}
+		})
 	}
 }
 
@@ -652,7 +851,7 @@ func TestFreshActivityNeedsStableIdentityEvenWithCurrentContext(t *testing.T) {
 
 func TestSnapshotHostQualitySeparatesStoppedRowsFromHostUncertainty(t *testing.T) {
 	requireLinux(t)
-	for _, mode := range []string{"complete", "optional_utilization_missing", "control_fd", "fd_scan", "anonymous_context", "anonymous_activity", "process_scan", "process_limit", "fd_limit", "instance_inventory", "device_inventory", "gpu_inventory", "mig_context_inventory", "cancelled", "query_failed", "stale"} {
+	for _, mode := range []string{"complete", "optional_utilization_missing", "utilization_no_samples", "utilization_unsupported", "control_fd", "fd_scan", "anonymous_context", "anonymous_activity", "process_scan", "process_limit", "fd_limit", "instance_inventory", "device_inventory", "gpu_inventory", "mig_context_inventory", "cancelled", "query_failed", "stale"} {
 		t.Run(mode, func(t *testing.T) {
 			now := time.Unix(1800000000, 0)
 			root := t.TempDir()
@@ -671,6 +870,16 @@ func TestSnapshotHostQualitySeparatesStoppedRowsFromHostUncertainty(t *testing.T
 			case "optional_utilization_missing":
 				reader.sample.Devices[0].Utilization = nil
 				reason = "gpu_utilization_unknown"
+			case "utilization_no_samples":
+				reader.sample.Devices[0].Utilization = nil
+				reader.sample.Devices[0].UtilizationSupported = false
+				reader.sample.Devices[0].UtilizationNoSamples = true
+				reason = "gpu_utilization_no_samples"
+			case "utilization_unsupported":
+				reader.sample.Devices[0].Utilization = nil
+				reader.sample.Devices[0].UtilizationSupported = false
+				reader.sample.Devices[0].Error = "process utilization unsupported"
+				reason = "gpu_metric_unavailable"
 			case "control_fd":
 				if err := os.Symlink("/dev/null", filepath.Join(root, "101", "fd", "4")); err != nil {
 					t.Fatal(err)
@@ -743,7 +952,7 @@ func TestSnapshotHostQualitySeparatesStoppedRowsFromHostUncertainty(t *testing.T
 			if snapshot.Quality.AttributionComplete || snapshot.Instances[1].Quality.AttributionComplete || snapshot.Instances[1].GPUState != "unknown" {
 				t.Fatalf("stopped instance uncertainty was erased: %s", payload)
 			}
-			wantHostAttribution := mode == "complete" || mode == "optional_utilization_missing"
+			wantHostAttribution := mode == "complete" || mode == "optional_utilization_missing" || mode == "utilization_no_samples" || mode == "utilization_unsupported"
 			if snapshot.HostQuality.AttributionComplete != wantHostAttribution || snapshot.HostQuality.Complete != (mode == "complete") {
 				t.Fatalf("host evidence was weakened or polluted by row quality: %s", payload)
 			}
@@ -751,9 +960,13 @@ func TestSnapshotHostQualitySeparatesStoppedRowsFromHostUncertainty(t *testing.T
 				t.Fatalf("host uncertainty reason %q missing: %s", reason, payload)
 			}
 			for _, hostReason := range snapshot.HostQuality.Reasons {
-				if hostReason == "instance_attribution_unknown" {
+				if hostReason == "instance_attribution_unknown" || hostReason == "instance_not_running" {
 					t.Fatalf("stopped row reason escaped into host evidence: %s", payload)
 				}
+			}
+			stoppedReasons := "," + strings.Join(snapshot.Instances[1].Quality.Reasons, ",") + ","
+			if !strings.Contains(stoppedReasons, ",instance_not_running,") || strings.Contains(stoppedReasons, ",instance_attribution_unknown,") || strings.Contains(strings.Join(snapshot.Instances[0].Quality.Reasons, ","), "instance_not_running") {
+				t.Fatalf("stopped reason was misclassified or leaked to running instance: %s", payload)
 			}
 		})
 	}

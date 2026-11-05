@@ -19,8 +19,10 @@ type Device struct {
 	ComputeSupported     bool                `json:"compute_supported"`
 	GraphicsSupported    bool                `json:"graphics_supported"`
 	UtilizationSupported bool                `json:"utilization_supported"`
-	AttributionComplete  bool                `json:"attribution_complete"`
-	Error                string              `json:"error,omitempty"`
+	// UtilizationNoSamples distinguishes normal empty output from a failed query.
+	UtilizationNoSamples bool   `json:"utilization_no_samples"`
+	AttributionComplete  bool   `json:"attribution_complete"`
+	Error                string `json:"error,omitempty"`
 }
 
 // Process retains host identity only inside the attribution boundary. Memory is

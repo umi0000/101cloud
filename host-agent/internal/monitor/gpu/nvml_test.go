@@ -96,14 +96,15 @@ func TestProcessConversionDeduplicatesMemory(t *testing.T) {
 }
 
 func TestMissingObservationsAreNotZero(t *testing.T) {
-	for _, code := range []int32{nvNotSupported, nvNotFound, nvGPULost} {
+	for _, code := range []int32{nvNotSupported, nvNotFound, nvGPULost, nvInvalidData, nvInsufficientSize, 999} {
 		t.Run(status(code), func(t *testing.T) {
 			b := fixtureBackend()
 			b.compute = processQuery(processFixture(42, 0))
 			b.utilization = func(_ uintptr, _ *processUtilization, _ *uint32, _ uint64) int32 { return code }
 			d := b.collectDevice(1, testUUID, 0)
-			if d.UtilizationSupported || d.Utilization != nil || d.Error == "" || len(d.Contexts) != 1 {
-				t.Fatal("missing utilization treated as zero or erased contexts")
+			noSamples := code == nvNotFound
+			if d.UtilizationSupported || d.Utilization != nil || d.UtilizationNoSamples != noSamples || (d.Error == "") != noSamples || len(d.Contexts) != 1 || !d.AttributionComplete {
+				t.Fatalf("missing utilization fabricated zero, erased contexts, or misclassified an error: %+v", d)
 			}
 			b.compute = func(_ uintptr, _ *uint32, _ *processInfoV2) int32 { return code }
 			d = b.collectDevice(1, testUUID, 0)
@@ -138,7 +139,7 @@ func TestUtilizationConversionAndValidation(t *testing.T) {
 		processUtilization{PID: 42, Timestamp: 101, SM: 0},
 	)
 	d := b.collectDevice(1, testUUID, 99)
-	if !d.UtilizationSupported || len(d.Utilization) != 2 || d.Utilization[0].TimestampMicros != 100 || d.Utilization[0].SMPercent != 30 || d.Utilization[1].SMPercent != 0 {
+	if !d.UtilizationSupported || d.UtilizationNoSamples || len(d.Utilization) != 2 || d.Utilization[0].TimestampMicros != 100 || d.Utilization[0].SMPercent != 30 || d.Utilization[1].SMPercent != 0 {
 		t.Fatal("valid timestamped samples not retained correctly")
 	}
 	for _, invalid := range []processUtilization{
@@ -147,13 +148,54 @@ func TestUtilizationConversionAndValidation(t *testing.T) {
 	} {
 		b.utilization = utilizationQuery(invalid)
 		d := b.collectDevice(1, testUUID, 99)
-		if d.UtilizationSupported || len(d.Utilization) != 0 || !strings.Contains(d.Error, "invalid data") {
+		if d.UtilizationSupported || d.UtilizationNoSamples || len(d.Utilization) != 0 || !strings.Contains(d.Error, "invalid data") {
 			t.Fatal("invalid sample treated as a valid activity observation")
 		}
 	}
 	b.utilization = func(_ uintptr, _ *processUtilization, n *uint32, _ uint64) int32 { *n = 0; return nvSuccess }
-	if d := b.collectDevice(1, testUUID, 0); d.UtilizationSupported || d.Utilization != nil {
-		t.Fatal("empty sample success interpreted as observed zero")
+	if d := b.collectDevice(1, testUUID, 0); d.UtilizationSupported || d.Utilization != nil || !d.UtilizationNoSamples || d.Error != "" {
+		t.Fatal("empty sample success became a failure or observed zero")
+	}
+}
+
+func TestCompleteInventoriesWithNoUtilizationSamples(t *testing.T) {
+	for _, mode := range []string{"not_found", "empty_success", "not_found_after_size", "empty_success_after_size"} {
+		t.Run(mode, func(t *testing.T) {
+			for _, active := range []bool{false, true} {
+				b := fixtureBackend()
+				if active {
+					b.compute = processQuery(processFixture(42, 1024))
+				}
+				b.utilization = func(_ uintptr, output *processUtilization, n *uint32, since uint64) int32 {
+					if since != 100 {
+						t.Fatalf("incremental sample cursor was lost: %d", since)
+					}
+					if strings.HasSuffix(mode, "after_size") && output == nil {
+						*n = 1
+						return nvInsufficientSize
+					}
+					*n = 0
+					if strings.HasPrefix(mode, "not_found") {
+						return nvNotFound
+					}
+					return nvSuccess
+				}
+				sample, err := b.collect(100)
+				if err != nil || len(sample.Devices) != 1 {
+					t.Fatalf("normal empty utilization invalidated device inventory: %+v %v", sample, err)
+				}
+				d := sample.Devices[0]
+				if !d.ComputeSupported || !d.GraphicsSupported || !d.AttributionComplete || !d.UtilizationNoSamples || d.UtilizationSupported || d.Utilization != nil || d.Error != "" {
+					t.Fatalf("normal empty utilization became a failure or observed zero: %+v", d)
+				}
+				if active && (len(d.Contexts) != 1 || d.Contexts[0].UsedMemoryBytes == nil || *d.Contexts[0].UsedMemoryBytes != 1024) {
+					t.Fatalf("empty utilization erased active process evidence: %+v", d)
+				}
+				if !active && len(d.Contexts) != 0 {
+					t.Fatalf("empty inventories gained invented contexts: %+v", d)
+				}
+			}
+		})
 	}
 }
 

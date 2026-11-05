@@ -173,7 +173,11 @@ export const AUDIT_EVENTS: Record<string, string> = {
 
 export const QUALITY_REASONS: Record<string, string> = {
   agent_restarted: '节点 Agent 重启',
-  gpu_metric_unavailable: 'GPU 指标不可用',
+  gpu_metric_unavailable: '部分 GPU 指标不可用',
+  gpu_utilization_no_samples: '暂无进程级SM活动采样',
+  gpu_utilization_unknown: '实例 GPU SM 利用率未知',
+  instance_attribution_unknown: '实例 GPU 占用归因尚未完整确认',
+  instance_not_running: '实例已停止，无运行态进程归因',
   gpu_references_unresolved: 'GPU 占用归属未完全确认',
   history_evicted: '节点历史已被覆盖',
   late_sample: '采样延迟',

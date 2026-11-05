@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,8 +23,8 @@ type cpuBaseline struct {
 	allocationKnown bool
 }
 
-// A cached NVML utilization PID is not an identity. Only samples after an
-// earlier observation of this exact process and instance epoch are admissible.
+// A cached NVML utilization PID is not an identity. Only samples after the
+// first uninterrupted observation of this process and instance epoch are admissible.
 type processBaseline struct {
 	start     uint64
 	instance  string
@@ -251,11 +252,12 @@ func (e *Engine) Sample(ctx context.Context, instances []Instance) Snapshot {
 					instance := instances[owner]
 					key := instance.Project + "\x00" + instance.Name + "\x00" + instance.UUID
 					identity := processBaseline{start: before.start, instance: key, initStart: proc.roots[owner].start, at: now}
-					nextProcesses[process.PID] = identity
 					previous, seen := e.processes[process.PID]
 					if seen && previous.start == identity.start && previous.instance == identity.instance && previous.initStart == identity.initStart {
-						utilizationSince[process.PID] = previous.at
+						identity.at = previous.at
+						utilizationSince[process.PID] = identity.at
 					}
+					nextProcesses[process.PID] = identity
 				}
 			}
 			owners[process.PID] = owner
@@ -299,7 +301,11 @@ func (e *Engine) Sample(ctx context.Context, instances []Instance) Snapshot {
 			addReason(&out.Quality, "device_inventory_incomplete")
 		}
 		if !device.UtilizationSupported || len(device.Utilization) == 0 {
-			addMetricReason(&out.Quality, "gpu_utilization_unknown")
+			if device.UtilizationNoSamples && len(device.Contexts) == 0 {
+				addMetricReason(&out.Quality, "gpu_utilization_no_samples")
+			} else {
+				addMetricReason(&out.Quality, "gpu_utilization_unknown")
+			}
 		}
 		for _, process := range device.Contexts {
 			if owners[process.PID] < 0 {
@@ -340,7 +346,11 @@ func (e *Engine) Sample(ctx context.Context, instances []Instance) Snapshot {
 		mergeQuality(&row.Quality, hostQuality)
 		rowContextComplete := contextAttributionComplete
 		if _, valid := proc.roots[i]; !valid {
-			addReason(&row.Quality, "instance_attribution_unknown")
+			if strings.EqualFold(instance.State, "stopped") {
+				addReason(&row.Quality, "instance_not_running")
+			} else {
+				addReason(&row.Quality, "instance_attribution_unknown")
+			}
 			rowContextComplete = false
 		}
 		if instance.GPUConfigurationError != "" {
@@ -539,6 +549,8 @@ func aggregateGPU(device gpu.Device, owner int, owners map[uint32]int, utilizati
 	if utilizationKnown {
 		total = math.Min(total, 100)
 		result.SMUtilizationPercent = &total
+	} else if device.UtilizationNoSamples && len(device.Contexts) == 0 {
+		addMetricReason(&result.Quality, "gpu_utilization_no_samples")
 	} else {
 		addMetricReason(&result.Quality, "gpu_utilization_unknown")
 	}

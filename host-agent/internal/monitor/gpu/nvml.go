@@ -271,9 +271,9 @@ func (b *nvmlBackend) collectDevice(h uintptr, id string, since uint64) Device {
 	var utilizationCode int32
 	d.Utilization, utilizationCode = b.readUtilization(h, since)
 	d.UtilizationSupported = utilizationCode == nvSuccess
-	if utilizationCode != nvSuccess {
-		// Utilization failure does not invalidate a successful context inventory,
-		// but must prevent inferring zero activity from missing observations.
+	d.UtilizationNoSamples = utilizationCode == nvNotFound
+	if utilizationCode != nvSuccess && !d.UtilizationNoSamples {
+		// A failed utilization query does not invalidate successful inventories.
 		issues = append(issues, "process utilization "+status(utilizationCode))
 	}
 	if migProcesses {
@@ -293,9 +293,12 @@ func (b *nvmlBackend) readUtilization(h uintptr, since uint64) ([]UtilizationSam
 		if code != nvSuccess && code != nvInsufficientSize {
 			return nil, code
 		}
-		// Successful empty output also supplies no activity observation.
+		// Only successful empty output supplies a normal missing observation.
 		if n == 0 {
-			return nil, nvNotFound
+			if code == nvSuccess {
+				return nil, nvNotFound
+			}
+			return nil, nvInvalidData
 		}
 		if n > maxEntries-32 {
 			return nil, nvInvalidData

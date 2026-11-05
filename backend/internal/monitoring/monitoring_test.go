@@ -77,3 +77,15 @@ func TestMetricCPUIntervalPreservesCollectionBound(t *testing.T) {
 		t.Fatalf("valid boundary CPU window rejected: %v %v %s %v", start, end, stored, err)
 	}
 }
+
+func TestMetricReasonsRetainsExpectedGPUObservationStates(t *testing.T) {
+	q := metricQuality{Reasons: []string{
+		"gpu_utilization_no_samples", "instance_not_running", "gpu_utilization_no_samples",
+		"gpu_metric_unavailable", "gpu_utilization_unknown", "instance_attribution_unknown",
+		"/private/not-an-allowed-reason",
+	}}
+	want := `["gpu_utilization_no_samples","instance_not_running","gpu_metric_unavailable","gpu_utilization_unknown","instance_attribution_unknown"]`
+	if got := metricReasons(q); got != want {
+		t.Fatalf("expected observation states or real failure reasons were dropped: %s", got)
+	}
+}

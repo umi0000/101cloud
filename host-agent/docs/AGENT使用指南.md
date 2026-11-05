@@ -388,6 +388,10 @@ interval_seconds范围1–60，timeout_seconds范围1–30；配置变化重启A
 
 GPU显存是NVML报告的归属进程显存合计；compute/graphics同PID去重，不作为显存硬配额或独占物理页计量。SM利用率是各归属进程最新有效样本之和并封顶100，方法名为`sum_latest_process_sm_percent_capped_100_approximate`，是近似活动指标，不是保证的算力份额。无样本/不支持/归属不明用null，不能伪装为0。
 
+进程SM样本的身份起点是该PID/start/实例UUID/initStart连续可验证时的首次观测时间，不随每帧前移。NVML延迟返回的样本只有晚于该起点且仍在最大新鲜度内才可接纳；身份变化、退出或上下文消失后必须重新建立起点。不会缓存缺样本的SM或将不支持补为0。
+
+NVML增量查询没有新SM记录不等于驱动失败；无context且明确空输出使用 `gpu_utilization_no_samples`，SM仍为null。unsupported、无效记录、设备丢失及有context但无有效SM样本仍为未知/失败原因。停止实例没有进程根使用 `instance_not_running` 解释非运行态，不改其归因false和未知数量；运行实例根缺失仍使用 `instance_attribution_unknown`。新原因同样保留质量complete=false，不能靠中性展示作为卸载授权。
+
 **隐私：**Agent内部使用宿主PID、cgroup、启动标识和设备引用判断归属，公开API和历史表不含PID、命令行、进程名、可执行文件/用户文件路径。嵌套容器按外层Incus实例归属；进程退出、PID复用、权限不足、设备变化、MPS/MIG或无法可靠归属会保守降级。近期活动样本即使已无当前进程，也不能被当成空闲；无法可靠归属时增加匿名活动计数并阻止idle_candidate。Agent应作为宿主机服务运行；不能把普通容器内的/proc当作宿主PID视图。专用账户仅有Incus socket权限不代表能读取所有必要进程信息，缺权限会返回unknown，不会自行提权或放宽宿主安全策略。
 
 #### 状态与自动化边界
