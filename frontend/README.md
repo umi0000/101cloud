@@ -169,7 +169,7 @@ cd ../backend
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 ./build.sh
 ```
 
-脚本从任意工作目录调用均可，执行 `corepack pnpm --dir apps/web-antd exec vite build --mode production`，通过 CLI 输出目录在临时目录生成全新 bundle，校验真实 `index.html` 与 `_app.config.js` 后替换 `backend/internal/webui/dist/` 并编入 Go 二进制。生成资源不提交版本库，无 placeholder 或磁盘静态资源回退；Vite 本地开发配置不变。默认输出 `backend/bin/101cloud-backend`，额外 Go 构建参数可传给脚本，例如 `./build.sh -o /tmp/101cloud-backend`。
+脚本从任意工作目录调用均可，执行 `pnpm --dir apps/web-antd exec vite build --mode production`（不要求 Corepack），通过 CLI 输出目录在临时目录生成全新 bundle，校验真实 `index.html` 与 `_app.config.js` 后替换 `backend/internal/webui/dist/` 并编入 Go 二进制。生成资源不提交版本库，无 placeholder 或磁盘静态资源回退；Vite 本地开发配置不变。默认输出 `backend/bin/101cloud-backend`，额外 Go 构建参数可传给脚本，例如 `./build.sh -o /tmp/101cloud-backend`。
 
 首次检出后需先 `./build.sh --frontend-only` 准备嵌入资源，才能在 backend 运行 `go test ./...` 或直接 `go build`。详见 [后端部署说明](../backend/README.md)。
 
