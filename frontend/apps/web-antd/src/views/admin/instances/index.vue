@@ -18,6 +18,7 @@ import { ENUMS, enumLabel, instanceState } from '#/locales/enums';
 import { useUserCache } from '#/store/user-cache';
 import { formatBytes } from '#/utils/format';
 
+import BatchInstanceActions from './components/batch-instance-actions.vue';
 import CustomInstanceForm from './components/custom-instance-form.vue';
 import GraceTag from './components/grace-tag.vue';
 
@@ -32,6 +33,18 @@ const filters = ref<Filters>({
   product_type: q('product_type'),
 });
 const list = useCursorList<Instance>(instancesApi.list, filters);
+const selected = ref<string[]>([]);
+const selectedInstances = computed(() => list.items.value.filter((instance) => selected.value.includes(instance.id)));
+const rowSelection = computed(() => ({
+  getCheckboxProps: (instance: Instance) => ({ 'aria-label': `选择实例 ${instance.name}`, disabled: list.loading.value || instance.desired_state === 'deleted' }),
+  onChange: (keys: (number | string)[]) => { selected.value = keys.map(String); },
+  selectedRowKeys: selected.value,
+}));
+watch([() => list.page(), filters], () => { selected.value = []; }, { deep: true, flush: 'sync' });
+watch(list.items, (items) => {
+  const visible = new Set(items.filter((instance) => instance.desired_state !== 'deleted').map((instance) => instance.id));
+  selected.value = selected.value.filter((id) => visible.has(id));
+});
 
 const users = shallowRef<User[]>([]);
 const nodes = shallowRef<Node[]>([]);
@@ -148,12 +161,23 @@ onMounted(() => {
         <Select v-model:value="filters.product_type" allow-clear class="!w-32" :options="productOptions" placeholder="产品类型" />
         <Select v-model:value="filters.observed_state" allow-clear class="!w-32" :options="stateOptions" placeholder="运行状态" />
       </div>
+      <div class="mb-3 flex flex-wrap items-center gap-2">
+        <span class="text-sm" aria-live="polite">已选 {{ selected.length }} 个实例（仅当前页）</span>
+        <BatchInstanceActions
+          :instances="selectedInstances"
+          :loading="list.loading.value"
+          @accepted="(id) => { selected = selected.filter((value) => value !== id); }"
+          @changed="list.load"
+        />
+        <Button :disabled="!selected.length" type="link" @click="selected = []">清空选择</Button>
+      </div>
       <Table
         :columns="columns"
         :data-source="list.items.value"
         :loading="list.loading.value"
         :pagination="false"
         :scroll="{ x: 'max-content' }"
+        :row-selection="rowSelection"
         row-key="id"
         size="small"
       >
