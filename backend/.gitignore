@@ -3,3 +3,5 @@
 /*.test
 /coverage.out
 /.env
+/internal/webui/dist/
+/internal/webui/.dist-build.*/

@@ -61,7 +61,7 @@ Instance DTO暴露plan_snapshot（custom为null）。resize仅接受resources及
 推荐使用 Linux 服务器，准备：
 
 - MySQL 8.4 LTS，以及独立数据库和数据库用户。
-- 构建环境 Go 1.25 或更新版本；也可以在其他机器构建后上传二进制。
+- 构建环境 Go 1.25 或更新版本、Node.js 22.18+ 或 24、Corepack/pnpm 10，以及已安装的前端依赖；也可以在其他机器构建后上传二进制。
 - Nginx 或 Caddy，以及浏览器入口使用的域名和 HTTPS 证书。
 - 已安装、初始化好的 Host Agent。后端不会通过 SSH 自动安装 Incus、驱动或修改宿主网络。
 
@@ -69,20 +69,33 @@ Instance DTO暴露plan_snapshot（custom为null）。resize仅接受resources及
 
 ## 2. 构建程序
 
-在完整仓库中构建，不能只复制 backend 源码：go.mod 引用了相邻的 host-agent 客户端包。
+在完整仓库中构建，不能只复制 backend 源码：go.mod 引用了相邻的 host-agent 客户端包。先按 [前端环境说明](../frontend/README.md#环境) 安装依赖；构建脚本不安装或下载依赖。
 
 ```bash
 cd backend
-go build -o bin/101cloud-backend ./cmd/backend
+./build.sh
 ```
 
-交叉构建 Linux amd64：
+脚本可从任意工作目录调用，先用 Vite production 模式在临时目录构建真实前端，再替换 `internal/webui/dist/`，最后编译 Go。失败的前端构建不覆盖旧 bundle，成功构建不会残留已删除的资源；生成目录不提交版本库。默认输出 `backend/bin/101cloud-backend`，额外参数透传给 `go build`（放在 package 前），例如 `./build.sh -o /tmp/101cloud-backend`。不改变 Vite 本地开发配置。
+
+交叉构建 Linux amd64（保留调用者的 `GOOS`、`GOARCH`、`CGO_ENABLED`）：
 
 ```bash
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/101cloud-backend ./cmd/backend
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 ./build.sh
 ```
 
-ARM64 服务器将 `GOARCH` 改为 `arm64`。编译后的程序可以单独上传，不需要在目标服务器保留源码；SQL 迁移已经嵌入程序。
+ARM64 服务器将 `GOARCH` 改为 `arm64`。前端资源与 SQL 迁移均嵌入同一个二进制，运行不依赖工作目录或磁盘静态目录，不提供磁盘资源回退。发布只需替换该二进制，不再单独上传前端；仍需 MySQL、运行配置和原 master key，Host Agent 仍独立安装和更新。构建及启动不会自动执行数据库迁移，应按升级步骤显式执行 `migrate`。
+
+首次检出后直接 `go test`/`go build` 会因缺少嵌入资源失败；先准备 bundle，再测试：
+
+```bash
+./build.sh --frontend-only
+go test ./...
+```
+
+此为新的构建/部署方式，当前线上尚未切换到内嵌前端；历史发布记录中的独立静态目录保留为当时状态，不代表本次已部署。
+
+本地已验证统一脚本可从仓库外调用，默认原生构建及 `GOOS=linux GOARCH=amd64 CGO_ENABLED=0` 构建均成功，重建清除旧资源哨兵。实际 `backend` CLI 在无前端目录的临时工作目录完成隔离库迁移及serve，浏览器直接加载Go提供的登录页与深链接，366个真实资源HTTP字节与构建文件一致；缺失JS404、未知API JSON404、不支持API方法405、HEAD及缓存行为通过。完整真实MySQL `go test -race -p 1 ./... -count=1` 和 `go vet ./...` 通过。未部署线上、未改变当前Nginx或业务数据。
 
 ## 3. 创建运行用户和目录
 
@@ -228,19 +241,28 @@ sudo journalctl -u 101cloud-backend -f
 
 ## 9. 配置 Nginx 反向代理
 
-以下片段放进已有的 HTTPS server 中；域名、证书和前端静态文件配置由你的入口服务管理。示例与上文 `CLOUD_TRUSTED_PROXIES='127.0.0.1/32,::1/128'` 配套（Nginx 与后端同机，经回环地址转发）：
+可直接使用的站点配置：[deploy/101cloud.conf](deploy/101cloud.conf)，按当前 `192.168.0.111` 与 `/etc/101cloud/tls.crt`、`/etc/101cloud/tls.key` 生成。放入 `/etc/nginx/conf.d/101cloud.conf`，替换旧站点而不是并存；须先安装包含内嵌前端的后端二进制，再执行 `nginx -t` 和 reload。更换域名时同步修改 `server_name`、证书及后端 `CLOUD_ORIGIN`。
+
+以下片段中 `map` 放进 Nginx 的 http 级配置，`location` 放进已有 HTTPS server；域名和证书由入口服务管理。移除旧静态 `root`/`try_files` 及旧静态目录匹配的 location，把所有路径交给同一个后端。示例与上文 `CLOUD_TRUSTED_PROXIES='127.0.0.1/32,::1/128'` 配套（Nginx 与后端同机，经回环地址转发）：
 
 ```nginx
-location /api/v1/ {
+map $http_upgrade $cloud101_connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
+location / {
     proxy_pass http://127.0.0.1:8080;
     proxy_http_version 1.1;
-    proxy_set_header Host $host;
+    proxy_set_header Host $http_host;
     proxy_set_header Upgrade $http_upgrade;
-    proxy_set_header Connection "upgrade";
+    proxy_set_header Connection $cloud101_connection_upgrade;
     proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
     proxy_read_timeout 1h;
     proxy_send_timeout 1h;
     proxy_buffering off;
+    proxy_cache off;
 }
 ```
 
@@ -274,7 +296,7 @@ curl -f http://127.0.0.1:8080/api/v1/health/ready
 curl -f https://cloud.example.com/api/v1/health/ready
 ```
 
-就绪接口成功不代表已完成业务配置，也不代表 GPU、KVM 或节点网络已验收。本仓库后端提供 API，不包含可直接打开的管理面板前端；接口调用和前端开发参见 [接口文档](后端接口文档.md) 与 [OpenAPI](openapi.json)。
+就绪接口成功不代表已完成业务配置，也不代表 GPU、KVM 或节点网络已验收。新构建的后端同时提供内嵌管理面板与 API，浏览器打开同源根路径即可；接口调用和前端开发参见 [接口文档](后端接口文档.md) 与 [OpenAPI](openapi.json)。
 
 ## 11. 首次业务配置顺序
 

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http"
+	"strings"
 	"time"
 
 	"101cloud/backend/internal/auth"
@@ -11,6 +12,7 @@ import (
 	"101cloud/backend/internal/instances"
 	"101cloud/backend/internal/monitoring"
 	"101cloud/backend/internal/platform"
+	"101cloud/backend/internal/webui"
 	"github.com/gin-gonic/gin"
 )
 
@@ -52,7 +54,14 @@ func Router(a *platform.App) *gin.Engine {
 	catalog.Register(a, user, admin)
 	instances.Register(a, user, admin)
 	monitoring.Register(a, user, admin)
-	r.NoRoute(func(c *gin.Context) { platform.Fail(c, platform.E(404, "not_found", "route not found")) })
+	frontend := webui.Handler()
+	r.NoRoute(func(c *gin.Context) {
+		if c.Request.URL.Path == "/api" || strings.HasPrefix(c.Request.URL.Path, "/api/") {
+			platform.Fail(c, platform.E(http.StatusNotFound, "not_found", "route not found"))
+			return
+		}
+		frontend.ServeHTTP(c.Writer, c.Request)
+	})
 	r.NoMethod(func(c *gin.Context) {
 		platform.Fail(c, platform.E(http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed"))
 	})

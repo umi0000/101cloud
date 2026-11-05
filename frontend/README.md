@@ -156,14 +156,30 @@ pnpm install
 
 ```bash
 cd apps/web-antd
-pnpm exec vue-tsc --noEmit --skipLibCheck   # 类型检查
-pnpm build                                   # 产物在 apps/web-antd/dist
-cd ../.. && pnpm exec oxlint apps/web-antd/src
+corepack pnpm exec vue-tsc --noEmit --skipLibCheck   # 类型检查
+cd ../.. && corepack pnpm exec oxlint apps/web-antd/src
 ```
+
+生产构建统一从完整仓库的 `backend/build.sh` 进入（先安装上述前端依赖；脚本不安装或下载依赖）：
+
+```bash
+cd ../backend
+./build.sh
+# Linux amd64；ARM64 将 GOARCH 改为 arm64
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 ./build.sh
+```
+
+脚本从任意工作目录调用均可，执行 `corepack pnpm --dir apps/web-antd exec vite build --mode production`，通过 CLI 输出目录在临时目录生成全新 bundle，校验真实 `index.html` 与 `_app.config.js` 后替换 `backend/internal/webui/dist/` 并编入 Go 二进制。生成资源不提交版本库，无 placeholder 或磁盘静态资源回退；Vite 本地开发配置不变。默认输出 `backend/bin/101cloud-backend`，额外 Go 构建参数可传给脚本，例如 `./build.sh -o /tmp/101cloud-backend`。
+
+首次检出后需先 `./build.sh --frontend-only` 准备嵌入资源，才能在 backend 运行 `go test ./...` 或直接 `go build`。详见 [后端部署说明](../backend/README.md)。
+
+内嵌方式本地验收：统一原生/Linux amd64构建成功，仓库外只带二进制/配置/密钥启动真实后端，浏览器登录页可用且深链接正确回到鉴权流程；366个真实前端资源HTTP内容一致。SPA、静态资源404、API JSON404/405、HEAD和缓存回归及全量真实MySQL后端race/vet通过。线上仍使用原独立静态资源入口，尚未切换。
 
 ## 生产部署
 
-构建产物只请求同源相对路径 `/api/v1`，不含任何后端地址。由 Nginx 在同一 HTTPS 域名下提供静态文件并反代后端：
+构建产物只请求同源相对路径 `/api/v1`，不含任何后端地址。前端与 API 由同一个 Go 二进制提供；发布/更新只替换该二进制，不再上传独立静态目录。仍需数据库、运行配置及原 master key，Host Agent 独立部署/更新；不自动执行迁移，数据库升级须显式执行 `migrate`。当前线上尚未切换到内嵌方式，以下是新的部署示例，不是已部署记录；历史记录不作改写。
+
+Nginx 在同一 HTTPS 域名下反代整个后端（移除旧静态 `root`/`try_files`）：
 
 ```nginx
 map $http_upgrade $connection_upgrade {
@@ -176,21 +192,18 @@ server {
     server_name cloud.example.com;           # 必须与后端 CLOUD_ORIGIN 完全一致
     # ssl_certificate / ssl_certificate_key ...
 
-    root /var/www/101cloud;                  # apps/web-antd/dist 的内容
-    index index.html;
-
-    location /api/v1/ {
+    location / {
         proxy_pass http://127.0.0.1:8080;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
+        proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Upgrade $http_upgrade;     # 终端 / VNC WebSocket
         proxy_set_header Connection $connection_upgrade;
         proxy_read_timeout 3600s;
-    }
-
-    location / {
-        try_files $uri $uri/ /index.html;    # history 路由
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+        proxy_cache off;
     }
 
     add_header X-Frame-Options DENY always;

@@ -1,9 +1,12 @@
 package server
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"strings"
 	"testing"
 
 	"101cloud/backend/internal/platform"
@@ -41,5 +44,43 @@ func TestClientIPHonorsForwardedForOnlyFromTrustedProxies(t *testing.T) {
 				t.Fatalf("status=%d client ip=%q want %q", response.Code, response.Body.String(), tc.want)
 			}
 		})
+	}
+}
+
+func TestEmbeddedFrontendAndAPIRoutesRemainSeparated(t *testing.T) {
+	router := Router(platform.New(nil, platform.Config{Origin: "https://cloud.example"}))
+	get := func(method, target string) *httptest.ResponseRecorder {
+		t.Helper()
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, httptest.NewRequest(method, target, nil))
+		return response
+	}
+	root := get(http.MethodGet, "/")
+	if root.Code != http.StatusOK || !strings.HasPrefix(root.Header().Get("Content-Type"), "text/html") {
+		t.Fatalf("frontend unavailable: status=%d content-type=%q", root.Code, root.Header().Get("Content-Type"))
+	}
+	for _, target := range []string{"/instances/42", "/account/password", "/admin/dashboard", "/auth/login?redirect=%2Finstances%2F42"} {
+		response := get(http.MethodGet, target)
+		if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), root.Body.Bytes()) {
+			t.Fatalf("deep link did not serve the application: %s status=%d", target, response.Code)
+		}
+	}
+	for _, target := range []string{"/api", "/api/unknown", "/api/v1/unknown", "/api/v2/unknown"} {
+		response := get(http.MethodGet, target)
+		var body struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(response.Body.Bytes(), &body) != nil || response.Code != http.StatusNotFound || body.Error.Code != "not_found" {
+			t.Fatalf("API miss became an HTML page: %s status=%d", target, response.Code)
+		}
+	}
+	response := get(http.MethodHead, "/api/v1/health/live")
+	if response.Code != http.StatusMethodNotAllowed || !strings.HasPrefix(response.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("API unsupported method changed: status=%d", response.Code)
+	}
+	if response := get(http.MethodGet, "/js/deleted-bundle.js"); response.Code != http.StatusNotFound || bytes.Equal(response.Body.Bytes(), root.Body.Bytes()) {
+		t.Fatal("missing asset fell back to the application")
 	}
 }
