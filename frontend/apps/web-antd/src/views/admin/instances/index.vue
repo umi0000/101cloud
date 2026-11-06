@@ -1,22 +1,26 @@
 <script lang="ts" setup>
-import type { CustomConfig, Instance, Node, PolicyVersions, User } from '#/api/types';
+import type { CreateCustomInstance, CreateLogin, CustomConfig, Instance, Node, PolicyVersions, User } from '#/api/types';
 
-import { computed, onMounted, ref, shallowRef, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
+import { useAccessStore } from '@vben/stores';
 
-import { Button, Card, Drawer, Form, FormItem, Input, Select, Space, Table, Tag } from 'ant-design-vue';
+import { Alert, Button, Card, Drawer, Form, FormItem, Input, message, Select, Space, Table, Tag } from 'ant-design-vue';
 
 import { instancesApi, listAll, nodesApi, usersApi } from '#/api/backend';
+import { ApiError, newIdempotencyKey } from '#/api/request';
 import CursorPager from '#/components/cursor-pager.vue';
 import StatusTag from '#/components/status-tag.vue';
 import TimeText from '#/components/time-text.vue';
 import UserName from '#/components/user-name.vue';
-import { errorToast, trackAccepted, useAction, useCursorList, usePolling } from '#/composables/api';
+import { errorToast, trackAccepted, useCursorList, usePolling } from '#/composables/api';
 import { ENUMS, enumLabel, instanceState } from '#/locales/enums';
+import { useAuthStore } from '#/store';
 import { useUserCache } from '#/store/user-cache';
 import { formatBytes } from '#/utils/format';
+import { creationResultUncertain } from '#/utils/order-intent';
 
 import BatchInstanceActions from './components/batch-instance-actions.vue';
 import CustomInstanceForm from './components/custom-instance-form.vue';
@@ -97,34 +101,85 @@ const formKey = ref(0);
 const draft = ref({ name: '', owner_user_id: undefined as string | undefined });
 const config = shallowRef<CustomConfig | null>(null);
 const policyVersions = ref<PolicyVersions>({});
-const create = useAction();
+const login = shallowRef<CreateLogin | null>(null);
+const createPending = ref(false);
+const createUncertain = ref(false);
+const createLocked = computed(() => createPending.value || createUncertain.value);
+const auth = useAuthStore();
+const access = useAccessStore();
+const identity = computed(() => auth.me?.user.role === 'admin' && !access.loginExpired ? auth.me.user.id : null);
+let createSession = 0;
+let intent: { body: CreateCustomInstance; key: string } | null = null;
 
-watch([draft, config, policyVersions], () => create.resetKey(), { deep: true });
-
-function openCreate() {
+function clearCreate() {
+  ++createSession;
+  intent = null;
+  login.value = null;
+  createPending.value = false;
+  createUncertain.value = false;
   draft.value = { name: '', owner_user_id: undefined };
   config.value = null;
   policyVersions.value = {};
   formKey.value++;
+}
+watch(createOpen, (open) => { if (!open) clearCreate(); }, { flush: 'sync' });
+watch(identity, () => {
+  createOpen.value = false;
+  clearCreate();
+}, { flush: 'sync' });
+onBeforeUnmount(clearCreate);
+
+function openCreate() {
+  if (!identity.value || createOpen.value) return;
+  clearCreate();
   createOpen.value = true;
 }
 
 const canSubmit = computed(() => {
   const d = draft.value;
   const name = d.name.trim();
-  return !!d.owner_user_id && name.length > 0 && [...name].length <= 128 && !!config.value;
+  return !!identity.value && !!d.owner_user_id && name.length > 0 && [...name].length <= 128 && !!config.value && !!login.value;
 });
 
 async function submitCreate() {
-  const d = draft.value;
-  const ownerUserId = d.owner_user_id;
-  if (!canSubmit.value || !config.value || !ownerUserId) return;
-  const body = { approved_config: config.value, name: d.name.trim(), owner_user_id: ownerUserId, policy_versions: { ...policyVersions.value } };
-  const r = await create.run((key) => instancesApi.createCustom(body, { key }), { success: '已提交下发' });
-  if (!r) return;
-  trackAccepted(r.data, '下发自定义实例', () => list.load());
-  createOpen.value = false;
-  await list.load();
+  if (createPending.value || !createOpen.value || !identity.value) return;
+  if (!intent) {
+    const ownerUserId = draft.value.owner_user_id;
+    if (!canSubmit.value || !config.value || !login.value || !ownerUserId) return;
+    // Detached original payload lives only in this component. Retrying never reads edited fields.
+    intent = {
+      body: JSON.parse(JSON.stringify({
+        approved_config: config.value,
+        login: login.value,
+        name: draft.value.name.trim(),
+        owner_user_id: ownerUserId,
+        policy_versions: { ...policyVersions.value },
+      })) as CreateCustomInstance,
+      key: newIdempotencyKey(),
+    };
+  }
+  const current = intent;
+  const session = createSession;
+  const retrying = createUncertain.value;
+  createPending.value = true;
+  try {
+    const result = await instancesApi.createCustom(current.body, { key: current.key });
+    if (session !== createSession || !identity.value) return;
+    trackAccepted(result.data, '下发自定义实例', () => list.load());
+    message.success('已提交下发');
+    createOpen.value = false;
+    await list.load();
+  } catch (error) {
+    if (session !== createSession || !identity.value) return;
+    createUncertain.value = creationResultUncertain(error instanceof ApiError ? error.status : undefined, retrying);
+    if (!createUncertain.value) intent = null;
+    // Never display server-provided text/details from a credential-bearing request.
+    errorToast(error instanceof ApiError
+      ? new ApiError(error.status, { code: error.code, details: null, message: '' }, error.requestId, error.retryAfter)
+      : new ApiError(0, undefined, '', null));
+  } finally {
+    if (session === createSession) createPending.value = false;
+  }
 }
 
 onMounted(() => {
@@ -222,11 +277,13 @@ onMounted(() => {
       />
     </Card>
 
-    <Drawer v-model:open="createOpen" destroy-on-close title="直接下发自定义实例" :width="760">
-      <Form layout="vertical">
-        <div class="grid grid-cols-2 gap-x-3">
-          <FormItem label="所有者" required>
+    <Drawer v-model:open="createOpen" destroy-on-close title="直接下发自定义实例" width="min(760px, 100vw)" :closable="!createPending" :mask-closable="!createPending" :keyboard="!createPending">
+      <Alert v-if="createUncertain" class="mb-4" show-icon type="warning" message="下发结果待确认" description="表单已锁定。重试只会发送原始配置和同一幂等键，不会新增创建意图。关闭将清除本地凭据；重新下发前请先在实例和任务列表核对，避免重复创建。" />
+      <Form :disabled="createLocked" layout="vertical">
+        <div class="grid grid-cols-1 gap-x-3 sm:grid-cols-2">
+          <FormItem label="所有者" html-for="custom-owner" required>
             <Select
+              id="custom-owner"
               v-model:value="draft.owner_user_id"
               :options="userOptions"
               option-filter-prop="label"
@@ -234,19 +291,19 @@ onMounted(() => {
               show-search
             />
           </FormItem>
-          <FormItem label="实例名称" required>
-            <Input v-model:value="draft.name" :maxlength="128" placeholder="1–128 个字符" />
+          <FormItem label="实例名称" html-for="custom-name" required>
+            <Input id="custom-name" v-model:value="draft.name" :maxlength="128" placeholder="1–128 个字符" />
           </FormItem>
         </div>
       </Form>
-      <CustomInstanceForm :key="formKey" @update:value="(v) => (config = v)" @update:policy-versions="(v) => (policyVersions = v)" />
+      <CustomInstanceForm v-if="createOpen" :key="formKey" :disabled="createLocked" @update:value="(v) => (config = v)" @update:login="(v) => (login = v)" @update:policy-versions="(v) => (policyVersions = v)" />
       <div class="text-muted-foreground text-xs">
         自定义实例由后端定为免额度（admin_exempt）。会占用所有者的实例数与常驻实例配额，配额不足时返回"超出资源配额"。
       </div>
       <template #footer>
         <div class="flex justify-end gap-2">
-          <Button @click="createOpen = false">取消</Button>
-          <Button :disabled="!canSubmit" :loading="create.pending.value" type="primary" @click="submitCreate">下发</Button>
+          <Button :disabled="createPending" @click="createOpen = false">关闭</Button>
+          <Button :disabled="createPending || (!createUncertain && !canSubmit)" :loading="createPending" type="primary" @click="submitCreate">{{ createUncertain ? '重试原始下发' : '下发' }}</Button>
         </div>
       </template>
     </Drawer>

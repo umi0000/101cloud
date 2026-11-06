@@ -19,8 +19,8 @@ import (
 	"gorm.io/gorm"
 )
 
-// LoginRequest is accepted only by the final create endpoint, never by quotes,
-// task parameters, ordinary instance DTOs or administrator template parameters.
+// LoginRequest is accepted only at the top level of member/custom create, never
+// by imports, quotes, task parameters, instance DTOs or template parameters.
 type LoginRequest struct {
 	RootPassword  string   `json:"root_password,omitempty"`
 	SSHPublicKeys []string `json:"ssh_public_keys,omitempty"`

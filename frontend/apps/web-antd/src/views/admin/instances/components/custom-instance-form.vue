@@ -5,6 +5,7 @@
  */
 import type {
   AccessMode,
+  CreateLogin,
   CustomAction,
   CustomConfig,
   GPUOption,
@@ -19,7 +20,7 @@ import type {
   PolicyVersions,
 } from '#/api/types';
 
-import { computed, onMounted, reactive, ref, shallowRef, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue';
 
 import {
   Alert,
@@ -29,6 +30,7 @@ import {
   FormItem,
   Input,
   InputNumber,
+  InputPassword,
   RadioButton,
   RadioGroup,
   Row,
@@ -42,12 +44,14 @@ import { CUSTOM_ACTIONS, GPU_USER_PERMISSIONS, POLICY_KINDS } from '#/api/types'
 import { errorToast } from '#/composables/api';
 import { CUSTOM_ACTION_NAMES, enumLabel, GPU_PERMISSION_NAMES, POLICY_KIND_NAMES } from '#/locales/enums';
 import { bytesToGib, formatMib, formatPt, gibToBytes, PT_PATTERN } from '#/utils/format';
+import { emptyLoginDraft, imageSupportsLogin, validateLoginDraft } from '#/utils/instance-login';
 
 import { ACCESS_MODE_NAMES } from './shared';
 
-const props = defineProps<{ initial?: CustomConfig | null }>();
+const props = defineProps<{ disabled?: boolean; initial?: CustomConfig | null }>();
 const emit = defineEmits<{
   'update:value': [value: CustomConfig | null];
+  'update:login': [value: CreateLogin | null];
   'update:policyVersions': [value: PolicyVersions];
 }>();
 
@@ -122,6 +126,47 @@ const imagesLoading = ref(false);
 const imageProject = computed(() => form.network_option_id
   ? networks.value.find((n) => n.id === form.network_option_id)?.project_name
   : nodes.value.find((n) => n.id === form.node_id)?.defaults.project_name);
+
+// Component memory only: never merge credentials into approved_config or template parameters.
+const loginDraft = ref(emptyLoginDraft());
+const loginError = ref('请设置 root 密码。');
+const loginValidating = ref(false);
+const login = shallowRef<CreateLogin | null>(null);
+let loginSequence = 0;
+let disposed = false;
+watch(() => loginDraft.value.mode, (mode) => {
+  if (mode === 'password') loginDraft.value.sshPublicKeyText = '';
+  else {
+    loginDraft.value.rootPassword = '';
+    loginDraft.value.rootPasswordConfirmation = '';
+  }
+}, { flush: 'sync' });
+watch(loginDraft, async (draft) => {
+  const sequence = ++loginSequence;
+  login.value = null;
+  loginValidating.value = true;
+  const result = await validateLoginDraft({ ...draft });
+  if (disposed || sequence !== loginSequence) return;
+  loginError.value = result.error;
+  login.value = result.login ?? null;
+  loginValidating.value = false;
+}, { deep: true, immediate: true, flush: 'sync' });
+const loginImageError = computed(() => {
+  const image = images.value.find((item) => item.id === form.image_id);
+  const network = networks.value.find((item) => item.id === form.network_option_id && item.node_id === form.node_id);
+  return image && network && !imageSupportsLogin(image, network)
+    ? '所选节点 / 项目的镜像不支持 cloud-init，请更换镜像。' : '';
+});
+watch([login, loginImageError, imagesLoading], () => {
+  emit('update:login', !loginImageError.value && !imagesLoading.value ? login.value : null);
+}, { immediate: true, flush: 'sync' });
+onBeforeUnmount(() => {
+  disposed = true;
+  ++loginSequence;
+  loginDraft.value = emptyLoginDraft();
+  login.value = null;
+  emit('update:login', null);
+});
 
 onMounted(async () => {
   loading.value = true;
@@ -347,6 +392,7 @@ const problems = computed(() => {
   else if (form.gpu_count > 0 && images.value.some((i) => i.id === form.image_id && !i.gpu_ready)) {
     out.push('所选镜像不支持 GPU');
   }
+  if (loginImageError.value) out.push(loginImageError.value);
   if (!form.network_option_id) out.push('请选择网络');
   if (!Number.isInteger(form.vcpus) || form.vcpus < 1 || form.vcpus > 65_535) out.push('vCPU 必须是 1–65535 的整数');
   if (!bytesOrNull(form.memory_gib)) out.push('内存必须大于 0（最多 3 位小数）');
@@ -401,9 +447,9 @@ watch(value, (v) => emit('update:value', v), { immediate: true });
 </script>
 
 <template>
-  <Form layout="vertical">
+  <Form :disabled="disabled" layout="vertical">
     <Row :gutter="12">
-      <Col :span="12">
+      <Col :xs="24" :sm="12">
         <FormItem label="实例类型" required>
           <RadioGroup v-model:value="form.instance_type" button-style="solid">
             <RadioButton value="container">容器</RadioButton>
@@ -411,7 +457,7 @@ watch(value, (v) => emit('update:value', v), { immediate: true });
           </RadioGroup>
         </FormItem>
       </Col>
-      <Col :span="12">
+      <Col :xs="24" :sm="12">
         <FormItem label="节点" required>
           <Select
             v-model:value="form.node_id"
@@ -423,13 +469,13 @@ watch(value, (v) => emit('update:value', v), { immediate: true });
           />
         </FormItem>
       </Col>
-      <Col :span="12">
+      <Col :xs="24" :sm="12">
         <FormItem label="镜像" required>
           <Select
             v-model:value="form.image_id"
             :loading="imagesLoading"
             :options="imageOptions"
-            :disabled="!form.node_id"
+            :disabled="disabled || !form.node_id"
             :not-found-content="form.node_id ? '该节点暂无就绪镜像，请在产品目录中准备镜像' : '请先选择节点'"
             placeholder="选择镜像"
             show-search
@@ -437,11 +483,11 @@ watch(value, (v) => emit('update:value', v), { immediate: true });
           />
         </FormItem>
       </Col>
-      <Col :span="12">
+      <Col :xs="24" :sm="12">
         <FormItem label="网络" required>
           <Select
             v-model:value="form.network_option_id"
-            :disabled="!form.node_id"
+            :disabled="disabled || !form.node_id"
             :not-found-content="form.node_id ? '该节点没有已验证的网络' : '先选择节点'"
             :options="networkOptions"
             placeholder="选择网络"
@@ -468,18 +514,18 @@ watch(value, (v) => emit('update:value', v), { immediate: true });
           <InputNumber
             v-model:value="form.gpu_count"
             class="w-full"
-            :disabled="form.instance_type === 'virtual-machine'"
+            :disabled="disabled || form.instance_type === 'virtual-machine'"
             :min="0"
             :precision="0"
           />
         </FormItem>
       </Col>
       <template v-if="form.gpu_count > 0">
-        <Col :span="16">
+        <Col :xs="24" :sm="16">
           <FormItem label="GPU 型号与共享方式" required>
             <Select
               v-model:value="gpuChoice"
-              :disabled="!form.node_id"
+              :disabled="disabled || !form.node_id"
               :options="gpuChoiceOptions"
               placeholder="选择 GPU"
             />
@@ -490,12 +536,12 @@ watch(value, (v) => emit('update:value', v), { immediate: true });
             <Input v-model:value="form.max_hourly_pt" class="font-mono" />
           </FormItem>
         </Col>
-        <Col :span="16">
+        <Col :xs="24" :sm="16">
           <FormItem label="指定 GPU（可选）" :help="`不填由后端选最低负载卡；填写时数量必须为 ${form.gpu_count}`">
             <Select
               v-model:value="form.fixed_uuids"
               class="font-mono"
-              :disabled="!form.node_id"
+              :disabled="disabled || !form.node_id"
               :max-count="form.gpu_count"
               mode="multiple"
               :options="uuidOptions"
@@ -504,13 +550,39 @@ watch(value, (v) => emit('update:value', v), { immediate: true });
           </FormItem>
         </Col>
       </template>
-      <Col v-for="kind in requiredPolicies" :key="kind" :span="12">
+      <Col v-for="kind in requiredPolicies" :key="kind" :xs="24" :sm="12">
         <FormItem :label="POLICY_KIND_NAMES[kind]" required>
           <Select v-model:value="policy[kind]" :loading="loading" :options="policyOptions(kind)" placeholder="显式选择已生效配置档" />
         </FormItem>
       </Col>
-      <Col :span="12">
-        <FormItem label="初始化模板（可选）">
+      <Col :span="24">
+        <FormItem label="登录方式" required>
+          <RadioGroup id="custom-login-mode" v-model:value="loginDraft.mode" aria-label="登录方式">
+            <RadioButton value="password">root 密码</RadioButton>
+            <RadioButton value="ssh-key">SSH 公钥</RadioButton>
+          </RadioGroup>
+        </FormItem>
+        <template v-if="loginDraft.mode === 'password'">
+          <FormItem label="root 密码" html-for="custom-root-password" required>
+            <InputPassword id="custom-root-password" v-model:value="loginDraft.rootPassword" autocomplete="new-password" aria-label="root 密码" aria-describedby="custom-password-help custom-login-error" />
+          </FormItem>
+          <FormItem label="确认 root 密码" html-for="custom-root-password-confirmation" required>
+            <InputPassword id="custom-root-password-confirmation" v-model:value="loginDraft.rootPasswordConfirmation" autocomplete="new-password" aria-label="确认 root 密码" aria-describedby="custom-login-error" />
+          </FormItem>
+          <p id="custom-password-help" class="text-muted-foreground text-xs">8–128 个字符，不含控制字符；空格原样保留。</p>
+        </template>
+        <template v-else>
+          <FormItem label="SSH 公钥" html-for="custom-ssh-public-keys" required>
+            <Textarea id="custom-ssh-public-keys" v-model:value="loginDraft.sshPublicKeyText" :auto-size="{ minRows: 3, maxRows: 8 }" class="font-mono text-xs" autocomplete="off" :spellcheck="false" placeholder="ssh-ed25519 AAAA…" aria-label="SSH 公钥" aria-describedby="custom-ssh-keys-help custom-login-error" />
+          </FormItem>
+          <p id="custom-ssh-keys-help" class="text-muted-foreground text-xs">每行一条，1–10 条，每条最多 8192 字节；支持 Ed25519、RSA ≥2048 位、ECDSA nistp256/384/521。</p>
+        </template>
+        <p v-if="loginValidating" class="text-muted-foreground text-xs" role="status">正在校验登录凭据…</p>
+        <p v-else-if="loginError" id="custom-login-error" class="text-destructive text-xs" role="alert">{{ loginError }}</p>
+        <p class="text-muted-foreground text-xs">登录凭据通过所选节点 / 项目镜像的 cloud-init 自动配置，不需要选择初始化模板。SSH 服务需自行安装。</p>
+      </Col>
+      <Col :span="24">
+        <FormItem label="初始化模板（可选，与登录配置独立）" help="仅用于额外初始化脚本；不要在初始化参数中填写密码或 SSH 公钥。">
           <Select
             v-model:value="form.init_template_version_id"
             allow-clear
@@ -525,7 +597,7 @@ watch(value, (v) => emit('update:value', v), { immediate: true });
           <Textarea v-model:value="form.init_parameters" :auto-size="{ minRows: 3, maxRows: 10 }" class="font-mono" />
           <details v-if="selectedTemplate" class="mt-1 text-xs">
             <summary class="text-muted-foreground cursor-pointer">参数结构</summary>
-            <pre class="font-mono">{{ JSON.stringify(selectedTemplate.parameter_schema, null, 2) }}</pre>
+            <pre class="overflow-x-auto font-mono">{{ JSON.stringify(selectedTemplate.parameter_schema, null, 2) }}</pre>
           </details>
         </FormItem>
       </Col>

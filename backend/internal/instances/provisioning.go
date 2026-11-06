@@ -273,8 +273,13 @@ func registerProvisioning(a *platform.App, user, admin *gin.RouterGroup) {
 			Name           string                   `json:"name"`
 			ApprovedConfig customProvisioningConfig `json:"approved_config"`
 			PolicyVersions map[string]string        `json:"policy_versions"`
+			Login          *LoginRequest            `json:"login,omitempty"`
 		}
 		if e := platform.Decode(c, &in); e != nil {
+			return nil, e
+		}
+		login, e := normalizeLogin(in.Login)
+		if e != nil {
 			return nil, e
 		}
 		if !validCustomText(in.Name, 128) {
@@ -287,7 +292,7 @@ func registerProvisioning(a *platform.App, user, admin *gin.RouterGroup) {
 		if e != nil {
 			return nil, e
 		}
-		out, e := createInstance(c.Request.Context(), a, platform.DB(c, a), owner, customProvisioningSpec(in.Name, in.ApprovedConfig), true, in.PolicyVersions)
+		out, e := admitCreate(c.Request.Context(), a, platform.DB(c, a), owner, customProvisioningSpec(in.Name, in.ApprovedConfig), true, in.PolicyVersions, nil, login)
 		if e != nil {
 			return nil, e
 		}

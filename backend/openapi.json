@@ -9857,7 +9857,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Administrator required. ",
+        "description": "Administrator required. Creates an admin_exempt custom instance through shared admission and first-boot cloud-init. Optional top-level write-only login uses the member-create credential contract and requires a ready cloud-init-capable image on the exact node/project. Omit login for existing network-only behavior. Never put credentials in approved_config or init_parameters; imports do not accept login. Retry uncertain outcomes with the identical body and Idempotency-Key.",
         "parameters": [
           {
             "in": "header",
@@ -9916,6 +9916,9 @@
                   "policy_versions": {
                     "$ref": "#/components/schemas/PolicyVersions",
                     "description": "Required top-level explicit profiles, outside approved_config; pricing/credit/metrics, plus gpu-idle/gpu-scheduling for containers and gpu-pricing when count > 0."
+                  },
+                  "login": {
+                    "$ref": "#/components/schemas/InstanceLogin"
                   },
                   "owner_user_id": {
                     "type": "string",
@@ -11948,7 +11951,7 @@
       },
       "InstanceLogin": {
         "type": "object",
-        "description": "Write-only root password OR SSH public keys; exactly one nonempty credential mode. Final POST /instances only.",
+        "description": "Write-only root password OR SSH public keys; exactly one nonempty credential mode. Final POST /instances and POST /admin/custom-instances only, at the request top level. Never accepted by quotes, approved_config or instance imports.",
         "writeOnly": true,
         "additionalProperties": false,
         "properties": {

@@ -250,6 +250,15 @@ export type CreateLogin =
   | { root_password: string; ssh_public_keys?: never }
   | { root_password?: never; ssh_public_keys: string[] };
 
+/** 管理员直接下发：登录凭据只在顶层写入，不属于 approved_config。 */
+export interface CreateCustomInstance {
+  approved_config: CustomConfig;
+  login?: CreateLogin;
+  name: string;
+  owner_user_id: ID;
+  policy_versions: PolicyVersions;
+}
+
 /** 普通用户弹性实例：节点由网络选项确定，报价及创建绑定套餐 revision。 */
 export interface CreateElasticSpec {
   gpu: GPURequest;

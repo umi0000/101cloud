@@ -493,7 +493,7 @@ Fedora 使用 `dnf install -y openssh-server` 和 systemd 的 `sshd.service`；�
 
 ### 实例首次登录凭据（仅创建时）
 
-最终 `POST /api/v1/instances` 的只写 `login` 二选一：`{root_password:string}` 或 `{ssh_public_keys:string[]}`。两者都非空或都为空返回 422；省略 login 仍支持无凭据创建。密码为 8–128 个 Unicode 字符、禁止控制字符、保留空格。公钥最多 10 条（去重前）、每条最多 8192 UTF-8 字节；接受 Ed25519、RSA >=2048 位、ECDSA P-256/384/521，拒绝私钥、证书、选项、多行和畸形键，去注释并规范化去重。报价拒绝 login；新建摘要 none/password/ssh_key。
+最终 `POST /api/v1/instances` 和管理员 `POST /api/v1/admin/custom-instances` 的顶层只写 `login` 二选一：`{root_password:string}` 或 `{ssh_public_keys:string[]}`。两者都非空或都为空返回 422；省略 login 仍支持无凭据创建。密码为 8–128 个 Unicode 字符、禁止控制字符、保留空格。公钥最多 10 条（去重前）、每条最多 8192 UTF-8 字节；接受 Ed25519、RSA >=2048 位、ECDSA P-256/384/521，拒绝私钥、证书、选项、多行和畸形键，去注释并规范化去重。报价、导入及 `approved_config` 拒绝 login；凭据不属于 `Spec`、`init_parameters` 或模板参数；新建摘要 none/password/ssh_key。
 
 镜像须在所选节点/项目标记 ready、cloud_init=true，否则 409 image_login_unsupported；VM 需可用 incus-agent。密码先生成随机盐 SHA-512 crypt，或规范公钥，均仅存既有 MasterKey AES-GCM login_config_ciphertext，无新迁移。已完成实例不重置；历史待创建混合凭据按原密文应用，不允许新建混合请求。
 
@@ -511,6 +511,10 @@ Fedora 使用 `dnf install -y openssh-server` 和 systemd 的 `sshd.service`；�
 **主机留存风险：** 生成的密码哈希仍是敏感凭据，Incus 实例配置以及 guest `/var/lib/cloud/instance/user-data.txt`、`cloud-config.txt`、seed/cache、`/etc/shadow` 和主机/实例备份可能留存它。后端数据库加密不消除这些副本，节点管理员和 guest root 仍可访问；限制 Incus/guest/备份权限，使用高强度唯一密码，优先公钥。平台不自动删除 cloud-init 缓存或执行 `cloud-init clean`，后者会改变首次启动语义。参考官方 [cloud-init 模块](https://docs.cloud-init.io/en/latest/reference/modules.html) 与 [Incus cloud-init](https://linuxcontainers.org/incus/docs/main/cloud-init/)。
 
 每日额度由后台任务处理，首次发放完成前账户可能尚未就绪。自定义实例的申请和沟通在平台外完成，平台只保留管理员 `POST /admin/custom-instances` 直接下发（请求字段仍为 `approved_config`）及已有实例纳管，不提供申请/审批页面或接口。自定义实例按admin_exempt记录，不受每日额度停机影响，仍受资源及max_resident_instances配额约束。当前OpenAPI包含147个操作。
+
+管理员自定义实例登录接入（本地实现，未部署）：复用成员创建的 `normalizeLogin`、精确节点/项目镜像能力检查、加密准入、网络/登录 cloud-config、首次启动前 prepare 和只读 readiness。可选初始化模板仍是独立阶段，`cloud_init` 模板不覆盖登录或网络 user-data；保留原脚本及阶段语义。`admin_exempt`、用户权限、资源/常驻配额与政策冻结不变。已有实例导入不接受 login，也不下发或重置登录凭据。结果不确定时使用完全相同的 body/key 重试；同 key 不同 body 返回冲突。
+
+2026-11-07 本地验收（未部署）：修复前真实管理员handler对顶层login返回422；修复后隔离MySQL下实例模块`go test -race -p 1 ./internal/instances -count=1`及`go vet ./...`通过。真实Router、管理员登录和生产前端浏览器分别提交密码/公钥，均202且仅密文落库，任务/审计/幂等记录无凭据；自定义免额度和所有者保持不变。TLS协议回归覆盖共用cloud-config网络/凭据生成、首次prepare防重、readiness持久完成、两种模板阶段及无凭据旧请求。协议夹具不等同于真实宿主启动验收，未操作线上实例；无新增迁移。
 
 额度耗尽按实例冻结credit政策期限强停而不删盘，可能丢失未保存数据。停止不等于释放GPU；保留分配继续按历史持有区间记录，释放须显式移除。
 

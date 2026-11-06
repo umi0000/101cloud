@@ -9,6 +9,7 @@ import type {
   CreditAccount,
   CreditAdjustmentResult,
   CreditEnforcement,
+  CreateCustomInstance,
   CreateElasticSpec,
   ElasticQuote,
   ElasticQuoteSpec,
@@ -349,7 +350,7 @@ export const instancesApi = {
   attachGPU: (id: ID, body: AttachBody, w: Write) =>
     post<TaskAccepted>(ai(id, '/gpu-attachments'), body, w),
   createCustom: (
-    body: { approved_config: CustomConfig; name: string; owner_user_id: ID; policy_versions: PolicyVersions },
+    body: CreateCustomInstance,
     w: Write,
   ) => post<TaskAccepted>('/admin/custom-instances', body, w),
   delete: (

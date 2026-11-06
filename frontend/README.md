@@ -105,9 +105,19 @@ apps/web-antd/src/
 - 公钥方式每行一条，忽略空行；1–10 条（去重前），每条最多 8192 UTF-8 字节（含注释）。支持标准 Ed25519、RSA（至少 2048 位）及 ECDSA nistp256/384/521，拒绝私钥、authorized_keys 选项、证书及无效内容。前端检查语法、wire 结构与长度，移除注释并按规范化公钥去重；服务端负责最终密码学公钥校验。
 - 最终 `POST /instances` 只发送所选方式：`login: {root_password}` **或** `login: {ssh_public_keys: string[]}`，绝不同时发送；未选方式即使留有无效草稿也不参与校验或提交。所有 `POST /quotes` 显式排除 `login`，登录方式及凭据不影响资源报价。确认页不展示密码、公钥、注释或指纹原文。
 - 私有草稿记录登录方式、密码及公钥文本，确认时仅冻结所选登录配置；公开状态仅有所选方式的密码是否设置或公钥数量，以及 `hasPendingIntent`。不写 local/session storage、URL、日志或 Pinia action 参数，普通 `form/order/$state` 不保存凭据。返回修改恢复模式及敏感草稿；修改草稿或模式后前进到旧确认页不会替换已冻结凭据。结果不确定时使用同一原始 body/key；受理、退出、换账号、角色切换及显式重置清空敏感引用。
-- 凭据配置依赖所选节点/项目就绪镜像的 cloud-init 能力。密码方式设置 root 密码；公钥方式写入 root 的 `authorized_keys` 并禁用密码认证凭据。用户公钥不同于 SSH 主机密钥；此流程不生成用户密钥或主机密钥，不安装、配置或重启 SSH 服务。管理员初始化脚本保持独立，管理员自定义创建继续不传 `login`，导入不接收登录配置。最终创建错误不回显服务端输入内容。
+- 凭据配置依赖所选节点/项目就绪镜像的 cloud-init 能力。密码方式设置 root 密码；公钥方式写入 root 的 `authorized_keys` 并禁用密码认证凭据。用户公钥不同于 SSH 主机密钥；此流程不生成用户密钥或主机密钥，不安装、配置或重启 SSH 服务。管理员初始化脚本保持独立，管理员自定义创建同样通过顶层 `login` 配置凭据，导入不接收登录配置。最终创建错误不回显服务端输入内容。
 - `instance-login.test.ts` 覆盖两种方式、忽略非所选输入、密码校验、公钥规范化/去重/数量/字节限制及节点镜像能力；`instance-order.test.ts` 覆盖两种互斥 payload、确认模式冻结、公开状态/报价隔离、两种方式原体原键重试、账号清理与旧响应隔离。本次未执行检查；统一验收 login/order/locales/initialization 测试、前端 typecheck/build 及浏览器两步流程。选择器：`#creation-login-mode`、`#creation-root-password`、`#creation-root-password-confirmation`、`#creation-ssh-public-keys`；确认摘要：`[data-testid="root-password-summary"]` 或 `[data-testid="ssh-public-key-summary"]`。
 - root 密码或请求的公钥实际核验失败沿用 `initialization_password_not_ready` / `root_password_not_ready`，文案明确可能是密码未正确设置（包括首次登录强制改密）或所提供公钥未正确写入；不把 cloud-init done 等同于凭据就绪，也不把凭据就绪等同于 SSH 可登录。仍可能出现的 `initialization_marker_missing` / `completion_marker_missing` 只指 cloud-init 启动完成标记，不是旧 SSH 登录模式标记；历史错误保持可读，不触发重放。
+
+### 管理员直接下发的登录配置（仅本地实现，未部署）
+
+- 实例页“直接下发自定义实例”抽屉提供默认 root 密码及确认输入，或 SSH 公钥；共用普通用户的 `emptyLoginDraft`、`validateLoginDraft`、`imageSupportsLogin`，密码和公钥限制相同。只允许所选节点 / 项目的就绪镜像支持 cloud-init 时下发，不用其他节点或项目的能力代替。
+- `POST /admin/custom-instances` 将所选凭据放在顶层 `login`；`approved_config`、初始化参数和配置档不含登录凭据。API 可省略 `login` 继续原有仅网络初始化，管理员界面则要求明确设置密码或公钥。可选初始化模板仍用于独立的额外脚本，不是启用 cloud-init 的开关，也不能替代登录配置。导入入口不变，不会重置已存在实例的凭据。
+- 凭据只保留在组件内存；切换登录方式立即清除非当前方式的输入，受理、关闭、卸载、账号/角色变化或会话失效时清空。提交中及结果不确定时锁定表单；不确定结果只允许以原始请求体和原幂等键重试。关闭会丢弃本地重试信息，因此提示先核对实例/任务列表再重新下发。错误通知不显示服务端返回的原始文本或 details。
+- 抽屉宽度不超过视口，375px 下节点、镜像、网络及登录字段使用单列；输入提供明确标签。行为回归 `views/admin/instances/custom-create.test.ts` 覆盖实际表单校验、两种顶层 payload、模式切换清除、精确镜像能力、受理清空、原体原键重试、确定失败后新意图、会话变更及旧响应隔离。统一验收命令：`pnpm exec vitest run apps/web-antd/src/views/admin/instances/custom-create.test.ts apps/web-antd/src/utils/instance-login.test.ts apps/web-antd/src/utils/order-intent.test.ts`；另运行应用 typecheck/build 与 375px 浏览器检查。本段不声称已执行检查、部署或线上操作。
+
+2026-11-07 本地验收（未部署）：前端57文件586项测试、类型检查和生产构建通过。实际管理员页面配合真实本地Router/MySQL完成两种凭据下发，服务端202且登录配置加密持久化；验证重新打开表单及模式切换清除凭据、不支持cloud-init镜像阻止提交。桌面及375px浅色/暗色抽屉已检查，页面无横向溢出。未对真实宿主执行创建；原生首次启动语义由后端TLS协议回归覆盖。构建仍有既有依赖BigInt目标环境警告。
+
 
 
 ## 可读错误与任务失败
