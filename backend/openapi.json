@@ -292,7 +292,7 @@
                   "metrics_policy_id": {
                     "type": "string",
                     "pattern": "^[1-9][0-9]*$",
-                    "description": "Explicit active/effective metrics policy_versions.id; required on every node PATCH and returned by the Node DTO."
+                    "description": "Optional replacement metrics policy_versions.id; must be active and effective when supplied. Omission preserves the current binding; null and empty values are rejected."
                   },
                   "name": {
                     "type": "string"
@@ -345,7 +345,7 @@
                     "additionalProperties": false
                   }
                 },
-                "required": ["metrics_policy_id"],
+                "minProperties": 1,
                 "additionalProperties": false
               }
             }

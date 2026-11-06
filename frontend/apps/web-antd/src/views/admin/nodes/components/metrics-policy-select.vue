@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import type { PolicyVersion } from '#/api/types';
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, ref } from 'vue';
 
 import { Select } from 'ant-design-vue';
 
@@ -15,7 +15,9 @@ const options = computed(() => profiles.value
   .filter((p) => p.status === 'active' && !!p.effective_at && Date.parse(p.effective_at) <= Date.now())
   .map((p) => ({ label: `${p.code} v${p.version}`, value: p.id })));
 
-function validate() {
+async function validate() {
+  // Select triggers form validation before this wrapper receives its updated model prop.
+  await nextTick();
   if (!options.value.some((p) => p.value === value.value)) {
     return Promise.reject(new Error('请选择已发布且已生效的监控策略'));
   }

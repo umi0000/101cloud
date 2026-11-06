@@ -42,6 +42,7 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 	a.RegisterJob("node.drain", nodeInventoryJob)
 	a.RegisterReconciler("node.probe", nodeInventoryJob)
 	a.RegisterReconciler("node.drain", nodeInventoryJob)
+	a.AddPoller("node-inventory", 20*time.Second, pollNodeInventory)
 	admin.GET("/nodes", platform.Handle(func(c *gin.Context) (any, error) {
 		q := platform.DB(c, a).Table("nodes")
 		for _, f := range []string{"administrative_state", "health"} {
@@ -114,7 +115,7 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 			Name                *string          `json:"name"`
 			AdministrativeState *string          `json:"administrative_state"`
 			Allocatable         *nodeAllocatable `json:"allocatable"`
-			MetricsPolicyID     string           `json:"metrics_policy_id"`
+			MetricsPolicyID     json.RawMessage  `json:"metrics_policy_id"`
 		}
 		if err := platform.Decode(c, &in); err != nil {
 			return nil, err
@@ -128,11 +129,17 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 			return nil, err
 		}
 		changes := platform.Row{}
-		policyID, e := nodeMetricsPolicy(platform.DB(c, a), a, in.MetricsPolicyID)
-		if e != nil {
-			return nil, e
+		if len(in.MetricsPolicyID) != 0 {
+			var value string
+			if err := json.Unmarshal(in.MetricsPolicyID, &value); err != nil {
+				return nil, invalid("metrics_policy_id 必须为已发布的 metrics 策略 ID。")
+			}
+			policyID, err := nodeMetricsPolicy(platform.DB(c, a), a, value)
+			if err != nil {
+				return nil, err
+			}
+			changes["metrics_policy_id"] = policyID
 		}
-		changes["metrics_policy_id"] = policyID
 		if in.Name != nil {
 			if !textValid(*in.Name, 128) {
 				return nil, invalid("节点名称不能为空且不能超过 128 个字符。")

@@ -105,11 +105,8 @@ func nodeSameConnection(a, b platform.Row) bool {
 	return true
 }
 func nodeInventoryFence(tx *gorm.DB, job platform.Job, current, initial platform.Row, sampled time.Time) error {
-	if !nodeSameConnection(current, initial) {
-		return platform.E(409, "configuration_conflict", "node connection changed during the probe; run a new probe")
-	}
-	if platform.Stamp(current["resources_sampled_at"]).After(sampled) || platform.Stamp(current["last_heartbeat_at"]).After(sampled) {
-		return platform.E(409, "observation_superseded", "a newer node probe has already been recorded")
+	if e := nodeObservationFence(current, initial, sampled); e != nil {
+		return e
 	}
 	var task platform.Row
 	if e := tx.Table("tasks").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", job.ID).Take(&task).Error; e != nil {
@@ -117,6 +114,16 @@ func nodeInventoryFence(tx *gorm.DB, job platform.Job, current, initial platform
 	}
 	if platform.Uint(task["lease_generation"]) != job.LeaseGeneration || platform.Text(task["status"]) != "running" || !platform.Stamp(task["lease_until"]).After(time.Now()) {
 		return platform.E(409, "task_lease_lost", "task no longer owns the inventory lease")
+	}
+	return nil
+}
+
+func nodeObservationFence(current, initial platform.Row, sampled time.Time) error {
+	if !nodeSameConnection(current, initial) {
+		return platform.E(409, "configuration_conflict", "node connection changed during the probe; run a new probe")
+	}
+	if platform.Stamp(current["resources_sampled_at"]).After(sampled) || platform.Stamp(current["last_heartbeat_at"]).After(sampled) {
+		return platform.E(409, "observation_superseded", "a newer node probe has already been recorded")
 	}
 	return nil
 }

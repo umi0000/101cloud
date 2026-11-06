@@ -6,12 +6,14 @@
 import type { RedemptionCode } from '#/api/types';
 
 import { computed } from 'vue';
+import { useClipboard } from '@vueuse/core';
 
 import { Alert, Button, message, Modal, Space, Table } from 'ant-design-vue';
 
 import { formatFullTime, formatPt } from '#/utils/format';
 
 const codes = defineModel<RedemptionCode[]>('codes', { required: true });
+const { copy: copyText, copied } = useClipboard({ legacy: true });
 
 const open = computed({
   get: () => codes.value.length > 0,
@@ -29,7 +31,8 @@ const columns = [
 
 async function copyAll() {
   try {
-    await navigator.clipboard.writeText(codes.value.map((c) => c.code ?? '').join('\n'));
+    await copyText(codes.value.map((c) => c.code ?? '').join('\n'));
+    if (!copied.value) throw new Error('Clipboard copy failed');
     message.success(`已复制 ${codes.value.length} 个兑换码`);
   } catch {
     message.error('复制失败，请使用导出 CSV');

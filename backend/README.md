@@ -216,9 +216,9 @@ MySQL管理员需有建库、建表/迁移、创建账号及授权的权限，�
 只在首次部署生成一次：
 
 ```bash
-sudo sh -c 'umask 077; openssl rand -base64 32 > /usr/local/etc/101cloud/master.key'
-sudo chown 101cloud:101cloud /usr/local/etc/101cloud/master.key
-sudo chmod 600 /usr/local/etc/101cloud/master.key
+sudo sh -c 'umask 077; openssl rand -base64 32 > /usr/local/etc/101cloud-panel/master.key'
+sudo chown 101cloud:101cloud /usr/local/etc/101cloud-panel/master.key
+sudo chmod 600 /usr/local/etc/101cloud-panel/master.key
 ```
 
 主密钥用于保护节点凭据等数据，文件必须为 `0600`，且服务用户可以读取。**与数据库一起安全备份，不要每次部署重新生成，也不要提交 Git。** 丢失后无法正常解密原有凭据。
@@ -265,6 +265,8 @@ CLOUD_CONSOLE_MAX_CONCURRENT='4'
 # 下例用于 Nginx 与后端同机；远程代理应填写实际代理 IP，不要填写所有客户端网段。
 # 可信地址上的进程可伪造客户端 IP，因此不要设为 0.0.0.0/0 或 ::/0。
 CLOUD_TRUSTED_PROXIES='127.0.0.1/32,::1/128'
+
+CLOUD_LISTEN='0.0.0.0:8080'
 ```
 
 ```bash
@@ -451,6 +453,19 @@ POST /admin/users必填credit_policy_version_id，选择用户独立共享钱包
 
 Fedora 使用 `dnf install -y openssh-server` 和 systemd 的 `sshd.service`；需要提供 dnf、可用软件源及正在运行的 systemd，不支持通过该路径配置 rpm-ostree 原子系统。脚本不修改防火墙或 SELinux 策略。
 
+### 节点库存自动采集
+
+后端执行 `serve` 时自动启动 `node-inventory` 后台轮询，启动后立即采集，之后每 20 秒一轮；不需要新增环境变量、前端自动刷新开关或独立定时任务。手动运行与 systemd 运行行为一致。后端主动通过固定证书 HTTPS 读取 Agent 的 `/agent/v1/health` 和 `/agent/v1/resources`，不是 Agent 向面板主动推送。
+
+- 覆盖所有已登记节点，包括空节点、无 GPU 节点，以及维护、排空和禁用节点；不依赖已有实例、实例监控采集间隔或 GPU 自动策略。只刷新观测，不自动启用节点、不调整容量、不创建或启停实例。
+- 单轮最多并发 8 个节点，每节点 Agent 请求共用 10 秒超时。成功更新硬件/GPU 库存、库存时间和心跳；新发现的 GPU 仍默认禁用，不能自动分配。故障节点较多时整轮可能超过 20 秒，超时并不代表采集成功。
+- 健康检查失败标记离线，不推进心跳或库存时间；健康检查成功但资源请求失败或响应不完整，不推进库存时间。恢复后后续轮询自动重新采集。页面与准入的库存过期保护保留，不以刷新时间掩盖采集失败。
+- 保存前锁定节点并检查连接凭据与观测时间，连接已更换或已有更新观测时丢弃迟到结果。纯库存刷新不改变节点编辑 ETag，健康状态变化仍增加 revision。GPU 自动调度采样只维护调度指标，不再覆盖节点库存与心跳。
+- 页面“刷新”读取已保存的观测；“探测库存”仍可立即请求完整探测，并额外核对 Incus 项目及未纳管实例。自动轮询不代替这项完整盘点。
+
+此修复仅更新后端，无数据库迁移、Agent 协议或前端改动；需重新构建并替换后端程序后重启生效，尚未部署到服务器。隔离 MySQL 8.4/race 回归覆盖空节点、各管理状态、失败/恢复及迟到结果保护；独立运行真实 Worker、TLS Agent 夹具和 HTTP 查询，确认零实例/零 GPU 节点连续跨越一分钟按 20 秒更新，断连健康失败不续期、恢复后继续采集。该冒烟不代表真实 Incus/GPU 硬件验收。
+
+
 ### 实例首次登录凭据（仅创建时）
 
 最终 `POST /api/v1/instances` 的只写 `login` 二选一：`{root_password:string}` 或 `{ssh_public_keys:string[]}`。两者都非空或都为空返回 422；省略 login 仍支持无凭据创建。密码为 8–128 个 Unicode 字符、禁止控制字符、保留空格。公钥最多 10 条（去重前）、每条最多 8192 UTF-8 字节；接受 Ed25519、RSA >=2048 位、ECDSA P-256/384/521，拒绝私钥、证书、选项、多行和畸形键，去注释并规范化去重。报价拒绝 login；新建摘要 none/password/ssh_key。
@@ -495,6 +510,7 @@ Fedora 使用 `dnf install -y openssh-server` 和 systemd 的 `sshd.service`；�
 | 操作412/428 | 刷新详情获取ETag，再按接口提交If-Match |
 | 创建409 | 额度、显式配额、节点容量、GPU名额、IP和政策版本 |
 | 节点无法接入 | CIDR允许范围、网络可达、Token和固定指纹；不跳过证书校验 |
+| 库存持续过期 | 确认运行包含独立 `node-inventory` 轮询的新版后端；检查后端采集日志、Agent/Incus 健康、网络/CIDR/Token/证书指纹。页面刷新不会替代采集，不能靠放宽过期阈值恢复准入 |
 | 任务unknown | 查询原任务并让管理员核对，不重复创建或直接释放预留资源 |
 | 删除任务unknown / gpu_reclamation_unverified | 原生删除已确认但 GPU 证据不足；检查 Agent 新字段、采集完整性及节点时间，等待删除后新样本再管理员对账，不重复 DELETE 或手工释放 IP/GPU |
 | 控制台无法连接 | WebSocket反代、会话ready状态、Origin及进程亲和性 |

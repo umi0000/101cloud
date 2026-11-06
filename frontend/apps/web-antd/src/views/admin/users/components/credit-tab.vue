@@ -82,8 +82,8 @@ onMounted(load);
         show-icon
         type="info"
       />
-      <Form layout="vertical" @finish="submitSetup">
-        <FormItem label="共享钱包额度政策" required>
+      <Form layout="vertical" :model="{ policy_version_id: policyId }" @finish="submitSetup">
+        <FormItem label="共享钱包额度政策" name="policy_version_id" :rules="[{ required: true, message: '请选择已生效的额度政策' }]">
           <Select
             v-model:value="policyId"
             class="w-full"

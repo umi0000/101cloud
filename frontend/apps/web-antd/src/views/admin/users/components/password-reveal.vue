@@ -1,14 +1,17 @@
 <script lang="ts" setup>
 /** 一次性显示密码并提供复制；关闭后调用方应丢弃密码。 */
+import { useClipboard } from '@vueuse/core';
 import { Alert, Button, Input, message, Modal, Space } from 'ant-design-vue';
 
 defineProps<{ description: string; password: string; title: string }>();
 const emit = defineEmits<{ closed: [] }>();
 const open = defineModel<boolean>('open', { default: false });
+const { copy: copyText, copied } = useClipboard({ legacy: true });
 
 async function copy(text: string) {
   try {
-    await navigator.clipboard.writeText(text);
+    await copyText(text);
+    if (!copied.value) throw new Error('Clipboard copy failed');
     message.success('已复制');
   } catch {
     message.error('复制失败，请手动选择复制');

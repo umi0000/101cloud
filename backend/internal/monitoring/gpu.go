@@ -142,9 +142,6 @@ func sampleGPUResources(ctx context.Context, a *platform.App, node uint64, polic
 	observedAt := a.Time()
 	interval := time.Duration(platform.Uint(policy["poll_interval_seconds"])) * time.Second
 	return a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if e := tx.Table("nodes").Where("id=?", node).Updates(map[string]any{"resources": string(data), "resources_sampled_at": observedAt, "last_heartbeat_at": observedAt}).Error; e != nil {
-			return e
-		}
 		seen := []string{}
 		for _, g := range decoded.GPUs {
 			if g.UUID == "" {
@@ -165,9 +162,6 @@ func sampleGPUResources(ctx context.Context, a *platform.App, node uint64, polic
 			}
 			row := map[string]any{"node_id": node, "gpu_uuid": g.UUID, "policy_version_id": policyID, "high_since": since, "last_sampled_at": observedAt, "updated_at": a.Time()}
 			if e := tx.Table("metric_gpu_high_windows").Clauses(gpuHighWindowConflict).Create(row).Error; e != nil {
-				return e
-			}
-			if e := tx.Table("node_gpus").Where("node_id=? AND uuid=?", node, g.UUID).Update("last_seen_at", observedAt).Error; e != nil {
 				return e
 			}
 		}
