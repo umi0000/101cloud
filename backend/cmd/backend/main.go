@@ -24,8 +24,14 @@ func main() {
 	}
 }
 func run() error {
-	if len(os.Args) != 2 {
-		return errors.New("usage: backend install | migrate | serve")
+	command, configPath, err := commandConfig(os.Args[1:])
+	if err != nil {
+		return err
+	}
+	if configPath != "" {
+		if err := loadConfigFile(configPath); err != nil {
+			return err
+		}
 	}
 	cfg, e := platform.LoadConfig()
 	if e != nil {
@@ -33,7 +39,7 @@ func run() error {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	if os.Args[1] == "install" {
+	if command == "install" {
 		if e := install.Run(ctx, cfg, os.Getenv("CLOUD_MYSQL_ADMIN_DSN"), os.Getenv("CLOUD_MYSQL_APP_HOST")); e != nil {
 			return e
 		}
@@ -50,7 +56,7 @@ func run() error {
 	}
 	defer sqlDB.Close()
 	a := platform.New(db, cfg)
-	switch os.Args[1] {
+	switch command {
 	case "migrate":
 		return migrations.Up(ctx, db)
 	case "serve":

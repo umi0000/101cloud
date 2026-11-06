@@ -162,12 +162,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 ./build.sh \
 
 ### 2.6 二进制运行子命令
 
-构建参数不适用于运行程序。二进制只接受一个位置子命令：
+构建参数不适用于运行程序。二进制接受一个子命令，以及可选的 `-c` 配置文件参数（放在子命令之后）：
 
 ```text
-101cloud-backend install
-101cloud-backend migrate
-101cloud-backend serve
+101cloud-backend install [-c /path/to/backend.env]
+101cloud-backend migrate [-c /path/to/backend.env]
+101cloud-backend serve [-c /path/to/backend.env]
 ```
 
 | 子命令 | 行为 |
@@ -176,15 +176,12 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 ./build.sh \
 | `migrate` | 对已有安装执行嵌入的 SQL 迁移；`CLOUD_MYSQL_DSN` 必须使用有迁移权限的账号，不启动 HTTP 服务 |
 | `serve` | 检查迁移状态，必要时创建首个管理员，启动 HTTP 服务（内嵌页面、API、WebSocket）和后台 Worker；不会自动迁移 |
 
-运行配置全部通过 `CLOUD_*` 环境变量传入，详见[第6节](#6-配置环境文件)。程序不支持 `--port`、`--config`、`--help` 或 `--version`，也不会自动读取 `.env`。无参数或多参数时打印用法并非零退出；不要把数据库密码写成命令行参数。
+运行配置支持 `CLOUD_*` 环境变量和显式指定的文件，详见[第6节](#6-配置环境文件)。已设置的环境变量优先于文件（即使环境变量值为空）；未指定 `-c` 时保持原环境变量方式，不自动查找 `.env`。程序不支持 `--port`、`--config`、`--help` 或 `--version`；错误参数、配置文件不存在或格式错误时非零退出。不要把数据库密码写成命令行参数。
 
-手工运行时，先在有权限的 Bash 会话中加载环境文件，再启动（与 systemd 二选一，不要重复占用端口）：
+手工运行示例（运行用户必须能读取文件，与 systemd 二选一，不要重复占用端口）：
 
 ```bash
-set -a
-. /usr/local/etc/101cloud/backend.env
-set +a
-/usr/local/bin/101cloud-backend serve
+/usr/local/bin/101cloud-backend serve -c /usr/local/etc/101cloud/backend.env
 ```
 
 首次安装、升级所需的数据库权限与凭据处理见[第7节](#7-自动初始化数据库及首个面板管理员)；日常 `serve` 仍使用受限业务账号，不保留安装用管理员凭据。
@@ -231,13 +228,42 @@ sudo chmod 600 /usr/local/etc/101cloud/master.key
 创建 `/usr/local/etc/101cloud/backend.env`：
 
 ```dotenv
+# 必填：浏览器访问面板的外部地址，用于同源安全检查和 Cookie 安全属性。
+# 改为实际域名或 IP，例如 https://192.168.0.111；不是 Agent 地址。
+# 不带路径、末尾斜杠或默认端口 :443；非默认端口需保留，例如 :8443。
 CLOUD_ORIGIN='https://cloud.example.com'
+
+# 后端 HTTP 监听地址，默认 127.0.0.1:8080。
+# 与 Nginx 同机时保持回环地址，Nginx 负责 HTTPS；不要无保护地暴露到公网。
 CLOUD_LISTEN='127.0.0.1:8080'
+
+# 必填：MySQL 连接串，格式 用户名:密码@tcp(数据库地址:端口)/数据库名。
+# serve 使用受限业务账号；执行 migrate 时需临时使用有迁移权限的账号。
+# 此项含密码，不要公开或提交 Git。
 CLOUD_MYSQL_DSN='101cloud_app:替换为运行账户密码@tcp(127.0.0.1:3306)/101cloud'
+
+# 必填：主密钥文件路径，用于加密/解密节点凭据等敏感数据。
+# 文件内容为 Base64 编码的 32 字节随机密钥，权限必须为 0600，运行用户须可读。
+# 建议绝对路径；与数据库一起备份，更新程序时必须保留原密钥。
 CLOUD_MASTER_KEY_FILE='/usr/local/etc/101cloud/master.key'
+
+# 后端允许访问的 Host Agent 节点管理 IP 范围，不是浏览器访问白名单。
+# 多个 CIDR 用逗号分隔；IPv4 单个地址用 /32，IPv6 单个地址用 /128。
+# 按实际节点填写；默认仅允许 127.0.0.1/32,::1/128。
 CLOUD_NODE_ALLOW_CIDRS='192.168.0.111/32'
+
+# 登录会话有效期，默认 12h；使用正的 Go duration，例如 30m、12h、24h。
+# 不支持 1d 写法。登录到期后需重新登录，绑定该登录的控制台连接也会关闭。
 CLOUD_SESSION_TTL='12h'
+
+# 每个用户允许同时占用的控制台会话数量，默认 4，范围 1–100。
+# 包括准备中、就绪及已连接的终端/VNC 会话，不是实例数量限制。
 CLOUD_CONSOLE_MAX_CONCURRENT='4'
+
+# 可信反向代理的来源 IP/CIDR，多个用逗号分隔；默认空，即不信任代理头。
+# 仅当请求来自这些地址时，才用 X-Forwarded-For 获取客户端 IP，供限流和记录使用。
+# 下例用于 Nginx 与后端同机；远程代理应填写实际代理 IP，不要填写所有客户端网段。
+# 可信地址上的进程可伪造客户端 IP，因此不要设为 0.0.0.0/0 或 ::/0。
 CLOUD_TRUSTED_PROXIES='127.0.0.1/32,::1/128'
 ```
 
@@ -251,7 +277,9 @@ sudo chmod 600 /usr/local/etc/101cloud/backend.env
 - 本地前端开发：Vite 开发服务器把 `/api/v1` 代理到 `http://127.0.0.1:8080`（需开启 WebSocket 代理），浏览器访问 `http://localhost:5555`，后端设置 `CLOUD_ORIGIN=http://localhost:5555`。代理不得改写浏览器发送的 `Origin` 头，否则修改请求和 WebSocket 会被 403 拒绝。
 - `CLOUD_TRUSTED_PROXIES` 是可信反向代理的 IP 或 CIDR 列表（逗号分隔，IPv4/IPv6），非法条目会使启动失败。留空（默认）表示不信任任何代理，客户端 IP 取 TCP 对端地址。只有 TCP 对端属于该列表时，才采用 `X-Forwarded-For` 中的客户端地址（用于登录按 IP 限速和会话记录）；不读取 `X-Real-IP`。
 - `CLOUD_NODE_ALLOW_CIDRS` 是允许接入的节点管理 IP 范围，按实际节点填写，尽量使用单 IP `/32`。
-- 后端没有自动加载 `.env` 的逻辑，由 systemd 读取文件。
+- 使用 `serve -c /path/to/backend.env` 可由后端直接加载文件；也可以继续由 systemd 的 `EnvironmentFile` 注入环境，不要求迁移现有服务配置。
+- 文件语法为每行一个 `CLOUD_名称=值`，支持空行、整行 `#` 注释、CRLF、等号两侧空白，以及单引号或双引号包裹的单行值。引号内内容按字面量处理；不执行 Shell、不展开 `$VAR`、不处理转义、`export`、多行值或行尾注释。重复键、非法赋值、NUL 和超过扫描上限（约64 KiB）的行会报错，错误不回显配置值。完整解析成功后才应用文件。
+- `-c` 的相对路径和文件内 `CLOUD_MASTER_KEY_FILE` 的相对路径都以进程工作目录为基准；建议使用绝对路径。配置文件包含敏感凭据，建议权限 `0600`，由实际运行用户拥有；主密钥文件仍强制要求 `0600`。
 - 不需要配置后端 SSL 证书。生产 HTTPS 由反向代理终结，`CLOUD_ORIGIN` 填浏览器看到的 `https://` 地址。
 - 程序自动配置 MySQL 连接的 UTC+8、时间解析和严格 SQL 模式。
 
