@@ -1,11 +1,12 @@
 <script lang="ts" setup>
 import type { ErrorText } from '#/locales/errors';
 
-import { onBeforeUnmount, reactive, ref } from 'vue';
+import { onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 
 import { Alert, Button, Form, FormItem, Input, InputPassword } from 'ant-design-vue';
 
+import { authApi } from '#/api/backend';
 import { ApiError } from '#/api/request';
 import ErrorFeedback from '#/components/error-feedback.vue';
 import { describeError } from '#/locales/errors';
@@ -22,7 +23,10 @@ const authStore = useAuthStore();
 const router = useRouter();
 const route = useRoute();
 
-const form = reactive({ password: '', username: '' });
+const prefill = typeof route.query.username === 'string' ? route.query.username : '';
+const form = reactive({ password: '', username: [...prefill].length <= 64 && prefill.trim() === prefill ? prefill : '' });
+const registered = !props.embedded && route.query.registered === '1';
+const registrationEnabled = ref(false);
 const errorFeedback = ref<ErrorText | null>(null);
 const retryIn = ref(0);
 let timer: number | undefined;
@@ -63,6 +67,15 @@ async function submit() {
   }
 }
 
+onMounted(async () => {
+  if (props.embedded) return;
+  try {
+    registrationEnabled.value = (await authApi.registration()).data.enabled;
+  } catch {
+    registrationEnabled.value = false;
+  }
+});
+
 onBeforeUnmount(() => window.clearInterval(timer));
 </script>
 
@@ -70,8 +83,9 @@ onBeforeUnmount(() => window.clearInterval(timer));
   <div class="w-full">
     <div v-if="!embedded" class="mb-8">
       <h2 class="text-foreground mb-2 text-2xl font-semibold">登录 101cloud</h2>
-      <p class="text-muted-foreground text-sm">账号由管理员创建</p>
+      <p class="text-muted-foreground text-sm">使用用户名和密码登录</p>
     </div>
+    <Alert v-if="registered" class="mb-4" message="注册成功，请使用刚设置的密码登录" role="status" show-icon type="success" />
     <Alert v-if="errorFeedback" class="mb-4" :message="errorFeedback.text" show-icon type="error">
       <template #description><ErrorFeedback :feedback="errorFeedback" hide-message /></template>
     </Alert>
@@ -103,5 +117,8 @@ onBeforeUnmount(() => window.clearInterval(timer));
         {{ retryIn > 0 ? `请在 ${retryIn} 秒后重试` : '登录' }}
       </Button>
     </Form>
+    <p v-if="registrationEnabled && !embedded" class="mt-4 text-center text-sm">
+      还没有账号？<RouterLink class="text-primary" to="/auth/register">注册账号</RouterLink>
+    </p>
   </div>
 </template>

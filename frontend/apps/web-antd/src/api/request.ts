@@ -77,7 +77,7 @@ export interface RequestOptions {
   body?: unknown;
   /** If-Match，格式 "rev-N"（含双引号）。 */
   ifMatch?: null | string;
-  /** Idempotency-Key；POST/DELETE（登录退出除外）必需。 */
+  /** Idempotency-Key；POST/DELETE（登录、注册、退出除外）必需。 */
   idempotencyKey?: string;
   params?: Record<string, boolean | number | string | undefined>;
   /** 401 时不触发全局登录过期处理（登录、启动探测等）。 */

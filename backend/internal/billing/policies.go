@@ -261,6 +261,9 @@ func policyUsage(db *gorm.DB, kind string, p row) (string, error) {
 	if kind == "metrics" {
 		checks = append(checks, usageCheck{"节点", "个", "nodes", "metrics_policy_id = ?", []any{p["id"]}})
 	}
+	if kind == "credit" {
+		checks = append(checks, usageCheck{"注册默认配置", "个", "registration_settings", "credit_policy_version_id = ?", []any{p["id"]}})
+	}
 	if source != 0 {
 		for _, t := range map[string][]struct{ label, unit, table, column string }{
 			"pricing":     {{"计费区间", "条", "usage_sessions", "pricing_version_id"}},

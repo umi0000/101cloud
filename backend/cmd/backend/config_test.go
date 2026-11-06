@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"101cloud/backend/internal/platform"
+	driver "github.com/go-sql-driver/mysql"
 )
 
 func TestCommandConfig(t *testing.T) {
@@ -70,5 +73,58 @@ func TestFileEnvironmentPrecedenceAndAtomicParsing(t *testing.T) {
 	}
 	if err := loadConfigFile(path + ".missing"); err == nil {
 		t.Fatal("missing file accepted")
+	}
+}
+
+func TestDatabaseConfig(t *testing.T) {
+	const business = "app:business-secret@tcp(127.0.0.1:3306)/business"
+	for _, tt := range []struct {
+		name, command, app, admin, user, database string
+		wantError                                 bool
+	}{
+		{"fallback", "migrate", business, "", "app", "business", false},
+		{"admin without database", "migrate", business, "root:admin-secret@tcp(127.0.0.1:3306)/", "root", "business", false},
+		{"admin matching database", "migrate", business, "root:admin-secret@tcp(127.0.0.1:3306)/business", "root", "business", false},
+		{"wrong database", "migrate", business, "root:admin-secret@tcp(127.0.0.1:3306)/other", "", "", true},
+		{"wrong endpoint", "migrate", business, "root:admin-secret@tcp(127.0.0.1:3307)/", "", "", true},
+		{"hostname alias rejected", "migrate", business, "root:admin-secret@tcp(localhost:3306)/", "", "", true},
+		{"wrong transport", "migrate", business, "root:admin-secret@unix(/tmp/mysql.sock)/", "", "", true},
+		{"missing business database", "migrate", "app:business-secret@tcp(127.0.0.1:3306)/", "root:admin-secret@tcp(127.0.0.1:3306)/business", "", "", true},
+		{"invalid business", "migrate", "business-secret", "root:admin-secret@tcp(127.0.0.1:3306)/", "", "", true},
+		{"invalid admin", "migrate", business, "admin-secret", "", "", true},
+		{"serve ignores admin", "serve", business, "root:admin-secret@tcp(127.0.0.1:3306)/", "app", "business", false},
+		{"serve ignores invalid admin", "serve", business, "admin-secret", "app", "business", false},
+		{"normalized default endpoint", "migrate", "app:business-secret@tcp()/business", "root:admin-secret@tcp(127.0.0.1:3306)/", "root", "business", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := platform.Config{DSN: tt.app, Listen: "127.0.0.1:8080"}
+			got, err := databaseConfig(tt.command, cfg, tt.admin)
+			if tt.wantError {
+				if err == nil {
+					t.Fatal("unsafe configuration accepted")
+				}
+				if strings.Contains(err.Error(), "secret") {
+					t.Fatal("error leaked credentials")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			parsed, err := driver.ParseDSN(got.DSN)
+			if err != nil || parsed.User != tt.user || parsed.DBName != tt.database {
+				t.Fatal("incorrect migration credentials or target")
+			}
+			if cfg.DSN != tt.app || got.Listen != cfg.Listen {
+				t.Fatal("changed business configuration")
+			}
+			if tt.command == "serve" || tt.admin == "" {
+				if got.DSN != tt.app {
+					t.Fatal("changed runtime or fallback DSN")
+				}
+			} else if parsed.Passwd != "admin-secret" {
+				t.Fatal("administrative password not selected")
+			}
+		})
 	}
 }

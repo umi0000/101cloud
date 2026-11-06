@@ -16,6 +16,281 @@
     }
   ],
   "paths": {
+    "/auth/registration": {
+      "get": {
+        "operationId": "get_auth_registration",
+        "tags": [
+          "auth"
+        ],
+        "security": [],
+        "description": "Anonymous no-store availability only. enabled=false when registration is disabled or the configured credit policy is no longer usable. No administrator defaults are disclosed.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "enabled"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "request_id"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/auth/register": {
+      "post": {
+        "operationId": "post_auth_register",
+        "tags": [
+          "auth"
+        ],
+        "security": [],
+        "description": "Self-register an active ordinary user, atomically copying current default limits, creating a credit account, granting its full current business-cycle daily allowance, and writing audit. The cycle follows the policy timezone and grant_time: before today's scheduled grant, use the previous business_date, never a future cycle. Uses the existing daily source, daily:YYYY-MM-DD key, daily record and cursor; no extra gift or prorating. The initial valid_from is registration time and expires_at is that time plus daily_validity_seconds, ensuring immediate availability and full validity even when the scheduled cycle's usual expiry has passed. Subsequent grants keep the existing schedule and validity; the same account/business_date cannot be granted twice. Zero allowance records the cycle and a zero bucket without a zero-value ledger entry. Any failure rolls back users, limits, account, funds and audit together. Existing users and manual administrator account creation are unchanged. Same-origin CSRF required; no Idempotency-Key and no automatic login. 403 registration_disabled, 409 username_taken, 422 validation_failed, 429 rate_limited with Retry-After. Unknown fields, including role/limits/policy, are rejected.",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Origin",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegistrationInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string",
+                          "pattern": "^[1-9][0-9]*$"
+                        },
+                        "revision": {
+                          "type": "string"
+                        },
+                        "username": {
+                          "type": "string"
+                        },
+                        "email": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "role": {
+                          "const": "user"
+                        },
+                        "status": {
+                          "const": "active"
+                        },
+                        "created_at": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "revision",
+                        "username",
+                        "email",
+                        "role",
+                        "status",
+                        "created_at"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "request_id"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/admin/registration-settings": {
+      "get": {
+        "operationId": "get_admin_registration_settings",
+        "tags": [
+          "admin"
+        ],
+        "description": "Administrator only. Singleton defaults apply only to future self-registration. Defaults are disabled, null policy and zero limits.",
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/RegistrationSettings"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "request_id"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Current revision for If-Match."
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      },
+      "put": {
+        "operationId": "put_admin_registration_settings",
+        "tags": [
+          "admin"
+        ],
+        "description": "Administrator only; complete object and If-Match required. Does not change existing users or administrator-created user defaults. No idempotent replay contract; refetch after an uncertain result.",
+        "parameters": [
+          {
+            "in": "header",
+            "name": "Origin",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "X-CSRF-Token",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegistrationSettingsInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/RegistrationSettings"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "request_id"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Current revision for If-Match."
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
     "/admin/nodes": {
       "get": {
         "operationId": "get_admin_nodes",
@@ -11233,6 +11508,138 @@
       }
     },
     "schemas": {
+      "RegistrationLimits": {
+        "type": "object",
+        "properties": {
+          "max_instances": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "max_vcpus": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "max_memory_bytes": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "description": "Canonical unsigned 64-bit integer bytes."
+          },
+          "max_disk_bytes": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)$",
+            "description": "Canonical unsigned 64-bit integer bytes."
+          },
+          "max_gpus": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "max_resident_instances": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          }
+        },
+        "required": [
+          "max_instances",
+          "max_vcpus",
+          "max_memory_bytes",
+          "max_disk_bytes",
+          "max_gpus",
+          "max_resident_instances"
+        ],
+        "additionalProperties": false,
+        "description": "Complete limits; zero denies new allocations. max_resident_instances must not exceed max_instances."
+      },
+      "RegistrationSettingsInput": {
+        "type": "object",
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "credit_policy_version_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[1-9][0-9]*$",
+            "description": "Public credit policy ID, not source ID. Required active/effective when enabling."
+          },
+          "limits": {
+            "$ref": "#/components/schemas/RegistrationLimits"
+          }
+        },
+        "required": [
+          "enabled",
+          "credit_policy_version_id",
+          "limits"
+        ],
+        "additionalProperties": false
+      },
+      "RegistrationSettings": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "credit_policy_version_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[1-9][0-9]*$",
+            "description": "Public credit policy ID, not source ID. Required active/effective when enabling."
+          },
+          "limits": {
+            "$ref": "#/components/schemas/RegistrationLimits"
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "enabled",
+          "credit_policy_version_id",
+          "limits"
+        ],
+        "additionalProperties": false
+      },
+      "RegistrationInput": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "password": {
+            "type": "string",
+            "minLength": 12,
+            "maxLength": 128,
+            "writeOnly": true
+          },
+          "email": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 254
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ],
+        "additionalProperties": false
+      },
       "CreditAccount": {
         "type": "object",
         "description": "Public account balance. Exact six-fractional-digit strings: remaining_pt = internal remaining - outstanding_debt_pt; available_pt = remaining_pt - reserved_pt. Negative balances represent debt and are not clamped. settlement_pending is true when durable background settlement has currently payable historical debt; it does not claim the debt is already cleared. Short-expiry unreserved grants may expire before a worker consumes them; held reservation ownership survives expiry.",

@@ -52,6 +52,8 @@ import type {
   PolicyVersion,
   PolicyVersions,
   RedemptionCode,
+  RegistrationSettings,
+  RegistrationSettingsInput,
   ResizeLimits,
   Resources,
   Task,
@@ -95,6 +97,9 @@ const del = <T>(url: string, body: unknown, w: Write) =>
 /* ---------------- 认证与本人 ---------------- */
 
 export const authApi = {
+  registration: () => api.get<{ enabled: boolean }>('/auth/registration', { silentAuth: true }),
+  register: (body: { email?: null | string; password: string; username: string }) =>
+    api.post<User>('/auth/register', { body, silentAuth: true }),
   login: (username: string, password: string) =>
     api.post<{ csrf_token: string; user: User }>('/auth/login', {
       body: { password, username },
@@ -164,6 +169,16 @@ export const memberConsoleApi = {
 };
 
 /* ---------------- 管理端：用户 ---------------- */
+
+export const registrationSettingsApi = {
+  get: () => detail<RegistrationSettings>('/admin/registration-settings'),
+  put: (body: RegistrationSettingsInput, w: Write) =>
+    api.put<RegistrationSettings>('/admin/registration-settings', {
+      body,
+      idempotencyKey: w.key,
+      ifMatch: w.ifMatch,
+    }),
+};
 
 export const usersApi = {
   create: (

@@ -17,7 +17,7 @@ const fallbackNotFoundRoute: RouteRecordRaw = {
   path: '/:path(.*)*',
 };
 
-/** 基本路由。只有用户名密码登录；没有注册、验证码、第三方登录。 */
+/** 基本路由：用户名密码登录与公开注册入口。 */
 const coreRoutes: RouteRecordRaw[] = [
   {
     component: BasicLayout,
@@ -38,6 +38,12 @@ const coreRoutes: RouteRecordRaw[] = [
         meta: { title: '登录' },
         name: 'Login',
         path: 'login',
+      },
+      {
+        component: () => import('#/views/_core/authentication/register.vue'),
+        meta: { title: '注册' },
+        name: 'Register',
+        path: 'register',
       },
     ],
   },

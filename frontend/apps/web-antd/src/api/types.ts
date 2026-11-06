@@ -57,6 +57,17 @@ export interface LimitsInput {
   max_vcpus: number;
 }
 
+export interface RegistrationSettingsInput {
+  credit_policy_version_id: ID | null;
+  enabled: boolean;
+  limits: LimitsInput;
+}
+
+export interface RegistrationSettings extends RegistrationSettingsInput {
+  id: ID;
+  revision: string;
+}
+
 export interface Me {
   effective_permissions: string[];
   limits: Limits;

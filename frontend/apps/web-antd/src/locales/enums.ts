@@ -161,6 +161,7 @@ export const AUDIT_EVENTS: Record<string, string> = {
   'auth.bootstrap': '初始化管理员',
   'auth.login': '登录',
   'auth.logout': '退出',
+  'auth.register': '用户注册',
   'auth.reset-password': '重置密码',
   'console.connect': '连接控制台',
   'console.create': '创建控制台',

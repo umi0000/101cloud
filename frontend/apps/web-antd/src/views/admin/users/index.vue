@@ -19,6 +19,7 @@ import { useUserCache } from '#/store/user-cache';
 import { isEffective } from '../finance/components/credit-policy';
 
 import PasswordReveal from './components/password-reveal.vue';
+import RegistrationSettings from './components/registration-settings.vue';
 import { PASSWORD_MAX, passwordError, randomPassword } from '#/utils/password';
 
 const router = useRouter();
@@ -55,6 +56,7 @@ const columns = [
 /* ---------- 创建用户 ---------- */
 
 const createOpen = ref(false);
+const registrationOpen = ref(false);
 const form = ref({ credit_policy_version_id: '', email: '', initial_password: '', role: 'user' as Role, username: '' });
 const create = useAction();
 watch(form, () => create.resetKey(), { deep: true });
@@ -152,7 +154,10 @@ onMounted(() => list.load());
             @search="applyUsername"
           />
         </Space>
-        <Button type="primary" @click="openCreate">创建用户</Button>
+        <Space wrap>
+          <Button @click="registrationOpen = true">注册设置</Button>
+          <Button type="primary" @click="openCreate">创建用户</Button>
+        </Space>
       </div>
       <Table
         :columns="columns"
@@ -186,6 +191,10 @@ onMounted(() => list.load());
         @refresh="list.load"
       />
     </Card>
+
+    <Modal v-model:open="registrationOpen" destroy-on-close :footer="null" title="用户注册设置" :width="720">
+      <RegistrationSettings v-if="registrationOpen" />
+    </Modal>
 
     <Modal
       v-model:open="createOpen"

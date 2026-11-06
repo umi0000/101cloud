@@ -676,6 +676,29 @@ func cycleAt(p row, t time.Time) (time.Time, error) {
 	}
 	return cycle, nil
 }
+
+// The caller holds the account lock (or has just inserted it). Both registration
+// and scheduled grants consume the same business date, bucket key and cursor.
+func grantDailyCycle(db *gorm.DB, ac, cfg row, cycle, validFrom time.Time) error {
+	date := cycle.Format("2006-01-02")
+	var n int64
+	if e := db.Table("credit_daily_grants").Where("account_id = ? AND business_date = ?", ac["id"], date).Count(&n).Error; e != nil {
+		return e
+	}
+	if n == 0 {
+		end := validFrom.Add(time.Duration(platform.Uint(cfg["daily_validity_seconds"])) * time.Second)
+		b, e := grant(db, ac, "daily", "daily:"+date, dec(cfg["daily_allowance_pt"]), validFrom.In(zone), &end, 0)
+		if e != nil {
+			return e
+		}
+		record := row{"account_id": ac["id"], "business_date": date, "policy_version_id": ac["credit_policy_version_id"], "bucket_id": b["id"], "valid_from": validFrom.In(zone), "expires_at": end.In(zone)}
+		if e = db.Table("credit_daily_grants").Create(&record).Error; e != nil {
+			return e
+		}
+	}
+	return db.Table("credit_accounts").Where("id = ?", ac["id"]).Updates(row{"grant_cursor_at": cycle.In(zone)}).Error
+}
+
 func dailyGrants(ctx context.Context, a *platform.App) error {
 	var users []uint64
 	if e := a.DB.WithContext(ctx).Table("credit_accounts c").Joins("JOIN users u ON u.id=c.user_id").Where("u.status = 'active' AND c.status = 'active'").Order("c.id").Pluck("c.user_id", &users).Error; e != nil {
@@ -714,24 +737,7 @@ func dailyGrants(ctx context.Context, a *platform.App) error {
 			cycles := 0
 			for cycle := start; !cycle.After(last) && cycles < settlementChunkSize; cycle = cycle.AddDate(0, 0, 1) {
 				cycles++
-				date := cycle.Format("2006-01-02")
-				var n int64
-				if e = db.Table("credit_daily_grants").Where("account_id = ? AND business_date = ?", ac["id"], date).Count(&n).Error; e != nil {
-					return e
-				}
-				if n == 0 {
-					end := cycle.Add(time.Duration(platform.Uint(cfg["daily_validity_seconds"])) * time.Second)
-					record := row{"account_id": ac["id"], "business_date": date, "policy_version_id": ac["credit_policy_version_id"], "valid_from": cycle.In(zone), "expires_at": end.In(zone)}
-					b, e := grant(db, ac, "daily", "daily:"+date, dec(cfg["daily_allowance_pt"]), cycle.In(zone), &end, 0)
-					if e != nil {
-						return e
-					}
-					record["bucket_id"] = b["id"]
-					if e = db.Table("credit_daily_grants").Create(&record).Error; e != nil {
-						return e
-					}
-				}
-				if e = db.Table("credit_accounts").Where("id = ?", ac["id"]).Updates(row{"grant_cursor_at": cycle.In(zone)}).Error; e != nil {
+				if e = grantDailyCycle(db, ac, cfg, cycle, cycle); e != nil {
 					return e
 				}
 			}

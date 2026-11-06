@@ -55,6 +55,8 @@ const MESSAGES: Record<string, string> = {
   invalid_state: '当前状态不允许该操作',
   invalid_time: '时间格式不正确',
   validation_failed: '填写内容未通过校验，请检查字段与配置',
+  registration_disabled: '当前未开放注册，请联系管理员',
+  username_taken: '该用户名已被使用，请更换用户名',
   ip_capacity_unavailable: '没有可分配的 IP 地址',
   metrics_unavailable: '暂无采样数据',
   network_error: '网络连接失败',

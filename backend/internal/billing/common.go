@@ -111,19 +111,48 @@ func usageAccount(db *gorm.DB, instance row) (row, error) {
 	return ac, e
 }
 
+// ValidateAccountPolicy resolves and validates a public allowance policy without granting funds.
+// Callers that will create an account hold its policy lock until their transaction commits.
+func ValidateAccountPolicy(db *gorm.DB, policyID string, lock bool) (uint64, error) {
+	p, source, e := platform.PolicySource(db, "credit", policyID, lock)
+	if e != nil {
+		return 0, e
+	}
+	if e = validateAllowancePolicy(p, now()); e != nil {
+		return 0, e
+	}
+	if _, e = validatePolicy("credit", json.RawMessage(platform.Text(p["config"]))); e != nil {
+		return 0, e
+	}
+	return source, nil
+}
+
 // CreateAccount binds an independently selected allowance profile without granting funds.
 func CreateAccount(db *gorm.DB, user uint64, policyID string) (platform.Row, error) {
-	p, source, e := platform.PolicySource(db, "credit", policyID, true)
+	source, e := ValidateAccountPolicy(db, policyID, true)
 	if e != nil {
 		return nil, e
 	}
-	if e = validateAllowancePolicy(p, now()); e != nil {
-		return nil, e
-	}
-	if _, e = validatePolicy("credit", json.RawMessage(platform.Text(p["config"]))); e != nil {
-		return nil, e
-	}
 	return insert(db, "credit_accounts", row{"user_id": user, "credit_policy_version_id": source, "status": "active", "version": 0})
+}
+
+// CreateRegistrationAccount grants the current business cycle only for a new
+// self-service account. The caller's transaction also owns user creation/audit.
+// Unlike scheduled grants, its full validity starts when the user registers.
+func CreateRegistrationAccount(db *gorm.DB, user uint64, policyID string, at time.Time) error {
+	ac, e := CreateAccount(db, user, policyID)
+	if e != nil {
+		return e
+	}
+	cfg, e := accountPolicy(db, ac)
+	if e != nil {
+		return e
+	}
+	cycle, e := cycleAt(cfg, at)
+	if e != nil {
+		return e
+	}
+	return grantDailyCycle(db, ac, cfg, cycle, at)
 }
 
 func instanceCreditPolicy(db *gorm.DB, instance row) (row, error) {

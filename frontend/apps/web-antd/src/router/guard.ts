@@ -54,7 +54,7 @@ function setupAccessGuard(router: Router) {
     }
 
     const role = authStore.me.user.role;
-    if (to.path === LOGIN_PATH) {
+    if (to.path === LOGIN_PATH || to.path === '/auth/register') {
       return { path: getLoginRedirect(to.query.redirect, role), replace: true };
     }
     if (

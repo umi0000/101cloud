@@ -133,6 +133,162 @@ func TestMySQLDailyAllowanceStartsAtAccountCreationAndIgnoresInstanceProfiles(t 
 	}
 }
 
+func TestMySQLRegistrationDailyCycleAndFullValidity(t *testing.T) {
+	f := newAdjustmentMySQLFixture(t)
+	cases := []struct {
+		name, timezone, at, cycle string
+		validity                  uint64
+	}{
+		{"before_grant", "Asia/Shanghai", "2026-10-30T06:29:59.999999+08:00", "2026-10-29T06:30:00+08:00", 86400},
+		{"at_grant", "Asia/Shanghai", "2026-10-30T06:30:00+08:00", "2026-10-30T06:30:00+08:00", 86400},
+		{"after_grant", "Asia/Shanghai", "2026-10-30T22:00:00+08:00", "2026-10-30T06:30:00+08:00", 86400},
+		{"elapsed_short_validity", "Asia/Shanghai", "2026-10-30T06:29:00+08:00", "2026-10-29T06:30:00+08:00", 60},
+		{"absolute_time_not_client_date", "Asia/Shanghai", "2026-10-29T22:30:00Z", "2026-10-30T06:30:00+08:00", 86400},
+		{"leap_day", "UTC", "2028-03-01T06:29:59Z", "2028-02-29T06:30:00Z", 86400},
+		{"DST_short_day", "America/New_York", "2026-03-08T06:29:59-04:00", "2026-03-07T06:30:00-05:00", 86400},
+		{"DST_long_day", "America/New_York", "2026-11-01T06:29:59-05:00", "2026-10-31T06:30:00-04:00", 86400},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			profile := validCreditPolicy()
+			profile["timezone"], profile["daily_validity_seconds"] = tc.timezone, tc.validity
+			source, publicID, userID := uint64(i+2), uint64(i+102), uint64(i+3)
+			addAllowanceProfile(t, f, source, publicID, profile)
+			if err := f.db.Exec("INSERT INTO users(id,username,password_hash,role,status) VALUES(?,?,'unused-test-hash','user','active')", userID, tc.name).Error; err != nil {
+				t.Fatal(err)
+			}
+			at, err := time.Parse(time.RFC3339Nano, tc.at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantCycle, err := time.Parse(time.RFC3339Nano, tc.cycle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := f.db.Transaction(func(db *gorm.DB) error {
+				return CreateRegistrationAccount(db, userID, sid(publicID), at)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			ac, err := find(f.db, "credit_accounts", "user_id=?", userID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, err := find(f.db, "credit_buckets", "account_id=?", ac["id"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			g, err := find(f.db, "credit_daily_grants", "account_id=?", ac["id"])
+			if err != nil {
+				t.Fatal(err)
+			}
+			expiry := at.Add(time.Duration(tc.validity) * time.Second)
+			key := "daily:" + tc.cycle[:10]
+			if !stamp(ac["grant_cursor_at"]).Equal(wantCycle) || wantCycle.After(at) ||
+				platform.Text(b["business_key"]) != key || platform.Text(b["source_type"]) != "daily" ||
+				platform.Text(b["granted_pt"]) != "7.000001" || platform.Text(b["remaining_pt"]) != "7.000001" ||
+				!stamp(b["valid_from"]).Equal(at) || !stamp(b["expires_at"]).Equal(expiry) ||
+				!stamp(g["valid_from"]).Equal(at) || !stamp(g["expires_at"]).Equal(expiry) ||
+				platform.Uint(g["policy_version_id"]) != source || platform.Uint(g["bucket_id"]) != platform.Uint(b["id"]) {
+				t.Fatalf("registration cycle/validity mismatch: account=%#v bucket=%#v daily=%#v", ac, b, g)
+			}
+			eligible, err := buckets(f.db, platform.Uint(ac["id"]), at)
+			if err != nil || len(eligible) != 1 {
+				t.Fatalf("daily allowance unavailable at registration: buckets=%d error=%v", len(eligible), err)
+			}
+			eligible, err = buckets(f.db, platform.Uint(ac["id"]), expiry.Add(-time.Microsecond))
+			if err != nil || len(eligible) != 1 {
+				t.Fatalf("daily allowance expired early: buckets=%d error=%v", len(eligible), err)
+			}
+			eligible, err = buckets(f.db, platform.Uint(ac["id"]), expiry)
+			if err != nil || len(eligible) != 0 {
+				t.Fatalf("daily allowance exceeded configured validity: buckets=%d error=%v", len(eligible), err)
+			}
+			// The scheduled writer must not replace the registration interval,
+			// even if it revisits this date with the original planned start.
+			if err := f.db.Transaction(func(db *gorm.DB) error {
+				lockedAccount, err := account(db, userID)
+				if err != nil {
+					return err
+				}
+				cycle, err := cycleAt(profile, at)
+				if err != nil {
+					return err
+				}
+				return grantDailyCycle(db, lockedAccount, profile, cycle, cycle)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			after := debtRow(t, f.db, "credit_buckets", platform.Uint(b["id"]))
+			if !reflect.DeepEqual(b, after) || f.count(t, "credit_daily_grants", "account_id="+sid(ac["id"])) != 1 ||
+				f.count(t, "credit_buckets", "account_id="+sid(ac["id"])) != 1 || f.count(t, "credit_ledger", "account_id="+sid(ac["id"])+" AND entry_type='grant' AND amount_delta_pt=7.000001") != 1 {
+				t.Fatal("scheduled replay changed or duplicated the registration allowance")
+			}
+		})
+	}
+}
+
+func TestMySQLRegistrationDailyPollerReplayAndNextCycle(t *testing.T) {
+	f := newAdjustmentMySQLFixture(t)
+	profile := validCreditPolicy()
+	addAllowanceProfile(t, f, 2, 102, profile)
+	at := now()
+	cycle, err := cycleAt(profile, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Transaction(func(db *gorm.DB) error {
+		return CreateRegistrationAccount(db, 1, "102", at)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	ac, err := find(f.db, "credit_accounts", "user_id=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := find(f.db, "credit_buckets", "account_id=?", ac["id"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := dailyGrants(f.ctx, platform.New(f.db, platform.Config{})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !reflect.DeepEqual(b, debtRow(t, f.db, "credit_buckets", platform.Uint(b["id"]))) ||
+		f.count(t, "credit_daily_grants", "account_id="+sid(ac["id"])) != 1 || f.count(t, "credit_ledger", "account_id="+sid(ac["id"])) != 1 {
+		t.Fatal("daily poller repeated the registration grant")
+	}
+	// A second new account registered in the prior business cycle should
+	// receive today's scheduled grant normally, without changing its first.
+	if err := f.db.Exec("INSERT INTO users(id,username,password_hash,role,status) VALUES(3,'prior-cycle-user','unused-test-hash','user','active')").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.db.Transaction(func(db *gorm.DB) error {
+		return CreateRegistrationAccount(db, 3, "102", cycle.AddDate(0, 0, -1).Add(time.Hour))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := dailyGrants(f.ctx, platform.New(f.db, platform.Config{})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prior, err := find(f.db, "credit_accounts", "user_id=3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduled, err := find(f.db, "credit_buckets", "account_id=? AND business_key=?", prior["id"], "daily:"+cycle.Format("2006-01-02"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.count(t, "credit_daily_grants", "account_id="+sid(prior["id"])) != 2 ||
+		f.count(t, "credit_ledger", "account_id="+sid(prior["id"])) != 2 ||
+		!stamp(scheduled["valid_from"]).Equal(cycle) || !stamp(scheduled["expires_at"]).Equal(cycle.Add(24*time.Hour)) {
+		t.Fatalf("next scheduled cycle changed: %#v", scheduled)
+	}
+}
+
 func TestMySQLStorageLifecycleUsesInstanceCreditNotAllowance(t *testing.T) {
 	for _, tc := range []struct {
 		mode                       string

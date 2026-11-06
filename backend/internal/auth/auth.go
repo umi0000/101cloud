@@ -151,6 +151,7 @@ func Register(a *platform.App, api, user, admin *gin.RouterGroup) {
 	}))
 	registerMe(a, user)
 	registerAdmin(a, admin)
+	registerRegistration(a, api, admin)
 	a.AddPoller("auth-expired-rate-limits", time.Hour, func(ctx context.Context, a *platform.App) error {
 		return a.DB.WithContext(ctx).Exec("DELETE FROM auth_rate_limits WHERE expires_at < ? LIMIT 10000", a.Time()).Error
 	})
@@ -254,6 +255,10 @@ func login(c *gin.Context, a *platform.App) (any, error) {
 }
 
 func loginLimit(c *gin.Context, a *platform.App, username string) error {
+	return authAttemptLimit(c, a, "login", username, "Too many login attempts")
+}
+
+func authAttemptLimit(c *gin.Context, a *platform.App, namespace, username, message string) error {
 	now := a.Time()
 	start := now.Truncate(15 * time.Minute)
 	limited := false
@@ -262,7 +267,7 @@ func loginLimit(c *gin.Context, a *platform.App, username string) error {
 			key     string
 			maximum uint64
 		}{{"ip:" + c.ClientIP(), 50}, {"username:" + strings.ToLower(username), 10}} {
-			digest := keyed(a, "login-rate:"+dimension.key)
+			digest := keyed(a, namespace+"-rate:"+dimension.key)
 			if err := tx.Exec("INSERT INTO auth_rate_limits (bucket_key,window_start,attempts,expires_at) VALUES (?,?,1,?) ON DUPLICATE KEY UPDATE attempts=IF(window_start < VALUES(window_start),1,attempts+1), window_start=VALUES(window_start), expires_at=VALUES(expires_at)", string(digest), start, start.Add(30*time.Minute)).Error; err != nil {
 				return platform.WrapDB(err)
 			}
@@ -281,7 +286,7 @@ func loginLimit(c *gin.Context, a *platform.App, username string) error {
 	}
 	if limited {
 		c.Header("Retry-After", strconv.FormatInt(int64(start.Add(15*time.Minute).Sub(now).Seconds())+1, 10))
-		return platform.E(429, "rate_limited", "Too many login attempts")
+		return platform.E(429, "rate_limited", message)
 	}
 	return nil
 }

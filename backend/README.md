@@ -4,6 +4,22 @@
 
 后端自身提供 **HTTP**，默认 `127.0.0.1:8080`。浏览器入口的 HTTPS 交给 Nginx/Caddy；Host Agent 仍使用独立的 HTTPS 和证书指纹认证。当前不提供 NAT 或端口映射。
 
+## 用户自助注册（2026-11-06，未部署）
+
+- 管理员入口：**用户与配额 → 注册设置**。配置注册开关、默认实例数、自定义实例数、vCPU、内存、磁盘、GPU配额，以及默认共享钱包额度政策。
+- 用户入口：登录页的“注册账号”，或`/auth/register`。填写用户名、密码、确认密码和可选邮箱；注册成功返回登录页，不自动登录。
+- 新装及升级均默认关闭注册。先创建已生效的额度政策，再配置默认值并开启；0配额表示禁止新增该项资源。自助注册在同一事务中创建额度账户并立即发放当前业务周期的完整每日额度，资金、每日记录或审计失败时全部回滚，不留下半成品账户。
+- 修改默认值只影响后续自助注册；已有用户、管理员手工创建用户、实例和账本不变。注册只能创建普通用户，受同源CSRF、独立IP/用户名限流及数据库唯一约束保护。
+- “当天”沿用额度政策的时区和发放时间：发放点前属于前一业务日，不提前领取未来周期。首次额度从注册时刻起生效，有效期为政策`daily_validity_seconds`；之后仍按原发放时间发放。首次额度可能与下一周期同时有效，但同一周期只领取一次。每日金额为0时保持0余额；不补发此前注册用户，不改变管理员手工创建账户的行为。
+- **手动更新须执行新增迁移`20261106_00_registration.sql`**：按既有流程备份数据库及主密钥、停止旧后端，用新版二进制和迁移账户执行`migrate`后再启动；`serve`不自动迁移。历史迁移未改动。
+- 前端已沿用内嵌构建流程：在仓库根目录运行`sh backend/build.sh`，跨平台构建时设置目标`GOOS/GOARCH`。不要只运行`go build`而漏掉最新页面构建。
+
+本次仅在独立本地MySQL及真实应用/浏览器验证，未部署、未修改线上数据。
+
+本地验收：MySQL 8.4.13下后端各包race回归通过（新增认证回归的字段扫描映射修正后重跑认证包通过），`go vet ./...`、原生及Linux/amd64构建通过；真实CLI首次迁移及重复迁移后，已有注册配置、用户、配额和额度账户快照保持一致。真实浏览器完成管理员配置保存/版本冲突恢复、匿名注册、重复用户名拒绝、新用户登录及默认额度政策绑定；默认vCPU从6改7后，老用户仍为6、新用户为7。注册期间关闭开关后不创建用户。未部署。
+
+后续调整（未部署）：`migrate`支持`CLOUD_MYSQL_ADMIN_DSN`，无库名时继承业务库，错库或错端点拒绝，`serve`仍只使用业务账号。真实本地CLI已验证受限业务账号建表失败、ADMIN环境变量/配置文件迁移成功及重复迁移、运行连接身份隔离。注册即时额度已通过auth/billing真实MySQL race回归及HTTP验收：注册立即获得7pt，重启两次并经过后台轮询后仍仅一笔每日记录/额度桶/发放流水，失败回滚与0额度边界通过。本次调整不新增迁移；尚未应用注册功能迁移的环境仍须执行`20261106_00_registration.sql`。
+
 GPU采样正常空状态传递修复（未部署）：指标原因allowlist保留 `gpu_utilization_no_samples` 与 `instance_not_running`，使新版Agent的无活动采样、停止实例状态可由前端准确解释。只增加安全原因码，不改历史数值、归因、计费或释放授权，无迁移。相关monitoring真实MySQL/race回归和vet通过；上线应同步Agent、后端及前端。
 
 上述原因码传递已随Agent和前端发布 `.111` `/srv/101cloud/releases/20261105-gpu-empty-sampling`，后端SHA256 `dc07ff400aa2c0fd108e89a9a271943fa3efc350ab4f6997c968f41b1761c7ee`。真实实例42的最新GPU采样已持久化no_samples原因、进程/引用/显存0及SM NULL。ready正常，两服务active，无迁移或实例/GPU操作；数据库单事务备份、旧程序及配置位于 `/var/backups/101cloud/20261105-gpu-empty-sampling/`。
@@ -173,8 +189,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH=amd64 ./build.sh \
 | 子命令 | 行为 |
 |---|---|
 | `install` | 首次空库安装：创建数据库、执行迁移、创建受限业务 MySQL 账号；需要额外的 `CLOUD_MYSQL_ADMIN_DSN`，已有表或同名账号时拒绝覆盖 |
-| `migrate` | 对已有安装执行嵌入的 SQL 迁移；`CLOUD_MYSQL_DSN` 必须使用有迁移权限的账号，不启动 HTTP 服务 |
-| `serve` | 检查迁移状态，必要时创建首个管理员，启动 HTTP 服务（内嵌页面、API、WebSocket）和后台 Worker；不会自动迁移 |
+| `migrate` | 对 `CLOUD_MYSQL_DSN` 指定的业务库执行嵌入 SQL 迁移；优先使用 `CLOUD_MYSQL_ADMIN_DSN` 认证，未设置或为空时回退业务 DSN（此时业务账号必须有迁移权限），不启动 HTTP 服务 |
+| `serve` | 始终只使用业务 `CLOUD_MYSQL_DSN`，忽略 `CLOUD_MYSQL_ADMIN_DSN`；检查迁移状态，必要时创建首个管理员，启动 HTTP 服务（内嵌页面、API、WebSocket）和后台 Worker；不会自动迁移 |
 
 运行配置支持 `CLOUD_*` 环境变量和显式指定的文件，详见[第6节](#6-配置环境文件)。已设置的环境变量优先于文件（即使环境变量值为空）；未指定 `-c` 时保持原环境变量方式，不自动查找 `.env`。程序不支持 `--port`、`--config`、`--help` 或 `--version`；错误参数、配置文件不存在或格式错误时非零退出。不要把数据库密码写成命令行参数。
 
@@ -238,7 +254,7 @@ CLOUD_ORIGIN='https://cloud.example.com'
 CLOUD_LISTEN='127.0.0.1:8080'
 
 # 必填：MySQL 连接串，格式 用户名:密码@tcp(数据库地址:端口)/数据库名。
-# serve 使用受限业务账号；执行 migrate 时需临时使用有迁移权限的账号。
+# serve 使用受限业务账号；migrate 可另设 CLOUD_MYSQL_ADMIN_DSN，无须修改此项。
 # 此项含密码，不要公开或提交 Git。
 CLOUD_MYSQL_DSN='101cloud_app:替换为运行账户密码@tcp(127.0.0.1:3306)/101cloud'
 
@@ -305,7 +321,16 @@ unset MYSQL_ADMIN_PASSWORD
 
 本机TCP默认创建 `'业务用户名'@'127.0.0.1'`，Unix socket默认localhost。远程MySQL必须另外指定CLOUD_MYSQL_APP_HOST，值是**后端访问MySQL时的客户端来源主机/IP**，不是数据库服务器地址；避免随意使用%。管理员与业务DSN必须使用相同网络类型和服务器端点。
 
-以后升级：备份后用受控管理员/迁移账户临时覆盖CLOUD_MYSQL_DSN执行 `101cloud-backend migrate`，不再创建账号。不应给日常业务用户加建表或授权权限。DDL会隐式提交，失败时先检查实际完成的语句。
+以后升级：备份并停止后端后，用受控管理员/迁移账户临时设置 `CLOUD_MYSQL_ADMIN_DSN` 执行 `migrate`，业务 `CLOUD_MYSQL_DSN` 保持不变，不再创建账号。例如：
+
+```bash
+read -rsp 'MySQL管理员密码: ' MYSQL_ADMIN_PASSWORD; echo
+CLOUD_MYSQL_ADMIN_DSN="root:${MYSQL_ADMIN_PASSWORD}@tcp(127.0.0.1:3306)/" \
+  /usr/local/bin/101cloud-backend migrate -c /usr/local/etc/101cloud/backend.env
+unset MYSQL_ADMIN_PASSWORD
+```
+
+`CLOUD_MYSQL_ADMIN_DSN` 也可放在仅迁移时使用的受限权限配置文件中，通过 `migrate -c` 读取；不要将管理员凭据写入日常服务配置或命令行参数。迁移目标始终为业务 DSN 的显式库名；管理员 DSN 可省略库名，若填写则必须与业务库完全相同。两者经 DSN 解析后的网络类型和端点必须一致（与 install 相同；不会将 `localhost` 与 `127.0.0.1` 等别名视为相同）。错库或端点不一致在连接前拒绝。未设置管理员 DSN 或其值为空时仍沿用业务 DSN，环境变量优先于 `-c` 文件；`serve` 始终忽略管理员 DSN。不应给日常业务用户加建表或授权权限。DDL会隐式提交，失败时先检查实际完成的语句，重复 migrate 会跳过已完成迁移。
 
 不再手工创建面板管理员，也不需要配置管理员用户名或密码环境变量。首次运行 `serve`（或启动下面的systemd服务）时，程序在事务中自动创建随机管理员账号及高强度随机密码，提交后输出一条凭据日志：
 
@@ -436,7 +461,7 @@ curl -f https://cloud.example.com/api/v1/health/ready
 
 `20261102_00_node_images.sql` 在95迁移之后建立 `image_nodes`，历史 `init.sql` 保持原始checksum。现有local镜像与节点按default_project_name交叉生成pending配置和verification-only任务，未核验前绝不ready；旧remote记录不推断可信源。迁移不改现有实例冻结指纹/架构、额度或原任务（含unknown任务）。迁移任务参数仅包含字符串image_node_id；新API排队任务同时包含入队时冻结的config（image_id/node_id/project_name/architecture/fingerprint/instance_type/source_type/source_id/cloud_init/gpu_ready/variant），worker操作原生API前还会固化不可变日志。旧local镜像properties.cloud_init显式布尔值保留；仅当该属性缺失时，worker根据原生镜像properties.variant是否为cloud推断cloud-init，GPU兼容性绝不自动推断。派发结果不明须对账，不盲目重复下载；失败不删除已有原生镜像。
 
-6. 显式选择套餐node_ids，配置这些节点内网络和节点/项目镜像，设置GPU初始策略、用户动作与权限后启用。多个套餐可同时启用，任意时候可编辑或独立停用；active保存完整验证就绪性，既有实例冻结配置不变。创建用户并明确配额，新用户配额全部为0，自定义实例还需max_resident_instances。VM仅CPU；可选GPU容器提供型号及正数gpu_count范围并绑定gpu-pricing。用户可count=0，但价格上限仍受套餐约束。
+6. 显式选择套餐node_ids，配置这些节点内网络和节点/项目镜像，设置GPU初始策略、用户动作与权限后启用。多个套餐可同时启用，任意时候可编辑或独立停用；active保存完整验证就绪性，既有实例冻结配置不变。管理员创建用户后需明确配额（初始全部为0）；自助注册用户使用注册设置中的默认配额，自定义实例还需max_resident_instances。VM仅CPU；可选GPU容器提供型号及正数gpu_count范围并绑定gpu-pricing。用户可count=0，但价格上限仍受套餐约束。
 套餐及custom创建/导入必须提供policy_versions：pricing/credit/metrics始终必填，容器另需gpu-idle/gpu-scheduling，支持GPU的容器套餐（含可选GPU）及启用GPU的custom容器另需gpu-pricing。均为通用政策ID；实例准入冻结绑定，后续启动、GPU操作、空闲/均衡、监控及计费不读取当前套餐或全局默认。
 
 GPU价格配置档候选仅通过管理员`GET /admin/catalog/gpu-options`供custom下发、导入及实例GPU管理显式选择；不提供普通用户全局GPU价格目录，用户报价和GPU价格来自所选套餐及实例冻结绑定。部署历史中旧目录路径仅描述当时版本。
@@ -495,7 +520,7 @@ Fedora 使用 `dnf install -y openssh-server` 和 systemd 的 `sshd.service`；�
 
 实例列表和详情（普通用户/管理员）新增字符串字段 `image_os_name`、`image_os_release`，通过来源镜像只读关联查询返回真实 OS，包含 disabled/retired 镜像；缺失元数据为空字符串，客户端未知 OS 使用 Linux 图标，不从实例名称推断。此变更不需要数据库迁移，不改现有镜像内容、实例冻结配置、权限或 revision。
 
-自定义申请退役升级需在停服及备份后执行 `CLOUD_MYSQL_DSN='<迁移账户DSN>' /usr/local/bin/101cloud-backend migrate`。新增 `20261030_80_retire_custom_requests.sql` 删除custom_instance_requests、residency_requests和instances.custom_reason；不会删除实例、任务、用户或通用审计。首次install同样按顺序执行旧建表及前向删除迁移；不得修改已应用的init.sql或历史迁移。
+自定义申请退役升级需在停服及备份后执行 `CLOUD_MYSQL_ADMIN_DSN='<迁移账户DSN>' /usr/local/bin/101cloud-backend migrate -c /usr/local/etc/101cloud/backend.env`，保留配置中的业务 DSN。新增 `20261030_80_retire_custom_requests.sql` 删除custom_instance_requests、residency_requests和instances.custom_reason；不会删除实例、任务、用户或通用审计。首次install同样按顺序执行旧建表及前向删除迁移；不得修改已应用的init.sql或历史迁移。
 
 移除控制台固定时限的升级迁移为 `20261031_90_console_no_fixed_expiry.sql`，仅删除 console_sessions.expires_at 及两个过期索引，新增 user_id/status 索引；既有 closed/failed/expired 历史状态不变，不重新打开过期会话。升级前停止全部后端进程；确认旧连接均已终止后，可在迁移窗口将遗留 preparing/ready/active 行更新为 closed、写入 closed_at、清空 secrets_ciphertext 并递增 revision，避免遗留记录占用并发名额。迁移本身不盲目关闭可能仍由其他进程持有的会话；旧迁移保持不变。
 

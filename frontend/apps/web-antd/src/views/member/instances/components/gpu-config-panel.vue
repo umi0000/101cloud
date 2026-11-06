@@ -427,7 +427,7 @@ onBeforeUnmount(() => { mounted = false; epoch++; allocationSequence++; policySe
         <div class="flex flex-wrap gap-2"><Button type="primary" size="small" :disabled="!canAttach" @click="openDialog('attach')">挂载 GPU</Button><Button size="small" :disabled="!canDetach" @click="openDialog('detach')">卸载所选</Button><Button size="small" :disabled="!canRebind" @click="openDialog('rebind')">换卡</Button><Button size="small" :loading="allocationLoading" @click="loadAllocations">刷新分配</Button></div>
         <label class="flex cursor-pointer items-center gap-2 text-sm"><Switch v-model:checked="showHistory" size="small" aria-label="显示历史 GPU 分配" />显示历史</label>
       </div>
-      <p class="text-muted-foreground text-xs">按实例授权逐次执行；没有权限的动作不可用。已观测表示上下文或设备引用，不等同于已配置；无活动观测不表示可以安全释放。</p>
+      <p class="text-muted-foreground text-xs">如需卸载显卡，请先停止实例</p>
       <div class="gpu-desktop min-w-0 overflow-x-auto">
         <Table :columns="columns" :data-source="rows" :row-selection="rowSelection" row-key="id" :pagination="false" :scroll="{ x: 920 }" :loading="allocationLoading" size="small">
           <template #bodyCell="{ column, record }">

@@ -46,7 +46,11 @@ func run() error {
 		slog.Info("database tables and restricted business MySQL account initialized")
 		return nil
 	}
-	db, e := platform.OpenDB(cfg)
+	dbConfig, e := databaseConfig(command, cfg, os.Getenv("CLOUD_MYSQL_ADMIN_DSN"))
+	if e != nil {
+		return e
+	}
+	db, e := platform.OpenDB(dbConfig)
 	if e != nil {
 		return e
 	}

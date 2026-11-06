@@ -204,6 +204,22 @@ func TestMySQLPolicyProfilesEditDelete(t *testing.T) {
 		t.Fatalf("delete without If-Match: %d %s", w.Code, w.Body.String())
 	}
 
+	// Even disabled registration defaults retain an explicit public policy reference.
+	registrationCredit := create("credit", "registration-credit")
+	if err := db.Exec("UPDATE registration_settings SET credit_policy_version_id=? WHERE id=1", registrationCredit.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	w = call(http.MethodDelete, "/policies/credit/versions/"+registrationCredit.ID, "", etag("credit", registrationCredit.ID))
+	if code, message := failure(w); w.Code != 409 || code != "configuration_conflict" || !strings.Contains(message, "1 个注册默认配置") {
+		t.Fatalf("registration-referenced delete: %d %s", w.Code, w.Body.String())
+	}
+	if err := db.Exec("UPDATE registration_settings SET credit_policy_version_id=NULL WHERE id=1").Error; err != nil {
+		t.Fatal(err)
+	}
+	if w = call(http.MethodDelete, "/policies/credit/versions/"+registrationCredit.ID, "", etag("credit", registrationCredit.ID)); w.Code != http.StatusNoContent {
+		t.Fatalf("unreferenced registration policy delete: %d %s", w.Code, w.Body.String())
+	}
+
 	// Delete a profile referenced by a credit account (source FK): rejected.
 	accountCredit := create("credit", "account-credit")
 	if err := db.Exec("INSERT INTO credit_accounts(id,user_id,credit_policy_version_id,status,version) VALUES(1,1,?,'active',0)", sourceOf(accountCredit.ID)).Error; err != nil {

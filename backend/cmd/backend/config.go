@@ -8,6 +8,9 @@ import (
 	"io"
 	"os"
 	"strings"
+
+	"101cloud/backend/internal/platform"
+	driver "github.com/go-sql-driver/mysql"
 )
 
 func commandConfig(args []string) (string, string, error) {
@@ -101,4 +104,33 @@ func loadConfigFile(path string) error {
 		}
 	}
 	return nil
+}
+
+// databaseConfig selects administrative credentials only for explicit migrations.
+// Keep the business configuration intact for serve and bind schema work to its
+// database and endpoint, using the same endpoint comparison as install.
+func databaseConfig(command string, cfg platform.Config, adminDSN string) (platform.Config, error) {
+	if command != "migrate" || adminDSN == "" {
+		return cfg, nil
+	}
+	app, err := driver.ParseDSN(cfg.DSN)
+	if err != nil {
+		return cfg, errors.New("invalid business MySQL DSN")
+	}
+	if app.DBName == "" {
+		return cfg, errors.New("explicit business database name required")
+	}
+	admin, err := driver.ParseDSN(adminDSN)
+	if err != nil {
+		return cfg, errors.New("invalid administrative MySQL DSN")
+	}
+	if app.Net != admin.Net || app.Addr != admin.Addr {
+		return cfg, errors.New("administrative and business DSNs must address the same MySQL endpoint")
+	}
+	if admin.DBName != "" && admin.DBName != app.DBName {
+		return cfg, errors.New("administrative DSN database must match the business database")
+	}
+	admin.DBName = app.DBName
+	cfg.DSN = admin.FormatDSN()
+	return cfg, nil
 }

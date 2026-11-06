@@ -333,28 +333,11 @@ func registerAdmin(a *platform.App, admin *gin.RouterGroup) {
 		if err != nil {
 			return nil, err
 		}
-		var input struct {
-			MaxInstances         *uint32 `json:"max_instances"`
-			MaxVCPUs             *uint32 `json:"max_vcpus"`
-			MaxMemoryBytes       *string `json:"max_memory_bytes"`
-			MaxDiskBytes         *string `json:"max_disk_bytes"`
-			MaxGPUs              *uint32 `json:"max_gpus"`
-			MaxResidentInstances *uint32 `json:"max_resident_instances"`
-		}
+		var input limitsInput
 		if err := platform.Decode(c, &input); err != nil {
 			return nil, err
 		}
-		if input.MaxInstances == nil || input.MaxVCPUs == nil || input.MaxMemoryBytes == nil || input.MaxDiskBytes == nil || input.MaxGPUs == nil || input.MaxResidentInstances == nil {
-			return nil, validation("The complete limits object is required")
-		}
-		if *input.MaxResidentInstances > *input.MaxInstances {
-			return nil, validation("Custom instance quota cannot exceed total instance quota")
-		}
-		memory, err := capacity(*input.MaxMemoryBytes)
-		if err != nil {
-			return nil, err
-		}
-		disk, err := capacity(*input.MaxDiskBytes)
+		changes, err := input.values()
 		if err != nil {
 			return nil, err
 		}
@@ -366,7 +349,6 @@ func registerAdmin(a *platform.App, admin *gin.RouterGroup) {
 		if err != nil {
 			return nil, err
 		}
-		changes := platform.Row{"max_instances": *input.MaxInstances, "max_vcpus": *input.MaxVCPUs, "max_memory_bytes": memory, "max_disk_bytes": disk, "max_gpu_allocations": *input.MaxGPUs, "max_resident_instances": *input.MaxResidentInstances}
 		result, err := platform.Save(c, a, "user_limits", row, changes)
 		if err != nil {
 			return nil, err
@@ -374,6 +356,33 @@ func registerAdmin(a *platform.App, admin *gin.RouterGroup) {
 		platform.SetETag(c, result)
 		return limitsDTO(result), nil
 	}))
+}
+
+type limitsInput struct {
+	MaxInstances         *uint32 `json:"max_instances"`
+	MaxVCPUs             *uint32 `json:"max_vcpus"`
+	MaxMemoryBytes       *string `json:"max_memory_bytes"`
+	MaxDiskBytes         *string `json:"max_disk_bytes"`
+	MaxGPUs              *uint32 `json:"max_gpus"`
+	MaxResidentInstances *uint32 `json:"max_resident_instances"`
+}
+
+func (input limitsInput) values() (platform.Row, error) {
+	if input.MaxInstances == nil || input.MaxVCPUs == nil || input.MaxMemoryBytes == nil || input.MaxDiskBytes == nil || input.MaxGPUs == nil || input.MaxResidentInstances == nil {
+		return nil, validation("The complete limits object is required")
+	}
+	if *input.MaxResidentInstances > *input.MaxInstances {
+		return nil, validation("Custom instance quota cannot exceed total instance quota")
+	}
+	memory, err := capacity(*input.MaxMemoryBytes)
+	if err != nil {
+		return nil, err
+	}
+	disk, err := capacity(*input.MaxDiskBytes)
+	if err != nil {
+		return nil, err
+	}
+	return platform.Row{"max_instances": *input.MaxInstances, "max_vcpus": *input.MaxVCPUs, "max_memory_bytes": memory, "max_disk_bytes": disk, "max_gpu_allocations": *input.MaxGPUs, "max_resident_instances": *input.MaxResidentInstances}, nil
 }
 
 func getLimits(db *gorm.DB, userID uint64, lock bool) (platform.Row, error) {

@@ -1,0 +1,37 @@
+[Unit]
+Description=101cloud Incus Host Agent
+Wants=network-online.target
+After=network-online.target incus.service
+StartLimitIntervalSec=60
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/usr/local/bin/hostagent -config /usr/local/etc/101cloud-agent/agent.json
+
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=101cloud-agent
+
+[Install]
+WantedBy=multi-user.target
