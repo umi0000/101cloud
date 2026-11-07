@@ -588,11 +588,13 @@ func TestGPUUtilizationNoSamplesClassification(t *testing.T) {
 			if row.GPUState != wantState || card.State != wantState || card.ContextCount == nil || *card.ContextCount != wantCount || card.ReferencingProcessCount == nil || *card.ReferencingProcessCount != 0 || card.UsedMemoryBytes == nil || *card.UsedMemoryBytes != wantMemory || card.SMUtilizationPercent != nil {
 				t.Fatalf("empty utilization changed context evidence or fabricated utilization: %+v", row)
 			}
-			for _, q := range []Quality{snapshot.Quality, snapshot.HostQuality, row.Quality, card.Quality} {
+			for index, q := range []Quality{snapshot.Quality, snapshot.HostQuality, row.Quality, card.Quality} {
 				reasons := "," + strings.Join(q.Reasons, ",") + ","
-				wantNoSamples := test.noSamples && !test.active
-				if q.Complete || !q.AttributionComplete || strings.Contains(reasons, ",gpu_utilization_no_samples,") != wantNoSamples || strings.Contains(reasons, ",gpu_utilization_unknown,") != (!wantNoSamples || test.otherFailure) || strings.Contains(reasons, ",gpu_metric_unavailable,") != (test.failure != "" || test.otherFailure) {
-					t.Fatalf("empty utilization quality misclassified or hid a real failure: %+v", q)
+				hostSummary := index < 2
+				wantNoSamples := test.noSamples && !test.active && test.failure == ""
+				wantOtherFailure := hostSummary && test.otherFailure
+				if q.Complete || !q.AttributionComplete || strings.Contains(reasons, ",gpu_utilization_no_samples,") != wantNoSamples || strings.Contains(reasons, ",gpu_utilization_unknown,") != (!wantNoSamples || wantOtherFailure) || strings.Contains(reasons, ",gpu_metric_unavailable,") != (test.failure != "" || wantOtherFailure) {
+					t.Fatalf("empty utilization quality misclassified or leaked another device failure: %+v", q)
 				}
 			}
 		})
@@ -742,8 +744,157 @@ func TestUnsupportedUtilizationRetainsMemoryEvidence(t *testing.T) {
 		t.Fatal("active context with missing sample became normal empty utilization or fabricated zero")
 	}
 	metric = aggregateGPU(device, 1, owners, nil, 0, now, time.Second, now)
-	if metric.SMUtilizationPercent != nil || !strings.Contains(strings.Join(metric.Quality.Reasons, ","), "gpu_utilization_unknown") || strings.Contains(strings.Join(metric.Quality.Reasons, ","), "gpu_utilization_no_samples") {
-		t.Fatal("context owned by another instance became a context-free device")
+	if metric.SMUtilizationPercent != nil || !strings.Contains(strings.Join(metric.Quality.Reasons, ","), "gpu_utilization_no_samples") || strings.Contains(strings.Join(metric.Quality.Reasons, ","), "gpu_utilization_unknown") {
+		t.Fatal("verified empty owner inherited another owner's missing sample")
+	}
+}
+
+func TestEmptyOwnerUtilizationRequiresWorkingSamplingCapability(t *testing.T) {
+	now := time.Unix(1800000000, 0)
+	memory := uint64(678 << 20)
+	for _, mode := range []string{"other_owner_sample", "other_owner_missing_sample", "unsupported", "device_error", "unknown_capability", "empty_without_status", "explicit_no_samples"} {
+		t.Run(mode, func(t *testing.T) {
+			device := completeDevice("GPU-a", now, gpu.Process{PID: 7, UsedMemoryBytes: &memory})
+			device.Utilization[0].SMPercent = 29
+			wantNoSamples := false
+			switch mode {
+			case "other_owner_sample":
+				wantNoSamples = true
+			case "other_owner_missing_sample":
+				device.Utilization = nil
+				wantNoSamples = true
+			case "unsupported":
+				device.UtilizationSupported = false
+			case "device_error":
+				device.Error = "process utilization device lost"
+			case "unknown_capability":
+				device.UtilizationSupported = false
+				device.Utilization = nil
+			case "empty_without_status":
+				device.Contexts = nil
+				device.Utilization = nil
+			case "explicit_no_samples":
+				device.Contexts = nil
+				device.Utilization = nil
+				device.UtilizationSupported = false
+				device.UtilizationNoSamples = true
+				wantNoSamples = true
+			}
+			card := aggregateGPU(device, 1, map[uint32]int{7: 0}, nil, 0, now, time.Second, now)
+			reasons := "," + strings.Join(card.Quality.Reasons, ",") + ","
+			if card.SMUtilizationPercent != nil || card.ContextCount == nil || *card.ContextCount != 0 || card.UsedMemoryBytes == nil || *card.UsedMemoryBytes != 0 || card.ReferencingProcessCount == nil || *card.ReferencingProcessCount != 0 || card.Observed || !card.Quality.AttributionComplete || card.Quality.Complete {
+				t.Fatalf("empty owner lost zero evidence or fabricated SM: %+v", card)
+			}
+			if strings.Contains(reasons, ",gpu_utilization_no_samples,") != wantNoSamples || strings.Contains(reasons, ",gpu_utilization_unknown,") == wantNoSamples || strings.Contains(reasons, ",gpu_metric_unavailable,") != (mode == "device_error") {
+				t.Fatalf("sampling failure became normal empty owner: %+v", card)
+			}
+		})
+	}
+}
+
+func TestPerOwnerMetricQualityDoesNotLeakAcrossCardsOrInstances(t *testing.T) {
+	requireLinux(t)
+	for _, mode := range []string{"idle_no_samples", "unsupported", "stale", "identity_unconfirmed", "same_instance_other_card", "unknown_context", "context_inventory", "reference_scan"} {
+		t.Run(mode, func(t *testing.T) {
+			engine, reader, inputs, root := fixtureSharedControlEngine(t)
+			now := reader.sample.CollectedAt
+			memory := uint64(678 << 20)
+			reader.sample.Devices[0].Contexts[0].UsedMemoryBytes = &memory
+			reader.sample.Devices[0].Utilization[0].SMPercent = 0 // Baseline must not invent anonymous activity.
+			reader.sample.Devices[1].UtilizationNoSamples = true
+			reader.sample.Devices[1].UtilizationSupported = false
+			inputs[0].ConfiguredGPUs = []string{"GPU-a"}
+			inputs[1].ConfiguredGPUs = []string{"GPU-a"}
+			fixtureProcess(t, root, 301, "/instances/other", 31)
+			inputs = append(inputs, Instance{Project: "p", Name: "other", UUID: "other", Type: "container", State: "Running", InitPID: 301, ConfiguredGPUs: []string{"GPU-old"}})
+			if mode == "stale" {
+				fixtureProcess(t, root, 302, "/instances/other/child", 32)
+				reader.sample.Devices[1] = completeDevice("GPU-old", now, gpu.Process{PID: 302, UsedMemoryBytes: &memory})
+			}
+			engine.Sample(context.Background(), inputs)
+			reader.sample.Devices[0].Utilization[0].SMPercent = 29
+			wantReason := "gpu_utilization_no_samples"
+			switch mode {
+			case "unsupported":
+				reader.sample.Devices[1].UtilizationNoSamples = false
+				reader.sample.Devices[1].Error = "process utilization unsupported"
+				wantReason = "gpu_metric_unavailable"
+			case "stale":
+				reader.sample.Devices[1].Utilization[0].TimestampMicros = uint64(now.Add(-time.Minute).UnixMicro())
+				wantReason = "gpu_utilization_stale"
+			case "identity_unconfirmed":
+				fixtureProcess(t, root, 302, "/instances/other/child", 32)
+				reader.sample.Devices[1] = completeDevice("GPU-old", now, gpu.Process{PID: 302, UsedMemoryBytes: &memory})
+				wantReason = "gpu_utilization_identity_unconfirmed"
+			case "same_instance_other_card":
+				inputs[0].ConfiguredGPUs = []string{"GPU-a", "GPU-old"}
+			case "unknown_context":
+				reader.sample.Devices[1].Contexts = []gpu.Process{{PID: 999}}
+				wantReason = "unattributed_gpu_contexts"
+			case "context_inventory":
+				reader.sample.Devices[1].AttributionComplete = false
+				wantReason = "gpu_attribution_incomplete"
+			case "reference_scan":
+				if err := os.Remove(filepath.Join(root, "301", "fd")); err != nil {
+					t.Fatal(err)
+				}
+				wantReason = "gpu_reference_scan_incomplete"
+			}
+			snapshot := engine.Sample(context.Background(), inputs)
+			a, b, c := snapshot.Instances[0], snapshot.Instances[1], snapshot.Instances[2]
+			structural := mode == "unknown_context" || mode == "context_inventory" || mode == "reference_scan"
+			if structural {
+				for _, row := range snapshot.Instances {
+					if row.Quality.AttributionComplete || !strings.Contains(strings.Join(row.Quality.Reasons, ","), wantReason) {
+						t.Fatalf("structural host uncertainty stopped failing closed: %+v", snapshot)
+					}
+					for _, card := range row.GPUs {
+						if card.Quality.AttributionComplete || card.ReferencingProcessCount != nil {
+							t.Fatalf("structural uncertainty permitted per-card release: %+v", card)
+						}
+					}
+				}
+				if snapshot.HostQuality.AttributionComplete {
+					t.Fatalf("structural uncertainty disappeared from host quality: %+v", snapshot.HostQuality)
+				}
+				return
+			}
+			active, idle := a.GPUs[0], b.GPUs[0]
+			if active.UUID != "GPU-a" || active.SMUtilizationPercent == nil || *active.SMUtilizationPercent != 29 || active.ContextCount == nil || *active.ContextCount != 1 || active.UsedMemoryBytes == nil || *active.UsedMemoryBytes != memory || active.ReferencingProcessCount != nil || active.State != "in_use" || active.Quality.AttributionComplete || !active.Quality.ContextAttributionComplete {
+				t.Fatalf("shared controls or another card erased active owner's sample: %+v", a)
+			}
+			if a.Quality.AttributionComplete || !a.Quality.ContextAttributionComplete || !strings.Contains(strings.Join(active.Quality.Reasons, ","), "gpu_shared_control_references") {
+				t.Fatalf("shared owner became release-authorized: %+v", a)
+			}
+			for _, reason := range []string{"gpu_utilization_no_samples", "gpu_utilization_unknown", "gpu_metric_unavailable", "gpu_utilization_stale", "gpu_utilization_identity_unconfirmed"} {
+				if strings.Contains(strings.Join(active.Quality.Reasons, ","), reason) || (mode != "same_instance_other_card" && strings.Contains(strings.Join(a.Quality.Reasons, ","), reason)) {
+					t.Fatalf("other card's metric warning leaked into active card/owner: %+v", a)
+				}
+			}
+			if b.GPUState != "idle_candidate" || idle.State != "idle_candidate" || idle.Observed || idle.ContextCount == nil || *idle.ContextCount != 0 || idle.ReferencingProcessCount == nil || *idle.ReferencingProcessCount != 0 || idle.UsedMemoryBytes == nil || *idle.UsedMemoryBytes != 0 || idle.SMUtilizationPercent != nil {
+				t.Fatalf("other owner's activity changed verified empty owner: %+v", b)
+			}
+			for _, q := range []Quality{b.Quality, idle.Quality} {
+				if !q.AttributionComplete || !q.ContextAttributionComplete || q.Complete || len(q.Reasons) != 1 || q.Reasons[0] != "gpu_utilization_no_samples" {
+					t.Fatalf("empty owner inherited active/shared/other-card warnings: %+v", b)
+				}
+			}
+			if !c.Quality.AttributionComplete || !strings.Contains(strings.Join(c.GPUs[0].Quality.Reasons, ","), wantReason) || !strings.Contains(strings.Join(c.Quality.Reasons, ","), wantReason) || !strings.Contains(strings.Join(snapshot.Quality.Reasons, ","), wantReason) {
+				t.Fatalf("local metric warning vanished instead of being scoped: %+v", snapshot)
+			}
+			if !snapshot.HostQuality.ContextAttributionComplete || snapshot.HostQuality.AttributionComplete || !strings.Contains(strings.Join(snapshot.HostQuality.Reasons, ","), "gpu_shared_control_references") {
+				t.Fatalf("host summary lost shared-control safety: %+v", snapshot.HostQuality)
+			}
+			if mode != "identity_unconfirmed" && !strings.Contains(strings.Join(snapshot.HostQuality.Reasons, ","), wantReason) {
+				t.Fatalf("device warning vanished from conservative host summary: %+v", snapshot.HostQuality)
+			}
+			if mode == "same_instance_other_card" && (len(a.GPUs) != 2 || !strings.Contains(strings.Join(a.Quality.Reasons, ","), "gpu_utilization_no_samples") || !strings.Contains(strings.Join(a.GPUs[1].Quality.Reasons, ","), "gpu_utilization_no_samples")) {
+				t.Fatalf("instance did not aggregate its own other card warning: %+v", a)
+			}
+			if snapshot.Anonymous != (AnonymousCounts{}) {
+				t.Fatalf("known independent owners became anonymous: %+v", snapshot.Anonymous)
+			}
+		})
 	}
 }
 

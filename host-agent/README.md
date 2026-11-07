@@ -130,9 +130,15 @@ CPU用累计计数差分和独立观测时间窗，首次/重启/缺测不构造
 
 所有质量对象显式输出 `context_attribution_complete`。稳定PID/starttime及cgroup祖先可以确认嵌套Docker进程属于外层Incus实例，不要求PID namespace相同；物理卡仅按可信设备rdev映射UUID，不按容器内 `nvidia0` 名称推断。已识别共享 `nvidiactl`/`nvidia-uvm` 引用使用 `gpu_shared_control_references`：只降低持有者及其卡的完整引用归属，不污染其他实例，不计为匿名未知引用。持有者的已验证进程数、显存和可用SM保留，`context_attribution_complete=true` 可以与 `attribution_complete=false` 并存；物理FD也不能证明共享引用仅涉及该卡，shared-only仍不能成为idle_candidate。宿主完整归属仍保守为false；真正未知引用、扫描失败及身份变化不能获得context-only例外。
 
+每卡的可选指标原因（`gpu_utilization_no_samples` / `gpu_utilization_unknown` / `gpu_metric_unavailable` / `gpu_utilization_stale` / `gpu_utilization_identity_unconfirmed`）只进入该卡及所属实例的汇总，不把其他卡或实例的SM警告作为公共基础质量。顶层 `quality` 仍汇总全部行；`host_quality` 仍保留采集时可见的全节点设备指标警告和结构性不确定性，但不反向灌入实例。真正的未知上下文/活动、引用扫描失败、库存及整次采样过期等仍全局fail-closed。实例在某卡上经验证没有context时，若查询明确为空，或同卡另有已知持有者且利用率API可用，使用现有 `gpu_utilization_no_samples`，SM保持null、进程/引用/显存保持真实0；不支持/设备错误仍是警告，活跃持有者缺样本仍unknown。A持有共享控制引用时依旧full=false，不能移除或换绑；B在同一卡上可独立具有full=true的空闲证据，不能只凭指标文案推断换绑失败原因。
+
 后端只有在新鲜完整采集、目标身份/运行态与原生物理配置均确认，且原生实际GPU集合是请求集合的子集时，才可把显式context证据用于纯新增。旧Agent缺字段时仍须完整归属为true；移除、换绑、空闲及删除后回收永远不能用这个字段代替原有完整归属条件。
 
 本地无GPU硬件回归：在Linux的 `host-agent` 目录运行 `go test ./internal/monitor -run 'TestVerifiedGPUContextsSurviveSharedControlReferences|TestSharedControlFailuresStayGlobalUnknown' -v`。fixtureReader向实际 `Engine.Sample` 注入NVML样本，临时proc树模拟Incus/systemd/嵌套Docker，`/dev/null`、`/dev/zero`、`/dev/random` 仅提供可stat的rdev，不打开GPU。日志仅输出安全布尔值/计数JSON（持有者context=true、full=false，无关实例两者true、匿名引用0），不需Incus、NVML、root或运行中的任务；root会跳过权限拒绝分支。非Linux默认跳过这些进程归属测试，交叉编译不代表已在Linux或真实GPU验收。
+
+本轮逐卡/逐实例回归入口（尚未在此条目声明运行结果）：`go test ./internal/monitor -run 'TestGPUUtilizationNoSamplesClassification|TestEmptyOwnerUtilizationRequiresWorkingSamplingCapability|TestPerOwnerMetricQualityDoesNotLeakAcrossCardsOrInstances|TestVerifiedGPUContextsSurviveSharedControlReferences|TestSharedControlFailuresStayGlobalUnknown|TestUnsupportedUtilizationRetainsMemoryEvidence' -v`。核心夹具为A嵌套任务29% SM/678MiB/1进程且持有共享控制引用，B挂同卡但进程/引用/显存0且SMnull，C挂另一张卡并分别模拟正常无样本、unsupported、陈旧样本、未确认身份；A活跃卡不能出现C的指标警告，B只保留no_samples，C自身警告仍在其卡和实例汇总。另覆盖A同时配置两卡时实例可汇总另一卡的警告但活跃卡不继承，以及C未知context/上下文库存不全/引用扫描失败仍使所有实例完整归属false。非Linux运行须在一次性临时Go overlay中启用Linux式proc夹具与宿主Stat_t.rdev实现，并移除测试的Linux跳过；这种合成输入不是Linux内核或真实NVML验收，不应改动正式源码的平台边界。
+
+本轮本地验收已完成（未部署）：临时Go overlay下的同卡夹具复现旧逻辑A=29%却继承no_samples、B=0进程却同时unknown/no_samples；修复后A的唯一原因是共享控制引用、29%/678MiB/1进程保留，B为完整归属且仅正常no_samples，C的空采样不再传播到A。逐卡/逐实例监控race夹具、macOS常规Agent全包race与vet、Linux/amd64交叉构建通过；非Linux主机未执行真实NVML、真实GPU或Linux内核热插拔，不作硬件验收承诺。历史已存采样不改写，仅之后的新采样使用新分类。
 
 2026-11-07 本地修复验收（未部署）：在macOS常规Agent race回归及vet通过，节点API实际调用夹具验证add_only保留设备名/属性、请求重排不卸卡、原生额外卡及ETag竞争拒绝。Linux进程归属用临时Go overlay启用相同Stat_t.rdev算法及Linux式proc/cgroup夹具，修复前A共享引用使无关B归属false，修复后A context=true/full=false、B context/full=true、A进程1/显存678MiB保留、匿名未知引用0；监控夹具race回归通过。仅为本地合成/proc及NVML输入，非Linux内核运行、真实NVML或嵌套Docker CUDA硬件验收；未连接服务器、不停止业务任务。Linux/amd64产物已交叉构建。
 

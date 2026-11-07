@@ -57,6 +57,12 @@ GPU采样正常空状态传递修复（未部署）：指标原因allowlist保�
 
 上述原因码传递已随Agent和前端发布 `.111` `/srv/101cloud/releases/20261105-gpu-empty-sampling`，后端SHA256 `dc07ff400aa2c0fd108e89a9a271943fa3efc350ab4f6997c968f41b1761c7ee`。真实实例42的最新GPU采样已持久化no_samples原因、进程/引用/显存0及SM NULL。ready正常，两服务active，无迁移或实例/GPU操作；数据库单事务备份、旧程序及配置位于 `/var/backups/101cloud/20261105-gpu-empty-sampling/`。
 
+2026-11-07 同卡多实例重新绑定边界（未部署）：`storedIdle` 不要求 SM 指标完整或非空，只要求目标实例最新且 UUID 相符的完整归属样本、完整引用扫描、进程/引用/显存均为已知零及 `idle_candidate`。实时阶段按 project/name/UUID 匹配目标实例，接受 Agent 的 `Running` 状态；不会把另一实例的 `host_quality.attribution_complete=false` 或共享控制引用原因当成目标实例的释放证据，也不会仅因该主机摘要阻止归属完整的空闲实例操作。活跃共享控制引用所有者仍保持 full attribution=false，不允许卸载/重新绑定。源码调查未发现仅由 `gpu_utilization_no_samples`/SM NULL 导致此门禁失败的分支；不能据此宣称生产重新绑定错误已修复。
+
+新增 `TestMySQLGPUSameCardRebindHTTPWorkerTLS` 边界回归：隔离 MySQL、HTTP 准入、真实 worker 与证书固定 TLS 协议夹具覆盖 A 使用同一物理 GPU、B 自身进程/引用/显存零且 SM NULL 的重新绑定，独立变更后释放样本、旧缓存后新样本、源卡已从目标实例消失，以及活跃 A、陈旧/错 UUID/未知引用/配置仍在等拒绝边界。21个同卡场景与24个新增挂载场景已在本地MySQL8.4.13 race回归通过，`go vet ./...`通过；B完整换卡并确认释放，A原分配保持不变。夹具不等于真实Docker/NVML验证，没有据此宣称线上observation_incomplete根因已消除；本轮未放宽或修改后端生产门禁。
+
+生产诊断须先区分 POST 同步 409 与已受理任务的 `unknown`：保存 POST 响应完整 error.code/message、instance/task ID 和任务步骤（尤其 `gpu.preflight`/`gpu.configure`）、原生 operation_id。同步“占用证据不完整或已过期”检查 `instance_metric_samples` 的时间/UUID/collection/attribution；“引用尚未完整确认”检查对应 GPU 子样本引用质量及三个计数。worker“实时采集不完整/样本过期/未找到此实例/归属信息不完整”检查项目过滤后的原始 frame 时间、collection/stale、实例 project/name/UUID/state 与实例/卡 quality；`instance_identity_changed` 检查原生 volatile.uuid。若已配置成功但未确认释放，保存配置后独立 frame（collected_at 必须严格晚于配置核验完成后的等待起点）、源卡 configured/observed 与进程/引用/显存证据。目标配置成功不等于源分配已安全释放，不能跳过该阶段或放宽安全条件。
+
 2026-11-05 成员实例详情配套接口已实现（未部署）：用户和管理员 `GET/PUT /instances/:id/gpu-policy` 返回只读 `gpu_binding: null | {policy_version_id,model,access_mode,gpu_hourly_pt}`，仅按实例冻结的 GPU 定价绑定解析，不依赖当前套餐或已有分配；没有绑定时返回 null，异常绑定返回既有错误，不自动回退。无数据库迁移、授权语义不变。隔离 MySQL 回归覆盖套餐修改后原绑定、无分配读取、本人和他人隔离、无绑定与异常绑定；真实本地 Router 浏览器完成策略保存及卸载任务受理，不声称执行物理 GPU worker。
 
 上述配套接口已随成员详情发布到 `.111`，发布目录 `/srv/101cloud/releases/20261105-member-instance-detail`，回退资料 `/var/backups/101cloud/20261105-member-instance-detail/`；无迁移。新程序SHA256 `6e81ac1e4f900a1f2a48349360fff33d4b26da8fdd77a089c722add113a096b4`，服务active且HTTPS ready正常。只更新后端和静态前端，未变更Host Agent或Nginx配置，未执行生产实例变更。

@@ -391,7 +391,9 @@ GPU显存是NVML报告的归属进程显存合计；compute/graphics同PID去重
 
 进程SM样本的身份起点是该PID/start/实例UUID/initStart连续可验证时的首次观测时间，不随每帧前移。NVML延迟返回的样本只有晚于该起点且仍在最大新鲜度内才可接纳；身份变化、退出或上下文消失后必须重新建立起点。不会缓存缺样本的SM或将不支持补为0。
 
-NVML增量查询没有新SM记录不等于驱动失败；无context且明确空输出使用 `gpu_utilization_no_samples`，SM仍为null。unsupported、无效记录、设备丢失及有context但无有效SM样本仍为未知/失败原因。停止实例没有进程根使用 `instance_not_running` 解释非运行态，不改其归因false和未知数量；运行实例根缺失仍使用 `instance_attribution_unknown`。新原因同样保留质量complete=false，不能靠中性展示作为卸载授权。
+NVML增量查询没有新SM记录不等于驱动失败。某实例在该卡上经验证无context，且查询明确空输出，或同卡存在其他已知持有者并确认利用率API可用时，使用现有 `gpu_utilization_no_samples`；SM仍为null，进程/引用/显存的真实0仍保留。不是把同卡其他实例的context或SM归给空闲实例。unsupported、无效记录、设备丢失及本实例有context但无有效SM样本仍为未知/失败原因；没有查询状态的空数组也不能自动视作正常无样本。停止实例没有进程根使用 `instance_not_running` 解释非运行态，不改其归因false和未知数量；运行实例根缺失仍使用 `instance_attribution_unknown`。这些原因同样保留质量complete=false，不能靠中性展示作为卸载授权。
+
+可选指标缺失/陈旧/身份未确认等原因按卡生成，只向该卡所属实例汇总，不把其他卡或实例的警告反向合并进当前卡。顶层 `quality` 仍汇总所有实例；`host_quality` 保留采集时的全节点指标警告，但实例的公共基础质量只继承结构性不确定性。未知上下文/近期活动、未知设备引用、引用扫描失败、上下文库存不全、整次采样过期等仍全局fail-closed。已知共享控制引用仍使持有者full attribution=false，其已验证context/显存/SM可保留；同卡其他实例可独立具有完整空闲证据，不能据此放宽共享持有者的移除或换绑门禁。
 
 **隐私：**Agent内部使用宿主PID、cgroup、启动标识和设备引用判断归属，公开API和历史表不含PID、命令行、进程名、可执行文件/用户文件路径。嵌套容器按外层Incus实例归属；进程退出、PID复用、权限不足、设备变化、MPS/MIG或无法可靠归属会保守降级。近期活动样本即使已无当前进程，也不能被当成空闲；无法可靠归属时增加匿名活动计数并阻止idle_candidate。Agent应作为宿主机服务运行；不能把普通容器内的/proc当作宿主PID视图。专用账户仅有Incus socket权限不代表能读取所有必要进程信息，缺权限会返回unknown，不会自行提权或放宽宿主安全策略。
 

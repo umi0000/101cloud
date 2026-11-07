@@ -290,6 +290,9 @@ func (e *Engine) Sample(ctx context.Context, instances []Instance) Snapshot {
 		}
 	}
 	out.Anonymous.UnresolvedGPUReferences = proc.unresolved
+	// Device metric warnings remain in the host summary, but are not a base
+	// quality for unrelated cards or owners. Structural uncertainty still is.
+	metricQuality := quality()
 	devices := make(map[string]gpu.Device)
 	for _, device := range raw.Devices {
 		// Utilization buffers outlive contexts. Never attach a cached PID sample
@@ -297,7 +300,7 @@ func (e *Engine) Sample(ctx context.Context, instances []Instance) Snapshot {
 		for _, sample := range device.Utilization {
 			timestamp := time.UnixMicro(int64(sample.TimestampMicros))
 			if sample.TimestampMicros > math.MaxInt64 || now.Sub(timestamp) > e.maxAge || timestamp.After(now.Add(time.Second)) {
-				addMetricReason(&out.Quality, "gpu_utilization_stale")
+				addMetricReason(&metricQuality, "gpu_utilization_stale")
 				continue
 			}
 			if !(sample.Activity || sample.SMPercent > 0) {
@@ -321,16 +324,16 @@ func (e *Engine) Sample(ctx context.Context, instances []Instance) Snapshot {
 			addReason(&out.Quality, "gpu_attribution_incomplete")
 		}
 		if device.Error != "" {
-			addMetricReason(&out.Quality, "gpu_metric_unavailable")
+			addMetricReason(&metricQuality, "gpu_metric_unavailable")
 		}
 		if !e.hasDevice(device.UUID) {
 			addReason(&out.Quality, "device_inventory_incomplete")
 		}
 		if !device.UtilizationSupported || len(device.Utilization) == 0 {
-			if device.UtilizationNoSamples && len(device.Contexts) == 0 {
-				addMetricReason(&out.Quality, "gpu_utilization_no_samples")
+			if device.UtilizationNoSamples && len(device.Contexts) == 0 && device.Error == "" {
+				addMetricReason(&metricQuality, "gpu_utilization_no_samples")
 			} else {
-				addMetricReason(&out.Quality, "gpu_utilization_unknown")
+				addMetricReason(&metricQuality, "gpu_utilization_unknown")
 			}
 		}
 		for _, process := range device.Contexts {
@@ -363,8 +366,9 @@ func (e *Engine) Sample(ctx context.Context, instances []Instance) Snapshot {
 		addReason(&out.Quality, "gpu_references_unresolved")
 	}
 	nextCPU := make(map[string]cpuBaseline, len(instances))
-	hostQuality := out.Quality
-	mergeQuality(&out.HostQuality, hostQuality)
+	instanceBase := out.Quality
+	mergeQuality(&out.Quality, metricQuality)
+	mergeQuality(&out.HostQuality, out.Quality)
 	if len(proc.sharedReferences) > 0 {
 		addSharedReferenceReason(&out.HostQuality)
 	}
@@ -372,7 +376,7 @@ func (e *Engine) Sample(ctx context.Context, instances []Instance) Snapshot {
 		row := InstanceMetrics{Project: instance.Project, Name: instance.Name, UUID: instance.UUID, Type: instance.Type, State: instance.State, StartedAt: instance.StartedAt, GPUs: []GPUMetrics{}, GPUState: "unknown", Quality: quality()}
 		row.CPU = e.cpu(instance, now, proc.roots[i].start, nextCPU)
 		row.Memory = MemoryMetrics{UsageBytes: cloneUint(instance.MemoryUsageBytes), LimitBytes: cloneUint(instance.MemoryLimitBytes), PeakBytes: cloneUint(instance.MemoryPeakBytes)}
-		mergeQuality(&row.Quality, hostQuality)
+		mergeQuality(&row.Quality, instanceBase)
 		rowContextComplete := contextAttributionComplete
 		if _, valid := proc.roots[i]; !valid {
 			if strings.EqualFold(instance.State, "stopped") {
@@ -554,6 +558,10 @@ func aggregateGPU(device gpu.Device, owner int, owners map[uint32]int, utilizati
 	}
 	latest := make(map[uint32]gpu.UtilizationSample)
 	for _, sample := range device.Utilization {
+		timestamp := time.UnixMicro(int64(sample.TimestampMicros))
+		if sample.TimestampMicros > math.MaxInt64 || now.Sub(timestamp) > maxAge || timestamp.After(now.Add(time.Second)) {
+			addMetricReason(&result.Quality, "gpu_utilization_stale")
+		}
 		if !attributed[sample.PID] {
 			continue
 		}
@@ -578,10 +586,13 @@ func aggregateGPU(device gpu.Device, owner int, owners map[uint32]int, utilizati
 		}
 		total += sample.SMPercent
 	}
+	// A verified empty owner has no SM sample of its own, even when another
+	// owner has contexts on this card. Do not turn failed/unknown APIs into
+	// normal emptiness, or turn a globally unexplained empty array into evidence.
 	if utilizationKnown {
 		total = math.Min(total, 100)
 		result.SMUtilizationPercent = &total
-	} else if device.UtilizationNoSamples && len(device.Contexts) == 0 {
+	} else if contextCount == 0 && device.AttributionComplete && device.Error == "" && (device.UtilizationNoSamples || (device.UtilizationSupported && len(device.Contexts) > 0)) {
 		addMetricReason(&result.Quality, "gpu_utilization_no_samples")
 	} else {
 		addMetricReason(&result.Quality, "gpu_utilization_unknown")
