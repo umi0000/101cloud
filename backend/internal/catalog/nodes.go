@@ -42,7 +42,8 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 	a.RegisterJob("node.drain", nodeInventoryJob)
 	a.RegisterReconciler("node.probe", nodeInventoryJob)
 	a.RegisterReconciler("node.drain", nodeInventoryJob)
-	a.AddPoller("node-inventory", 20*time.Second, pollNodeInventory)
+	a.AddPoller("node-inventory", platform.NodeInventoryPollInterval, pollNodeInventory)
+	a.AddPoller("node-gpu-load", time.Second, pollNodeGPULoad)
 	admin.GET("/nodes", platform.Handle(func(c *gin.Context) (any, error) {
 		q := platform.DB(c, a).Table("nodes")
 		for _, f := range []string{"administrative_state", "health"} {
@@ -214,6 +215,9 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 		saved, err := platform.Save(c, a, "nodes", r, changes)
 		if err != nil {
 			return nil, err
+		}
+		if err = platform.DB(c, a).Table("node_gpu_load_snapshots").Where("node_id=?", id).Delete(&platform.Row{}).Error; err != nil {
+			return nil, platform.WrapDB(err)
 		}
 		platform.SetETag(c, saved)
 		return nodeDTO(saved), nil
@@ -497,7 +501,7 @@ func nodeQuality(r platform.Row) string {
 	if platform.Stamp(r["resources_sampled_at"]).IsZero() {
 		return "unavailable"
 	}
-	if platform.Text(r["health"]) != "online" || platform.Stamp(r["connection_verified_at"]).IsZero() {
+	if platform.Text(r["health"]) != "online" || platform.Stamp(r["connection_verified_at"]).IsZero() || !platform.InventoryFresh(time.Now(), r["resources_sampled_at"]) {
 		return "stale"
 	}
 	return "cached"

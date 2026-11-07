@@ -500,7 +500,8 @@ func TestMySQLQuoteDoesNotRequireCreationName(t *testing.T) {
 func TestMySQLTwoPlansFreezeDistinctPricesOnSameGPU(t *testing.T) {
 	f := newPlanConfigurationFixture(t)
 	f.exec(`UPDATE policy_versions SET config=JSON_SET(config,'$.sm_weight',0.5,'$.memory_weight',0.5) WHERE id=4`)
-	f.exec(`UPDATE nodes SET resources=JSON_OBJECT('architecture','x86_64','gpus',JSON_ARRAY(JSON_OBJECT('uuid','GPU-plan','utilization_percent',0,'memory_utilization_percent',0))),resources_sampled_at=NOW(6) WHERE id=1`)
+	f.exec(`UPDATE nodes SET resources=JSON_OBJECT('architecture','x86_64','gpus',JSON_ARRAY(JSON_OBJECT('uuid','GPU-plan','model','NVIDIA A100','memory_mib',81920))),resources_sampled_at=NOW(6) WHERE id=1`)
+	f.exec(`INSERT INTO node_gpu_load_snapshots(node_id,sampled_at,resources) VALUES(1,NOW(6),'{"gpus":[{"uuid":"GPU-plan","utilization_percent":0,"memory_utilization_percent":0}]}')`)
 	f.exec(`INSERT INTO node_gpus(node_id,uuid,model,memory_mib,max_allocations,status,last_seen_at) VALUES(1,'GPU-plan','NVIDIA A100',81920,8,'available',NOW(6))`)
 	var plan platform.Row
 	if err := f.db.Table("instance_plans").Where("id=1").Take(&plan).Error; err != nil {

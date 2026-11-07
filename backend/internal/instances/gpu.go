@@ -8,6 +8,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
+	"math"
 	"net/netip"
 	"net/url"
 	"sort"
@@ -286,7 +287,7 @@ func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.R
 	if e != nil {
 		return nil, e
 	}
-	if platform.Text(n["administrative_state"]) != "active" || platform.Text(n["health"]) != "online" || a.Time().Sub(platform.Stamp(n["resources_sampled_at"])) > maxAge {
+	if platform.Text(n["administrative_state"]) != "active" || platform.Text(n["health"]) != "online" || !platform.InventoryFresh(a.Time(), n["resources_sampled_at"]) {
 		return nil, conflict("gpu_capacity_unavailable", "节点 GPU 库存不可用或观测已过期，请管理员检查节点状态与资源采集。")
 	}
 	var limits platform.Row
@@ -301,9 +302,21 @@ func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.R
 		return nil, admissionCapacityError("quota_exceeded", "user_quota", "gpus", "GPU 分配数量", "count", uint64(used), uint64(in.Count), platform.Uint(limits["max_gpu_allocations"]), "请释放不再需要的 GPU 分配，或联系管理员提高 GPU 配额；重新绑定期间源分配仍计入占用。")
 	}
 	inventory := map[string]map[string]any{}
-	for _, v := range rows(object(n["resources"])["gpus"]) {
-		g := object(v)
-		inventory[platform.Text(g["uuid"])] = g
+	if len(in.FixedUUIDs) == 0 || in.Reason == "automatic_gpu_rebalance" {
+		var load platform.Row
+		if err := db.Table("node_gpu_load_snapshots").Where("node_id=?", r["node_id"]).Take(&load).Error; err != nil {
+			if err != gorm.ErrRecordNotFound {
+				return nil, platform.WrapDB(err)
+			}
+			return nil, conflict("observation_incomplete", "缺少独立 GPU 负载样本，请等待动态采集。")
+		}
+		if !platform.ObservationFresh(a.Time(), platform.Stamp(load["sampled_at"]), maxAge) {
+			return nil, conflict("observation_incomplete", "GPU 动态负载样本已过期，请等待最新采集；库存刷新不能更新负载有效期。")
+		}
+		for _, v := range rows(object(load["resources"])["gpus"]) {
+			g := object(v)
+			inventory[platform.Text(g["uuid"])] = g
+		}
 	}
 	var all []platform.Row
 	if e = locked(db).Table("node_gpus g").Select("g.*").Where("g.node_id=?", r["node_id"]).Order("g.id").Find(&all).Error; e != nil {
@@ -335,7 +348,7 @@ func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.R
 		if len(fixed) > 0 && !fixed[uuid] {
 			continue
 		}
-		if g["memory_mib"] == nil || excluded[platform.Uint(g["id"])] || platform.Text(g["status"]) != "available" || platform.Text(g["model"]) != platform.Text(price["gpu_model"]) || platform.Uint(g["memory_mib"]) < mustUint(in.MinMemoryMiB) || a.Time().Sub(platform.Stamp(g["last_seen_at"])) > maxAge {
+		if g["memory_mib"] == nil || excluded[platform.Uint(g["id"])] || platform.Text(g["status"]) != "available" || platform.Text(g["model"]) != platform.Text(price["gpu_model"]) || platform.Uint(g["memory_mib"]) < mustUint(in.MinMemoryMiB) || !platform.InventoryFresh(a.Time(), g["last_seen_at"]) {
 			continue
 		}
 		var count int64
@@ -352,11 +365,8 @@ func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.R
 		live := inventory[uuid]
 		score := 0.0
 		if len(fixed) == 0 {
-			if live == nil || live["utilization_percent"] == nil || live["memory_utilization_percent"] == nil || platform.Text(live["error"]) != "" {
-				continue
-			}
-			sm, mem := numeric(live["utilization_percent"]), numeric(live["memory_utilization_percent"])
-			if sm < 0 || sm > 100 || mem < 0 || mem > 100 {
+			sm, mem, complete := gpuLoadValues(live)
+			if !complete {
 				continue
 			}
 			score = smWeight*sm + memWeight*mem
@@ -371,10 +381,11 @@ func reserveGPUs(ctx context.Context, a *platform.App, db *gorm.DB, r platform.R
 		sourceRate := max
 		for _, source := range old {
 			live := inventory[platform.Text(source["uuid"])]
-			if live == nil || live["utilization_percent"] == nil || live["memory_utilization_percent"] == nil {
+			sm, mem, complete := gpuLoadValues(live)
+			if !complete {
 				return nil, conflict("observation_incomplete", "源 GPU 负载未知，请等待最新的完整观测。")
 			}
-			score := smWeight*numeric(live["utilization_percent"]) + memWeight*numeric(live["memory_utilization_percent"])
+			score := smWeight*sm + memWeight*mem
 			if score < sourceScore {
 				sourceScore = score
 			}
@@ -439,6 +450,16 @@ func boundGPUPrice(in GPURequest, price platform.Row, max decimal.Decimal) (deci
 	return rate, nil
 }
 func numeric(v any) float64 { f, _ := strconv.ParseFloat(platform.Text(v), 64); return f }
+
+func gpuLoadValues(card map[string]any) (float64, float64, bool) {
+	if card == nil || platform.Text(card["error"]) != "" {
+		return 0, 0, false
+	}
+	sm, smErr := strconv.ParseFloat(platform.Text(card["utilization_percent"]), 64)
+	mem, memErr := strconv.ParseFloat(platform.Text(card["memory_utilization_percent"]), 64)
+	valid := smErr == nil && memErr == nil && !math.IsNaN(sm) && !math.IsNaN(mem) && sm >= 0 && sm <= 100 && mem >= 0 && mem <= 100
+	return sm, mem, valid
+}
 func storedIdle(ctx context.Context, a *platform.App, db *gorm.DB, r platform.Row, allocations []platform.Row) error {
 	var sample platform.Row
 	if e := db.Table("instance_metric_samples").Where("instance_id=?", r["id"]).Order("sampled_at DESC,id DESC").Take(&sample).Error; e != nil {

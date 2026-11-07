@@ -2,7 +2,6 @@ package instances
 
 import (
 	"strconv"
-	"time"
 
 	"101cloud/backend/internal/platform"
 	"github.com/gin-gonic/gin"
@@ -24,7 +23,7 @@ func reservationUsage(db *gorm.DB, r platform.Row, node bool) (platform.Row, err
 }
 
 func admissionNodeAvailable(a *platform.App, n platform.Row) error {
-	if platform.Text(n["administrative_state"]) != "active" || platform.Text(n["health"]) != "online" || platform.Stamp(n["connection_verified_at"]).IsZero() || a.Time().Sub(platform.Stamp(n["resources_sampled_at"])) > time.Minute {
+	if platform.Text(n["administrative_state"]) != "active" || platform.Text(n["health"]) != "online" || platform.Stamp(n["connection_verified_at"]).IsZero() || !platform.InventoryFresh(a.Time(), n["resources_sampled_at"]) {
 		return conflict("node_unavailable", "资源准入需要已验证、在线且资源观测未过期的节点，请管理员检查节点状态。")
 	}
 	return nil

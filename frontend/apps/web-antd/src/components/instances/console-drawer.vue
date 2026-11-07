@@ -16,7 +16,7 @@ import { computed, nextTick, onBeforeUnmount, ref, shallowRef, watch } from 'vue
 
 import { FitAddon } from '@xterm/addon-fit';
 import { Terminal } from '@xterm/xterm';
-import { Alert, Button, Drawer, RadioButton, RadioGroup, Space, Spin } from 'ant-design-vue';
+import { Alert, Button, Modal, RadioButton, RadioGroup, Spin } from 'ant-design-vue';
 
 import type { consoleApi } from '#/api/backend';
 import { ApiError, newIdempotencyKey, websocketURL } from '#/api/request';
@@ -40,6 +40,11 @@ const session = shallowRef<ConsoleSession | null>(null);
 const termEl = ref<HTMLDivElement>();
 const vncEl = ref<HTMLDivElement>();
 const createAction = useAction();
+const maximized = ref(false);
+const fontSize = ref(14);
+const phaseLabel = computed(() => ({
+  preparing: '准备中', connecting: '连接中', connected: '已连接', ended: '已结束', failed: '连接失败',
+})[phase.value]);
 let gen = 0;
 
 let socket: null | WebSocket = null;
@@ -61,12 +66,13 @@ defineExpose({ start });
 
 async function onConfirm() {
   if (props.disabled || !props.instance.capabilities.console) return false;
+  maximized.value = false;
   drawerOpen.value = true;
   void connect();
   return true;
 }
 
-/** 抽屉内容异步挂载：等到终端/VNC 容器出现（最多约 1 秒）。 */
+/** 浮窗内容异步挂载：等到终端/VNC 容器出现（最多约 1 秒）。 */
 async function waitForElements(): Promise<boolean> {
   for (let n = 0; n < 60; n++) {
     await nextTick();
@@ -87,7 +93,21 @@ function ensureTerminal(): null | Terminal {
   if (term) return term;
   const el = termEl.value;
   if (!el) return null;
-  term = new Terminal({ cursorBlink: true, fontFamily: 'ui-monospace, Menlo, Consolas, monospace', fontSize: 14 });
+  term = new Terminal({
+    cursorBlink: true,
+    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace',
+    fontSize: fontSize.value,
+    lineHeight: 1.2,
+    theme: {
+      background: '#090b0d', foreground: '#d5dbe3', cursor: '#e2e8f0',
+      cursorAccent: '#090b0d', selectionBackground: '#334155',
+      black: '#20252d', red: '#f87171', green: '#4ade80', yellow: '#facc15',
+      blue: '#60a5fa', magenta: '#c084fc', cyan: '#22d3ee', white: '#d5dbe3',
+      brightBlack: '#7c8798', brightRed: '#fca5a5', brightGreen: '#86efac',
+      brightYellow: '#fde047', brightBlue: '#93c5fd', brightMagenta: '#d8b4fe',
+      brightCyan: '#67e8f9', brightWhite: '#f8fafc',
+    },
+  });
   fit = new FitAddon();
   term.loadAddon(fit);
   term.open(el);
@@ -313,6 +333,24 @@ function reconnect() {
 function sendCtrlAltDel() {
   rfb?.sendCtrlAltDel();
 }
+
+function changeFontSize() {
+  if (!term) return;
+  term.options.fontSize = fontSize.value;
+  fit?.fit();
+  term.focus();
+}
+
+function clearScreen() {
+  term?.clear();
+  term?.focus();
+}
+
+async function toggleMaximized() {
+  maximized.value = !maximized.value;
+  await nextTick();
+  fit?.fit();
+}
 </script>
 
 <template>
@@ -333,50 +371,112 @@ function sendCtrlAltDel() {
     </div>
   </ConfirmAction>
 
-  <Drawer
+  <Modal
     v-model:open="drawerOpen"
-    :body-style="{ display: 'flex', flexDirection: 'column', padding: 0 }"
+    centered
+    class="console-modal"
+    :closable="false"
+    :footer="null"
+    :keyboard="false"
+    :mask-closable="false"
+    :mask-style="{ backgroundColor: 'rgb(0 0 0 / 55%)', backdropFilter: 'blur(3px)' }"
+    :width="maximized ? 'calc(100vw - 24px)' : 'min(960px, calc(100vw - 32px))'"
+    :aria-label="title"
     destroy-on-close
-    :title="title"
-    width="100%"
   >
-    <template #extra>
-      <Space>
-        <Button
-          v-if="kind === 'vga' && phase === 'connected'"
-          size="small"
-          @click="sendCtrlAltDel"
-        >
-          发送 Ctrl+Alt+Del
-        </Button>
-        <Button
-          v-if="phase === 'ended' || phase === 'failed'"
-          :loading="createAction.pending.value"
-          size="small"
-          type="primary"
-          @click="reconnect"
-        >
-          重新连接
-        </Button>
-      </Space>
+    <template #title>
+      <div class="console-toolbar">
+        <div class="console-tab" :title="title">
+          <span class="console-dot" :data-phase="phase" aria-hidden="true"></span>
+          <span class="console-tab-kind">{{ kind === 'vga' ? 'VGA' : kind === 'serial' ? '串口' : '终端' }} 1</span>
+          <span class="console-instance">{{ props.instance.name }}</span>
+        </div>
+        <div class="console-tools">
+          <span class="console-status" :data-phase="phase" role="status">{{ phaseLabel }}</span>
+          <select v-if="kind !== 'vga'" v-model.number="fontSize" class="console-font" aria-label="终端字号" title="终端字号" @change="changeFontSize">
+            <option v-for="size in [12, 14, 16, 18, 20]" :key="size" :value="size">{{ size }}px</option>
+          </select>
+          <button v-if="kind !== 'vga'" class="console-tool" type="button" title="清屏（不执行命令）" aria-label="清屏" @click="clearScreen">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" /></svg>
+          </button>
+          <button class="console-tool" type="button" :title="maximized ? '还原窗口' : '放大窗口'" :aria-label="maximized ? '还原窗口' : '放大窗口'" :aria-pressed="maximized" @click="toggleMaximized">
+            <svg v-if="maximized" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3v5H3m18 0h-5V3M3 16h5v5m8 0v-5h5" /></svg>
+            <svg v-else viewBox="0 0 24 24" aria-hidden="true"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5" /></svg>
+          </button>
+          <button class="console-tool console-close" type="button" title="关闭终端" aria-label="关闭终端" @click="drawerOpen = false">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+          </button>
+        </div>
+      </div>
     </template>
-    <Alert
-      v-if="notice"
-      banner
-      :message="typeof notice === 'string' ? notice : notice.text"
-      :type="phase === 'failed' ? 'error' : phase === 'ended' ? 'warning' : 'info'"
-    >
-      <template v-if="typeof notice !== 'string'" #description>
-        <ErrorFeedback :feedback="notice" hide-message />
-      </template>
-    </Alert>
-    <div v-if="phase === 'preparing' || phase === 'connecting'" class="flex items-center gap-2 px-4 py-2 text-sm">
-      <Spin size="small" />
-      {{ phase === 'preparing' ? '正在准备控制台…' : '正在连接…' }}
+    <div class="console-panel" :class="{ 'console-panel-maximized': maximized }">
+      <Alert
+        v-if="notice"
+        banner
+        :message="typeof notice === 'string' ? notice : notice.text"
+        :type="phase === 'failed' ? 'error' : phase === 'ended' ? 'warning' : 'info'"
+      >
+        <template v-if="typeof notice !== 'string'" #description>
+          <ErrorFeedback :feedback="notice" hide-message />
+        </template>
+      </Alert>
+      <div v-if="phase === 'ended' || phase === 'failed' || (kind === 'vga' && phase === 'connected')" class="console-actions">
+        <Button v-if="kind === 'vga' && phase === 'connected'" size="small" @click="sendCtrlAltDel">发送 Ctrl+Alt+Del</Button>
+        <Button v-if="phase === 'ended' || phase === 'failed'" :loading="createAction.pending.value" size="small" @click="reconnect">重新连接</Button>
+      </div>
+      <div class="console-screen">
+        <div v-show="kind !== 'vga'" ref="termEl" class="console-terminal"></div>
+        <div v-show="kind === 'vga'" ref="vncEl" class="console-vnc"></div>
+        <div v-if="phase === 'preparing' || phase === 'connecting'" class="console-loading" role="status">
+          <Spin size="small" />
+          <span>{{ phase === 'preparing' ? '正在准备控制台…' : '正在连接…' }}</span>
+        </div>
+      </div>
     </div>
-    <div class="relative min-h-0 flex-1 bg-black">
-      <div v-show="kind !== 'vga'" ref="termEl" class="absolute inset-0 p-1"></div>
-      <div v-show="kind === 'vga'" ref="vncEl" class="absolute inset-0"></div>
-    </div>
-  </Drawer>
+  </Modal>
 </template>
+
+<style scoped>
+:global(.console-modal) { padding-bottom: 0; max-width: none; }
+:global(.console-modal .ant-modal-content) {
+  padding: 0; overflow: hidden; border: 1px solid #292e35; border-radius: 8px;
+  background: #090b0d; box-shadow: 0 24px 80px rgb(0 0 0 / 50%);
+}
+:global(.console-modal .ant-modal-header) { margin: 0; padding: 0; background: #101215; border-bottom: 1px solid #242930; }
+.console-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 7px 10px; color: #a9b2bf; font-size: 12px; font-weight: 400; }
+.console-tab { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 9px; border: 1px solid #30363e; border-radius: 4px; background: #1b2026; }
+.console-tab-kind { color: #e2e8f0; white-space: nowrap; }
+.console-instance { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.console-dot { width: 6px; height: 6px; flex-shrink: 0; border-radius: 50%; background: #94a3b8; }
+.console-dot[data-phase='connected'] { background: #34d399; }
+.console-dot[data-phase='failed'] { background: #f87171; }
+.console-dot[data-phase='preparing'], .console-dot[data-phase='connecting'] { background: #fbbf24; }
+.console-tools { display: flex; align-items: center; gap: 5px; flex-shrink: 0; }
+.console-status { margin-right: 5px; color: #a9b2bf; font-size: 11px; white-space: nowrap; }
+.console-status[data-phase='connected'] { color: #5ee6b5; }
+.console-status[data-phase='failed'] { color: #fca5a5; }
+.console-font { height: 26px; padding: 0 4px; border: 1px solid #343b45; border-radius: 4px; background: #15191e; color: #d5dbe3; color-scheme: dark; cursor: pointer; font: inherit; }
+.console-tool { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; border: 0; border-radius: 4px; background: transparent; color: #a9b2bf; cursor: pointer; transition: color 150ms, background 150ms; }
+.console-tool:hover { background: #292f38; color: #f8fafc; }
+.console-close:hover { background: #492329; color: #fda4af; }
+.console-tool:focus-visible, .console-font:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
+.console-tool svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.console-panel { display: flex; flex-direction: column; height: min(78dvh, 820px); min-height: 0; }
+.console-panel-maximized { height: calc(100dvh - 76px); }
+.console-screen { position: relative; flex: 1; min-height: 0; background: #090b0d; }
+.console-terminal, .console-vnc { position: absolute; inset: 0; overflow: hidden; }
+.console-terminal { padding: 12px; }
+.console-terminal :deep(.xterm-viewport) { scrollbar-width: thin; scrollbar-color: #3c4654 #090b0d; }
+.console-loading { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; color: #a9b2bf; font-size: 13px; background: #090b0d; }
+.console-actions { display: flex; justify-content: flex-end; padding: 8px 12px; border-bottom: 1px solid #242930; }
+@media (max-width: 600px) {
+  .console-toolbar { flex-wrap: wrap; gap: 6px; padding: 8px; }
+  .console-tab { flex: 1; }
+  .console-instance { max-width: 140px; }
+  .console-tools { margin-left: auto; }
+  .console-panel { height: 72dvh; }
+  .console-panel-maximized { height: calc(100dvh - 116px); }
+  .console-terminal { padding: 8px; }
+}
+@media (prefers-reduced-motion: reduce) { .console-tool { transition: none; } }
+</style>

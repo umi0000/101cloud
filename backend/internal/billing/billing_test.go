@@ -130,6 +130,37 @@ func TestIdlePolicyRequiresTimingAndRejectsRemovedThresholds(t *testing.T) {
 	}
 }
 
+func TestSchedulingPolicyRequiresPollBeforeMetricsExpire(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		poll, maxAge int
+		valid        bool
+	}{
+		{"poll below max age", 20, 60, true},
+		{"poll just below max age", 20, 21, true},
+		{"poll equals max age", 20, 20, false},
+		{"poll exceeds max age", 21, 20, false},
+		{"zero poll", 0, 60, false},
+		{"negative poll", -1, 60, false},
+		{"zero max age", 20, 0, false},
+		{"negative max age", 20, -1, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := map[string]any{"poll_interval_seconds": tc.poll, "metrics_max_age_seconds": tc.maxAge, "sm_weight": 0.5, "memory_weight": 0.5, "source_high_load_pct": 90, "target_low_load_pct": 30, "evaluation_window_seconds": 300, "min_improvement_pct": 10, "cooldown_seconds": 600, "rebindings_window_seconds": 3600, "max_rebindings_per_window": 2, "max_concurrent_per_node": 1, "allow_price_increase": false}
+			typed, err := validatePolicy("gpu-scheduling", encodedPolicy(t, config))
+			if (err == nil) != tc.valid {
+				t.Fatalf("poll=%d, max age=%d: validity mismatch: %v", tc.poll, tc.maxAge, err)
+			}
+			if tc.valid {
+				scheduling := typed.(SchedulingConfig)
+				if scheduling.Poll != tc.poll || scheduling.MaxAge != tc.maxAge {
+					t.Fatalf("scheduling timing changed: %+v", scheduling)
+				}
+			}
+		})
+	}
+}
+
 func TestPolicyValidationRejectsUnconfirmedEconomics(t *testing.T) {
 	if _, e := validatePolicy("credit", encodedPolicy(t, validCreditPolicy())); e != nil {
 		t.Fatalf("explicit valid policy rejected: %v", e)

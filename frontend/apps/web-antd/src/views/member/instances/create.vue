@@ -173,7 +173,7 @@ const REASONS: Record<string, string> = {
   insufficient_credit: '可用额度不足以预留首个计费窗口',
   gpu_price_exceeds_limit: 'GPU 当前单价高于所设上限，请在套餐范围内调整价格上限，或选择不带 GPU',
   insufficient_disk_bytes: '节点可用磁盘不足',
-  insufficient_gpu_capacity_or_metrics: '符合价格上限的 GPU 库存不足或监控数据不可用',
+  insufficient_gpu_capacity: '符合条件的 GPU 库存或可分配名额不足',
   insufficient_memory_bytes: '节点可用内存不足',
   insufficient_vcpus: '节点可用 CPU 不足',
   inventory_stale: '节点库存观测已过期，请等待刷新',

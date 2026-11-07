@@ -384,20 +384,7 @@ func quoteAvailability(ctx context.Context, db *gorm.DB, a *platform.App, s Crea
 	if platform.Text(node["administrative_state"]) != "active" || platform.Text(node["health"]) != "online" || node["connection_verified_at"] == nil {
 		reasons = append(reasons, "node_unavailable")
 	}
-	policies, e := resolvePolicies(ctx, db, a, v.PolicyVersions, true)
-	if e != nil {
-		return nil, e
-	}
-	maxAge := uint64(60)
-	if s.GPU.Count > 0 {
-		config := object(policies["gpu-scheduling"]["config"])
-		maxAge = platform.Uint(config["metrics_max_age_seconds"])
-		if maxAge == 0 {
-			return nil, platform.E(409, "policy_not_configured", "库存观测有效期策略未配置，请联系管理员检查 GPU 调度策略。")
-		}
-	}
-	sampled := platform.Stamp(node["resources_sampled_at"])
-	if sampled.IsZero() || a.Time().Sub(sampled) > time.Duration(maxAge)*time.Second {
+	if !platform.InventoryFresh(a.Time(), node["resources_sampled_at"]) {
 		reasons = append(reasons, "inventory_stale")
 	}
 	var usage platform.Row
@@ -421,33 +408,18 @@ func quoteAvailability(ctx context.Context, db *gorm.DB, a *platform.App, s Crea
 		reasons = append(reasons, "no_registered_address_available")
 	}
 	if s.GPU.Count > 0 {
-		q := db.Table("node_gpus g").Where("g.node_id=? AND g.model=? AND g.status='available' AND g.memory_mib IS NOT NULL AND g.last_seen_at>=?", node["id"], *s.GPU.Model, a.Time().Add(-time.Duration(maxAge)*time.Second))
+		q := db.Table("node_gpus g").Where("g.node_id=? AND g.model=? AND g.status='available' AND g.memory_mib IS NOT NULL AND g.last_seen_at>=? AND g.last_seen_at<=?", node["id"], *s.GPU.Model, a.Time().Add(-platform.NodeInventoryMaxAge), a.Time())
 		if s.GPU.AccessMode == "exclusive" {
 			q = q.Where("NOT EXISTS (SELECT 1 FROM gpu_allocations ga WHERE ga.gpu_id=g.id AND ga.active_slot=1)")
 		} else {
 			q = q.Where("g.max_allocations > (SELECT COUNT(*) FROM gpu_allocations ga WHERE ga.gpu_id=g.id AND ga.active_slot=1) AND NOT EXISTS (SELECT 1 FROM gpu_allocations ga WHERE ga.gpu_id=g.id AND ga.active_slot=1 AND ga.access_mode='exclusive')")
 		}
-		var eligible []string
-		if e = q.Pluck("g.uuid", &eligible).Error; e != nil {
+		var available int64
+		if e = q.Count(&available).Error; e != nil {
 			return nil, platform.WrapDB(e)
 		}
-		observed := map[string]bool{}
-		resource := object(node["resources"])
-		cards, _ := resource["gpus"].([]any)
-		for _, card := range cards {
-			m := object(card)
-			if m["utilization_percent"] != nil && m["memory_utilization_percent"] != nil && platform.Text(m["error"]) == "" {
-				observed[platform.Text(m["uuid"])] = true
-			}
-		}
-		available := uint64(0)
-		for _, uuid := range eligible {
-			if observed[uuid] {
-				available++
-			}
-		}
-		if available < s.GPU.Count {
-			reasons = append(reasons, "insufficient_gpu_capacity_or_metrics")
+		if uint64(available) < s.GPU.Count {
+			reasons = append(reasons, "insufficient_gpu_capacity")
 		}
 	}
 	return reasons, nil

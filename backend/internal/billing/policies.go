@@ -164,6 +164,9 @@ func validatePolicy(kind string, raw json.RawMessage) (any, error) {
 		if !positive(p.Poll, p.MaxAge, p.Window, p.Cooldown, p.RebindingWindow, p.MaxRebindings, p.Concurrency) || !percent(p.High, p.Low, p.Improvement) || p.Low >= p.High || p.SM < 0 || p.Memory < 0 || !sum.Equal(decimal.NewFromInt(1)) {
 			return nil, invalid("invalid scheduling intervals, thresholds or weights")
 		}
+		if p.Poll >= p.MaxAge {
+			return nil, invalid("poll_interval_seconds must be less than metrics_max_age_seconds")
+		}
 		return p, nil
 	case "gpu-idle":
 		var p IdleConfig

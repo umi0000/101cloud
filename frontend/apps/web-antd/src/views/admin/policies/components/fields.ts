@@ -125,8 +125,8 @@ export const POLICY_FIELDS: Record<PolicyKind, PolicyField[]> = {
     { key: 'gpu_hourly_pt', label: 'GPU 单价', type: 'pt', unit: 'pt/小时' },
   ],
   'gpu-scheduling': [
-    seconds('poll_interval_seconds', '轮询间隔'),
-    seconds('metrics_max_age_seconds', '指标最大时效', SECONDS, '采样超过此时长即视为过期，不用于调度判断'),
+    seconds('poll_interval_seconds', '轮询间隔', SECONDS, '自动调度流程的检查间隔，不是节点或实例监控的采集间隔；必须小于指标最大时效'),
+    seconds('metrics_max_age_seconds', '指标最大时效', SECONDS, 'GPU 动态负载指标超过此时长即视为过期，不用于选卡或自动调度；不影响 GPU 库存信息的有效性，且必须大于轮询间隔'),
     { key: 'sm_weight', label: 'SM 权重', type: 'decimal', hint: '与显存权重之和必须为 1' },
     { key: 'memory_weight', label: '显存权重', type: 'decimal' },
     pct('source_high_load_pct', '源 GPU 高负载阈值'),

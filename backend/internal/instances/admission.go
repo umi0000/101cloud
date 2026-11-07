@@ -158,7 +158,7 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 	if e != nil {
 		return nil, e
 	}
-	if platform.Text(node["administrative_state"]) != "active" || platform.Text(node["health"]) != "online" || platform.Stamp(node["connection_verified_at"]).IsZero() || a.Time().Sub(platform.Stamp(node["resources_sampled_at"])) > time.Minute || a.Time().Sub(platform.Stamp(node["last_heartbeat_at"])) > time.Minute {
+	if platform.Text(node["administrative_state"]) != "active" || platform.Text(node["health"]) != "online" || platform.Stamp(node["connection_verified_at"]).IsZero() || !platform.InventoryFresh(a.Time(), node["resources_sampled_at"]) || !platform.InventoryFresh(a.Time(), node["last_heartbeat_at"]) {
 		return nil, conflict("node_unavailable", "节点未通过连接验证、未在线或资源观测已过期，请管理员检查节点连接与采集状态。")
 	}
 	resources := object(node["resources"])
