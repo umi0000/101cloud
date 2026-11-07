@@ -11,10 +11,12 @@
 // POST /agent/v1/network/ip-probe accepts one interface/address IPv4 probe.
 // Observations do not reserve the address or guarantee DHCP safety.
 // PUT /agent/v1/instances/{name}/gpu?project=default accepts
-// {"gpu_uuids": ["GPU-..."], "allow_live": false}. An empty UUID array removes
-// only local agent-gpu-N devices. Other GPU devices and inherited GPU profiles
-// are conflicts, never implicitly removed. Only node-advertised NVIDIA UUIDs
-// are supported, not PCI selectors, MIG identifiers or GPU resource quotas.
+// {"gpu_uuids": ["GPU-..."], "allow_live": false, "add_only": false}. An empty
+// UUID array removes only local agent-gpu-N devices unless add_only is true,
+// which preserves all existing GPU entries exactly and permits additions only.
+// Other GPU devices and inherited GPU profiles are conflicts, never removed.
+// Only node-advertised NVIDIA UUIDs are supported, not PCI selectors, MIG
+// identifiers or GPU resource quotas.
 //
 // GPU mutation responses include requested_gpu_uuids, operation_completed,
 // configuration_state (observed or unknown), actual (the observed api.Instance),
@@ -288,15 +290,19 @@ func decodeGPURequest(w http.ResponseWriter, r *http.Request) (gpuRequest, error
 			if request.GPUUUIDs == nil {
 				return gpuRequest{}, errors.New("gpu_uuids must be an array, not null")
 			}
-		case "allow_live":
+		case "allow_live", "add_only":
 			var value *bool
 			if err := decoder.Decode(&value); err != nil {
 				return gpuRequest{}, err
 			}
 			if value == nil {
-				return gpuRequest{}, errors.New("allow_live must be a boolean")
+				return gpuRequest{}, fmt.Errorf("%s must be a boolean", key)
 			}
-			request.AllowLive = *value
+			if key == "allow_live" {
+				request.AllowLive = *value
+			} else {
+				request.AddOnly = *value
+			}
 		default:
 			return gpuRequest{}, fmt.Errorf("unknown JSON field %q", key)
 		}

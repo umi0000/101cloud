@@ -217,6 +217,7 @@ export const QUALITY_REASONS: Record<string, string> = {
   instance_attribution_unknown: '实例 GPU 占用归因尚未完整确认',
   instance_not_running: '实例已停止，无运行态进程归因',
   gpu_references_unresolved: 'GPU 占用归属未完全确认',
+  gpu_shared_control_references: '共享 GPU 控制设备引用已归属此实例，但物理 GPU 范围尚未确认',
   history_evicted: '节点历史已被覆盖',
   late_sample: '采样延迟',
   no_retained_observation: '该时段没有保留的数据',

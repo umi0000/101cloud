@@ -83,6 +83,47 @@ func TestGPUReleaseRequiresConfigurationAndOccupancyGone(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSharedControlContextEvidenceIsAdditiveOnly(t *testing.T) {
+	valid := func() platform.Row {
+		return platform.Row{"attribution_complete": false, "context_attribution_complete": true, "reasons": []string{"gpu_shared_control_references"}}
+	}
+	if !sharedControlContextComplete(valid()) {
+		t.Fatal("verified shared-control owner was rejected")
+	}
+	for _, reason := range []string{"gpu_metric_unavailable", "gpu_utilization_unknown", "gpu_utilization_no_samples", "gpu_utilization_stale", "gpu_utilization_identity_unconfirmed"} {
+		q := valid()
+		q["reasons"] = []string{"gpu_shared_control_references", reason}
+		if !sharedControlContextComplete(q) {
+			t.Fatalf("metric-only reason rejected: %s", reason)
+		}
+	}
+	for _, reason := range []string{"gpu_references_unresolved", "gpu_reference_scan_incomplete", "unattributed_gpu_contexts", "unattributed_gpu_activity", "gpu_attribution_incomplete", "gpu_identity_unknown", "instance_identity_changed", "gpu_configuration_unresolved", "unrecognized_reason"} {
+		q := valid()
+		q["reasons"] = []string{"gpu_shared_control_references", reason}
+		if sharedControlContextComplete(q) {
+			t.Fatalf("unsafe reason admitted: %s", reason)
+		}
+	}
+	for name, q := range map[string]platform.Row{
+		"old_agent":        {"attribution_complete": false, "reasons": []string{"gpu_shared_control_references"}},
+		"false_context":    {"context_attribution_complete": false, "reasons": []string{"gpu_shared_control_references"}},
+		"string_context":   {"context_attribution_complete": "true", "reasons": []string{"gpu_shared_control_references"}},
+		"missing_reason":   {"context_attribution_complete": true},
+		"metric_only":      {"context_attribution_complete": true, "reasons": []string{"gpu_utilization_no_samples"}},
+		"malformed_reason": {"context_attribution_complete": true, "reasons": []any{"gpu_shared_control_references", true}},
+	} {
+		if sharedControlContextComplete(q) {
+			t.Fatalf("incomplete exception evidence admitted: %s", name)
+		}
+	}
+	card := idleCard()
+	card["quality"] = valid()
+	card["configured"] = false
+	for _, removed := range []bool{false, true} {
+		requireCode(t, safeLiveCard(card, removed), "observation_incomplete")
+	}
+}
 func TestResourcesRejectInvalidCapacityStrings(t *testing.T) {
 	for _, r := range []Resources{{0, "1", "1"}, {1, "0", "1"}, {1, "-1", "1"}, {1, "1.5", "1"}, {1, "1", "18446744073709551616"}, {1, "1", "0"}} {
 		if _, _, err := validResources(r); err == nil {

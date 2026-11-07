@@ -8007,7 +8007,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Administrator required. ",
+        "description": "Administrator required. Pure additions preserve every native configured GPU and use the internal Agent add_only guard; an extra native GPU outside the desired set rejects instead of being implicitly detached. Running additions require fresh complete collection and matching instance project/name/UUID/running state. Normally full attribution is required; an explicit Agent quality.context_attribution_complete:true with gpu_shared_control_references and only metric-level companion reasons may authorize additions, never removal/rebind/idle/reclamation. Missing context evidence does not grant an exception. Upgrade Agent first; unsupported add_only is rejected without an unguarded retry. Quota, pricing, inventory and independent GPU load freshness gates remain unchanged.",
         "parameters": [
           {
             "in": "path",
@@ -10340,7 +10340,7 @@
         "tags": [
           "instances"
         ],
-        "description": "",
+        "description": "Adds count GPUs without stopping existing CUDA work. Every native configured GPU must remain in the desired set; the internal Agent add_only guard preserves existing device entries under native read/ETag protection. Running additions require fresh complete collection and matching instance project/name/UUID/running state. Full attribution remains the normal gate. Its only additive exception requires explicit Agent quality.context_attribution_complete:true plus gpu_shared_control_references, with optional gpu_metric_unavailable, gpu_utilization_unknown, gpu_utilization_no_samples, gpu_utilization_stale or gpu_utilization_identity_unconfirmed reasons and no other reasons. Old Agent without context evidence still requires full attribution; unsupported add_only never triggers an unguarded fallback. Removal, rebind, idle/release, pricing, quota and inventory/load freshness gates are not relaxed.",
         "parameters": [
           {
             "in": "path",
@@ -12528,17 +12528,20 @@
       },
       "Quality": {
         "type": "object",
+        "description": "Persisted public monitoring quality. Agent live quality separately supplies context_attribution_complete (explicit boolean) for verified context ownership; that internal flag is not persisted or returned by latest/history and never replaces full attribution for release or idle safety.",
         "properties": {
           "complete": {
             "type": "boolean"
           },
           "attribution_complete": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "Full context and device-reference safety evidence. Owned shared control references keep this false even when context ownership is verified."
           },
           "reasons": {
             "type": "array",
             "items": {
-              "type": "string"
+              "type": "string",
+              "description": "Allowlisted anonymous reason. gpu_shared_control_references means shared control references belong to this instance but their physical GPU scope remains uncertain; reference_scan_quality is partial and verified numeric metrics may still be present."
             }
           },
           "reference_scan_quality": {

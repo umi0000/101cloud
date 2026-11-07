@@ -22,6 +22,7 @@ var (
 type gpuRequest struct {
 	GPUUUIDs  []string `json:"gpu_uuids"`
 	AllowLive bool     `json:"allow_live"`
+	AddOnly   bool     `json:"add_only"`
 }
 
 type gpuResponse struct {
@@ -151,12 +152,50 @@ func checkGPUConflicts(instance *api.Instance, profiles []*api.Profile) error {
 	return nil
 }
 
-func planGPUUpdate(instance *api.Instance, profiles []*api.Profile, selected map[string]map[string]string) (api.InstancePut, error) {
+func planGPUUpdate(instance *api.Instance, profiles []*api.Profile, selected map[string]map[string]string, addOnly bool) (api.InstancePut, error) {
 	if err := checkGPUConflicts(instance, profiles); err != nil {
 		return api.InstancePut{}, err
 	}
 	put := instance.Writable()
 	put.Devices = make(map[string]map[string]string, len(instance.Devices)+len(selected))
+	if addOnly {
+		wanted := make(map[string]bool, len(selected))
+		for _, device := range selected {
+			wanted[metricsPCI(device["pci"])] = true
+		}
+		existing := make(map[string]bool, len(instance.Devices))
+		for name, device := range instance.Devices {
+			if managedNamePattern.MatchString(name) {
+				pci := metricsPCI(device["pci"])
+				if pci == "" || (device["gputype"] != "" && device["gputype"] != "physical") || device["id"] != "" || device["vendorid"] != "" || device["productid"] != "" || !wanted[pci] || existing[pci] {
+					return api.InstancePut{}, conflictGPU("add_only requires every existing managed physical GPU to remain in the requested node-local set")
+				}
+				if expanded, ok := instance.ExpandedDevices[name]; ok && !maps.Equal(expanded, device) {
+					return api.InstancePut{}, conflictGPU("add_only cannot resolve inconsistent local and expanded GPU configuration")
+				}
+				existing[pci] = true
+			}
+			// Retain the exact device name and attributes; replacing an identical
+			// PCI under another name can detach an actively used Incus device.
+			put.Devices[name] = device
+		}
+		next := 0
+		for _, name := range slices.Sorted(maps.Keys(selected)) {
+			device := selected[name]
+			if existing[metricsPCI(device["pci"])] {
+				continue
+			}
+			for {
+				name = fmt.Sprintf("agent-gpu-%d", next)
+				next++
+				if _, used := put.Devices[name]; !used {
+					break
+				}
+			}
+			put.Devices[name] = device
+		}
+		return put, nil
+	}
 	for name, device := range instance.Devices {
 		if !managedNamePattern.MatchString(name) {
 			put.Devices[name] = device
@@ -242,10 +281,19 @@ func (s *Service) configureGPU(w http.ResponseWriter, r *http.Request, name stri
 		writeRequestError(w, err)
 		return
 	}
-	put, err := planGPUUpdate(instance, profiles, selected)
+	put, err := planGPUUpdate(instance, profiles, selected, request.AddOnly)
 	if err != nil {
 		writeRequestError(w, err)
 		return
+	}
+	if request.AddOnly {
+		// Observe against the preserved names/attributes, not request ordering.
+		clear(selected)
+		for name, device := range put.Devices {
+			if managedNamePattern.MatchString(name) {
+				selected[name] = device
+			}
+		}
 	}
 	state, _, err := client.GetInstanceState(name)
 	if err != nil {

@@ -56,8 +56,13 @@ type Quality struct {
 	Complete bool `json:"complete"`
 	// AttributionComplete covers context inventory, ownership and FD references,
 	// independently of optional utilization metric observations.
-	AttributionComplete bool     `json:"attribution_complete"`
-	Reasons             []string `json:"reasons"`
+	AttributionComplete bool `json:"attribution_complete"`
+	// ContextAttributionComplete preserves verified context ownership when only
+	// owned shared control references have uncertain physical scope. Unknown
+	// references, failed scans and identity changes still make it false.
+	// This flag never authorizes idle/release or removal/rebinding.
+	ContextAttributionComplete bool     `json:"context_attribution_complete"`
+	Reasons                    []string `json:"reasons"`
 }
 
 type CPUMetrics struct {

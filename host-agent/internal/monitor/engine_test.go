@@ -158,44 +158,262 @@ func TestSystemdSiblingScopesGPUOwnership(t *testing.T) {
 	}
 }
 
-func TestVerifiedGPUContextsSurviveUnknownControlReferences(t *testing.T) {
-	requireLinux(t)
+func fixtureSharedControlEngine(t *testing.T) (*Engine, *fixtureReader, []Instance, string) {
+	t.Helper()
 	now := time.Unix(1800000000, 0)
 	root := t.TempDir()
-	fixtureProcess(t, root, 101, "/instances/1", 11)
-	fixtureProcess(t, root, 102, "/instances/1/workload", 12)
-	if err := os.Symlink("/dev/null", filepath.Join(root, "102", "fd", "4")); err != nil {
+	for _, item := range []struct {
+		pid   int
+		group string
+	}{{101, "/instances/1"}, {201, "/instances/10"}} {
+		fixtureProcess(t, root, item.pid, item.group+"/init.scope", uint64(item.pid))
+		mount := "31 25 0:27 " + item.group + " /sys/fs/cgroup rw - cgroup2 cgroup rw\n"
+		if err := os.WriteFile(filepath.Join(root, strconv.Itoa(item.pid), "mountinfo"), []byte(mount), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fixtureProcess(t, root, 102, "/instances/1/system.slice/docker.service/docker/nested", 12)
+	// Nested Docker PID namespaces differ; cgroup ancestry remains authoritative.
+	for _, pid := range []int{101, 102} {
+		base := filepath.Join(root, strconv.Itoa(pid), "ns")
+		if err := os.MkdirAll(base, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(fmt.Sprintf("pid:[%d]", pid), filepath.Join(base, "pid")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	memory := uint64(70)
+	card := completeDevice("GPU-a", now, gpu.Process{PID: 102, UsedMemoryBytes: &memory})
+	card.Utilization[0].SMPercent = 37
+	reader := &fixtureReader{sample: gpu.Sample{CollectedAt: now, Devices: []gpu.Device{card, completeDevice("GPU-old", now)}}}
+	engine := fixtureEngine(t, root, reader, &now)
+	if err := os.MkdirAll(filepath.Join(root, "devices"), 0700); err != nil {
 		t.Fatal(err)
 	}
+	for index, device := range []struct {
+		path string
+		leaf string
+	}{{"/dev/null", "nvidia0"}, {"/dev/zero", "nvidiactl"}, {"/dev/random", "nvidia-uvm"}} {
+		info, err := os.Stat(device.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		number, ok := deviceNumber(info)
+		if !ok {
+			t.Fatal("missing fixture device identity")
+		}
+		if index == 0 {
+			engine.devices[number] = "GPU-a"
+		} else {
+			engine.controlDevices[number] = true
+		}
+		alias := filepath.Join(root, "devices", device.leaf)
+		if err := os.Symlink(device.path, alias); err != nil {
+			t.Fatal(err)
+		}
+		// Duplicate FDs must count once per process, for physical and shared nodes.
+		for _, fd := range []int{index*2 + 4, index*2 + 5} {
+			if err := os.Symlink(alias, filepath.Join(root, "102", "fd", strconv.Itoa(fd))); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	inputs := []Instance{
+		{Project: "p", Name: "one", UUID: "one", Type: "container", State: "Running", InitPID: 101, ConfiguredGPUs: []string{"GPU-a", "GPU-old"}},
+		{Project: "p", Name: "ten", UUID: "ten", Type: "container", State: "Running", InitPID: 201},
+	}
+	return engine, reader, inputs, root
+}
+
+func TestQualityContextAttributionJSON(t *testing.T) {
+	for _, mode := range []string{"complete", "shared", "metric", "unknown"} {
+		q := quality()
+		switch mode {
+		case "shared":
+			addSharedReferenceReason(&q)
+		case "metric":
+			addMetricReason(&q, "gpu_utilization_unknown")
+		case "unknown":
+			addReason(&q, "gpu_references_unresolved")
+		}
+		payload, err := json.Marshal(q)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(payload, &fields); err != nil {
+			t.Fatal(err)
+		}
+		flag, present := fields["context_attribution_complete"].(bool)
+		if !present || flag != (mode != "unknown") {
+			t.Fatalf("context flag missing or incorrectly serialized: %s", payload)
+		}
+		merged := quality()
+		mergeQuality(&merged, q)
+		if merged.ContextAttributionComplete != q.ContextAttributionComplete || merged.AttributionComplete != q.AttributionComplete {
+			t.Fatalf("quality merge collapsed independent evidence: %+v", merged)
+		}
+	}
+	var legacy Quality
+	if err := json.Unmarshal([]byte(`{"complete":true,"attribution_complete":true,"reasons":[]}`), &legacy); err != nil || legacy.ContextAttributionComplete {
+		t.Fatal("missing context field was invented")
+	}
+}
+
+func TestGPUFDIdentityUsesRdevNotContainerName(t *testing.T) {
+	requireLinux(t)
+	engine, _, inputs, _ := fixtureSharedControlEngine(t)
 	info, err := os.Stat("/dev/null")
 	if err != nil {
 		t.Fatal(err)
 	}
 	number, ok := deviceNumber(info)
 	if !ok {
-		t.Fatal("missing device identity")
+		t.Fatal("missing fixture device identity")
 	}
-	memory := uint64(70)
-	reader := &fixtureReader{sample: gpu.Sample{CollectedAt: now, Devices: []gpu.Device{
-		completeDevice("GPU-a", now, gpu.Process{PID: 102, UsedMemoryBytes: &memory}),
-	}}}
-	engine := fixtureEngine(t, root, reader, &now)
-	engine.controlDevices[number] = true
-	inputs := []Instance{{Project: "p", Name: "one", UUID: "one", Type: "container", InitPID: 101, ConfiguredGPUs: []string{"GPU-a"}}}
-	engine.Sample(context.Background(), inputs)
-	row := engine.Sample(context.Background(), inputs).Instances[0]
-	card := row.GPUs[0]
-	if row.GPUState != "in_use" || card.ContextCount == nil || *card.ContextCount != 1 || card.UsedMemoryBytes == nil || *card.UsedMemoryBytes != memory || card.SMUtilizationPercent == nil || *card.SMUtilizationPercent != 0 {
-		t.Fatalf("unknown references erased verified usage: %+v", card)
+	engine.devices[number] = "GPU-old" // The container alias remains nvidia0.
+	proc := engine.scanProcesses(context.Background(), inputs)
+	if proc.references[0]["GPU-old"] != 1 || proc.references[0]["GPU-a"] != 0 || proc.sharedReferences[0] != 1 || proc.unresolved != 0 {
+		t.Fatalf("container filename overrode trusted rdev mapping: %+v", proc)
 	}
-	if card.Quality.AttributionComplete || card.ReferencingProcessCount != nil {
-		t.Fatalf("unknown control reference claimed complete attribution: %+v", card)
+}
+
+func TestVerifiedGPUContextsSurviveSharedControlReferences(t *testing.T) {
+	requireLinux(t)
+	for _, otherGPU := range []bool{false, true} {
+		t.Run(strconv.FormatBool(otherGPU), func(t *testing.T) {
+			engine, reader, inputs, root := fixtureSharedControlEngine(t)
+			if otherGPU {
+				inputs[1].ConfiguredGPUs = []string{"GPU-old"}
+			}
+			proc := engine.scanProcesses(context.Background(), inputs)
+			if !proc.complete || !proc.referencesComplete || proc.unresolved != 0 || proc.sharedReferences[0] != 1 || len(proc.sharedReferences) != 1 || proc.references[0]["GPU-a"] != 1 {
+				t.Fatalf("known shared references lost owner or FD deduplication: %+v", proc)
+			}
+			engine.Sample(context.Background(), inputs)
+			snapshot := engine.Sample(context.Background(), inputs)
+			row, other := snapshot.Instances[0], snapshot.Instances[1]
+			card := row.GPUs[0]
+			if row.GPUState != "in_use" || card.UUID != "GPU-a" || card.ContextCount == nil || *card.ContextCount != 1 || card.UsedMemoryBytes == nil || *card.UsedMemoryBytes != 70 || card.SMUtilizationPercent == nil || *card.SMUtilizationPercent != 37 {
+				t.Fatalf("shared references erased verified usage: %+v", card)
+			}
+			for _, q := range []Quality{snapshot.Quality, snapshot.HostQuality, row.Quality, row.GPUs[0].Quality, row.GPUs[1].Quality} {
+				reasons := "," + strings.Join(q.Reasons, ",") + ","
+				if q.Complete || q.AttributionComplete || !q.ContextAttributionComplete || !strings.Contains(reasons, ",gpu_shared_control_references,") || strings.Contains(reasons, ",gpu_references_unresolved,") || strings.Contains(reasons, ",gpu_reference_scan_incomplete,") {
+					t.Fatalf("owned shared references misclassified: %+v", q)
+				}
+			}
+			if card.ReferencingProcessCount != nil || row.GPUs[1].ReferencingProcessCount != nil || row.GPUs[1].State != "unknown" {
+				t.Fatal("physical FD incorrectly restricted shared reference scope to one card")
+			}
+			if snapshot.Anonymous != (AnonymousCounts{}) || !other.Quality.AttributionComplete || !other.Quality.ContextAttributionComplete || strings.Contains(strings.Join(other.Quality.Reasons, ","), "gpu_shared_control_references") {
+				t.Fatalf("shared owner poisoned unrelated instance: %+v", snapshot)
+			}
+			if otherGPU {
+				if other.GPUState != "idle_candidate" || len(other.GPUs) != 1 || !other.GPUs[0].Quality.AttributionComplete || !other.GPUs[0].Quality.ContextAttributionComplete || other.GPUs[0].ContextCount == nil || *other.GPUs[0].ContextCount != 0 {
+					t.Fatalf("unrelated card evidence was downgraded: %+v", other)
+				}
+			} else if other.GPUState != "not_attached" || len(other.GPUs) != 0 {
+				t.Fatalf("unrelated no-GPU instance was downgraded: %+v", other)
+			}
+			report, err := json.Marshal(map[string]any{
+				"owner_context_complete": row.Quality.ContextAttributionComplete,
+				"owner_full_complete":    row.Quality.AttributionComplete,
+				"owner_process_count":    card.ContextCount,
+				"other_context_complete": other.Quality.ContextAttributionComplete,
+				"other_full_complete":    other.Quality.AttributionComplete,
+				"anonymous_references":   snapshot.Anonymous.UnresolvedGPUReferences,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Log(string(report))
+			for _, fd := range []string{"4", "5"} {
+				if err := os.Remove(filepath.Join(root, "102", "fd", fd)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reader.sample.Devices[0].Contexts = nil
+			reader.sample.Devices[0].Utilization = nil
+			row = engine.Sample(context.Background(), inputs).Instances[0]
+			if row.GPUState != "unknown" || row.Quality.AttributionComplete || !row.Quality.ContextAttributionComplete {
+				t.Fatalf("shared-only holder permitted idle release: %+v", row)
+			}
+			for _, card := range row.GPUs {
+				if card.State != "unknown" || card.ReferencingProcessCount != nil || card.Quality.AttributionComplete {
+					t.Fatalf("shared-only holder permitted per-card release: %+v", card)
+				}
+			}
+			inputs[0].ConfiguredGPUs = nil
+			row = engine.Sample(context.Background(), inputs).Instances[0]
+			if row.GPUState != "unknown" || len(row.GPUs) != 0 || row.Quality.AttributionComplete || !row.Quality.ContextAttributionComplete {
+				t.Fatalf("unconfigured shared-only holder became not_attached: %+v", row)
+			}
+		})
 	}
-	reader.sample.Devices[0].Contexts = nil
-	reader.sample.Devices[0].Utilization = nil
-	row = engine.Sample(context.Background(), inputs).Instances[0]
-	if row.GPUState != "unknown" || row.GPUs[0].State != "unknown" || row.Quality.AttributionComplete {
-		t.Fatalf("remaining control reference permitted idle release: %+v", row)
+}
+
+func TestSharedControlFailuresStayGlobalUnknown(t *testing.T) {
+	requireLinux(t)
+	for _, mode := range []string{"unknown_rdev", "ambiguous_rdev", "fd_read", "fd_permission", "process_limit", "fd_limit", "pid_reuse", "cgroup_move", "init_reuse", "ambiguous_cgroup"} {
+		t.Run(mode, func(t *testing.T) {
+			engine, reader, inputs, root := fixtureSharedControlEngine(t)
+			reader.sample.Devices[0].Contexts = nil
+			reader.sample.Devices[0].Utilization = nil
+			switch mode {
+			case "unknown_rdev", "ambiguous_rdev":
+				info, err := os.Stat("/dev/random")
+				if err != nil {
+					t.Fatal(err)
+				}
+				number, ok := deviceNumber(info)
+				if !ok {
+					t.Fatal("missing fixture device identity")
+				}
+				delete(engine.controlDevices, number)
+				if mode == "ambiguous_rdev" {
+					engine.devices[number] = ""
+				}
+			case "fd_read":
+				if err := os.Remove(filepath.Join(root, "devices", "nvidia-uvm")); err != nil {
+					t.Fatal(err)
+				}
+			case "fd_permission":
+				if os.Geteuid() == 0 {
+					t.Skip("root bypasses fixture permissions")
+				}
+				if err := os.Chmod(filepath.Join(root, "102", "fd"), 0000); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { _ = os.Chmod(filepath.Join(root, "102", "fd"), 0700) })
+			case "process_limit":
+				engine.maxProcesses = 1
+			case "fd_limit":
+				engine.maxFDs = 1
+			case "pid_reuse":
+				reader.hook = func() { fixtureProcess(t, root, 102, "/instances/1/system.slice/docker.service/docker/nested", 99) }
+			case "cgroup_move":
+				reader.hook = func() { fixtureProcess(t, root, 102, "/instances/10/moved", 12) }
+			case "init_reuse":
+				reader.hook = func() { fixtureProcess(t, root, 101, "/instances/1/init.scope", 99) }
+			case "ambiguous_cgroup":
+				fixtureProcess(t, root, 301, "/instances/1/system.slice", 31)
+				inputs = append(inputs, Instance{Project: "p", Name: "ambiguous", UUID: "ambiguous", Type: "container", State: "Running", InitPID: 301})
+			}
+			snapshot := engine.Sample(context.Background(), inputs)
+			for _, q := range []Quality{snapshot.Quality, snapshot.HostQuality, snapshot.Instances[0].Quality, snapshot.Instances[1].Quality} {
+				if q.AttributionComplete || q.ContextAttributionComplete {
+					t.Fatalf("unsafe evidence admitted context-only exception: %+v", snapshot)
+				}
+			}
+			if snapshot.Instances[0].GPUState == "idle_candidate" || snapshot.Instances[1].GPUState != "unknown" {
+				t.Fatalf("unknown evidence became idle/unattached: %+v", snapshot)
+			}
+			if (mode == "unknown_rdev" || mode == "ambiguous_rdev") && snapshot.Anonymous.UnresolvedGPUReferences == 0 {
+				t.Fatal("unmapped references disappeared from anonymous accounting")
+			}
+		})
 	}
 }
 
@@ -438,8 +656,8 @@ func TestGPUFileDescriptorsAndGenericControl(t *testing.T) {
 			snapshot := engine.Sample(context.Background(), []Instance{{Project: "p", Name: "a", Type: "container", InitPID: 101, ConfiguredGPUs: []string{"GPU-a"}}})
 			row := snapshot.Instances[0]
 			if generic {
-				if row.GPUState != "unknown" || snapshot.Anonymous.UnresolvedGPUReferences == 0 {
-					t.Fatalf("generic FD pretended to be unused: %+v", snapshot)
+				if row.GPUState != "unknown" || snapshot.Anonymous.UnresolvedGPUReferences != 0 || row.Quality.AttributionComplete || !row.Quality.ContextAttributionComplete {
+					t.Fatalf("known shared FD pretended to be idle or anonymous: %+v", snapshot)
 				}
 			} else if row.GPUState != "in_use" || len(row.GPUs) != 2 || row.GPUs[1].UUID != "GPU-old" || row.GPUs[1].Configured || !row.GPUs[1].Observed || row.GPUs[1].ReferencingProcessCount == nil || *row.GPUs[1].ReferencingProcessCount != 1 {
 				t.Fatalf("old GPU FD lost: %+v", row)
@@ -893,7 +1111,7 @@ func TestSnapshotHostQualitySeparatesStoppedRowsFromHostUncertainty(t *testing.T
 					t.Fatal("missing control device identity")
 				}
 				engine.controlDevices[number] = true
-				reason = "gpu_references_unresolved"
+				reason = "gpu_shared_control_references"
 			case "fd_scan":
 				if err := os.Remove(filepath.Join(root, "101", "fd")); err != nil {
 					t.Fatal(err)

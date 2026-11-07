@@ -366,7 +366,7 @@ interval_seconds范围1–60，timeout_seconds范围1–30；配置变化重启A
 | `stale` | 当前缓存是否已超出新鲜度期限；不能用于自动动作 |
 | `instances` | 按项目过滤后的实例聚合列表 |
 | `quality` | 全节点汇总质量；包括其他实例，不等于目标实例的独立质量 |
-| `host_quality` | 实例行合并前的全节点证据质量：`complete`、`attribution_complete`、`reasons`；不因无关Stopped实例缺PID而降级，不表示GPU空闲 |
+| `host_quality` | 实例行合并前的全节点证据质量：`complete`、`attribution_complete`、`context_attribution_complete`、`reasons`；不因无关Stopped实例缺PID而降级，不表示GPU空闲 |
 | `anonymous` | 未归属上下文、设备引用、近期活动的匿名计数，不含进程标识 |
 
 每个实例包含project、name、uuid、type、state、started_at，以及：
@@ -383,6 +383,7 @@ interval_seconds范围1–60，timeout_seconds范围1–30；配置变化重启A
 | `gpu_state` | in_use / idle_candidate / unknown / not_attached |
 | `quality.complete` | 指标观察是否完整；缺失可选利用率也会使其为false |
 | `quality.attribution_complete` | 上下文归属、设备引用及必要库存是否完整，独立于可选利用率是否有样本 |
+| `quality.context_attribution_complete` | 显式上下文归属证据；仅稳定持有者的已知共享控制引用可与完整引用归属分离，未知引用/读失败/身份变化仍为false，不能替代释放门禁 |
 
 每个gpus对象包含uuid、configured、observed、process_count、referencing_process_count、used_memory_bytes、sm_utilization_percent、utilization_method、collected_at、state和quality。process_count是去重的GPU进程数，不是CUDA context对象数量；与引用进程数不能相加。configured表示配置中确认的绑定，observed表示观察到实际占用或活动。观察不完整时false不能解释为确定没有占用，后端应结合quality保存未知。
 
@@ -403,13 +404,15 @@ NVML增量查询没有新SM记录不等于驱动失败；无context且明确空�
 
 停止实例、换卡或重建后，不能把新旧CPU计数器拼接；跨分配容量变化的窗口不使用新容量错误归一化。内存peak_bytes是生命周期峰值，不是最近一分钟峰值。前端应分指标处理null和缺测，不能因GPU不支持某项指标而抹掉有效CPU/内存值，也不能把unknown画成0%。
 
-上下文统计与设备引用完整性分开处理：已验证当前GPU进程归属时，process_count、used_memory_bytes及可用的近似SM值可以非null，同时quality.attribution_complete仍为false。例如通用GPU控制设备引用无法定位到某张卡时，referencing_process_count保持null，并带gpu_reference_scan_incomplete/gpu_references_unresolved原因；这不能授权空闲释放，也不能抹掉已确认的负载统计。容器边界取内核cgroup挂载根，兼容systemd把PID 1放在init.scope、服务放在同级system.slice的情况。
+上下文统计与设备引用完整性分开处理：已验证当前GPU进程归属时，process_count、used_memory_bytes及可用的近似SM值可以非null，同时quality.attribution_complete仍为false。可信rdev识别的共享nvidiactl/uvm引用可确认持有实例、但无法定位全部物理卡，使用gpu_shared_control_references，仅降低持有者及其卡的完整引用归属；referencing_process_count保持null，不计入anonymous.unresolved_gpu_references，不污染其他实例。持有者context_attribution_complete可保持true，shared-only也不能授权空闲释放；同时持有物理卡FD不能证明共享引用只作用于该卡。未知rdev、读取/限额失败仍保留全局gpu_reference_scan_incomplete/gpu_references_unresolved及context=false。容器边界取内核cgroup挂载根，兼容systemd的init.scope和同级system.slice，以及嵌套Docker不同PID namespace；PID/starttime、cgroup及实例根须跨扫描和NVML查询一致。设备basename不是物理卡身份。
 
 `host_quality` 保留宿主进程扫描、上下文归属、FD设备引用、实例/设备库存、取消、新鲜度、MIG及匿名活动不确定性检查；它不放宽这些检查。与实例行一样，仅缺失可选利用率可使其 `complete=false` 而 `attribution_complete=true`。顶层原 `quality` 仍合并所有实例行，Stopped实例的 `instance_attribution_unknown` 不应被解释为宿主扫描失败；项目过滤只裁剪实例行，不重算这两个质量对象，也不改变 `collection_started_at`，历史samples使用同一字段。
 
 原生删除已确认完成后的资源回收，应读取完整实例列表，核对目标身份确实缺席；必须同时要求快照新鲜、`collection_complete=true`、`host_quality.attribution_complete` 显式为true，且 `collection_started_at` 严格晚于确认完成时间，避免发布于删除之后但实际采集始于删除之前的旧证据。字段缺失/未知、不完整或过期均不能授权释放。该删除后核对与仍存在实例的空闲策略不同；宿主归属完整本身不证明目标卡空闲，也不是跳过原生操作确认的授权。
 
 自动释放/空闲换卡的策略由后端决定，阈值、窗口和用户开关不在Agent写死。后端必须检查frame新鲜度、collection_complete以及**目标实例/目标卡**的attribution_complete和状态，而不是只看全节点汇总quality。连续候选也不能保证捕获所有采样间的短任务：实际动作前需串行化、核对当前配置/占用，动作后复核；旧卡残留就继续保留原分配名额，必要时走获准的停机回收。现有GPU配置API并未因该指标接口而变成原子“安全释放”事务。
+
+纯新增挂卡与移除/换绑门禁不同：后端只有确认原生实际GPU集合是请求集合子集、身份/状态/库存及采样仍新鲜完整时，才可用显式context_attribution_complete替代目标的完整引用标志；旧Agent缺该字段不能盲目放宽。调用GPU配置接口必须附带add_only:true：Agent在锁和ETag内重新核对最新配置，只追加新设备，保留旧设备名和所有属性，拒绝隐式移除或未知物理映射。add_only默认false、仅接受JSON布尔值；运行实例仍需allow_live:true，profile/非托管设备冲突规则不变。移除、重绑、空闲候选及资源回收继续要求原有attribution_complete完整证据。
 
 忙碌任务不做无感换卡。热插拔只改变设备入口，CUDA上下文、模型显存不会迁移；新程序或重新初始化后的程序才可使用新卡，已有应用还可能缓存设备信息。指标不用于按利用率收费，计费仍按配置/使用权持有时间。
 

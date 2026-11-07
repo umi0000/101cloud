@@ -23,7 +23,7 @@ func metricsTestService(t *testing.T) *Service {
 	now := time.Now().UTC()
 	frames := make([]metricsFrame, 3)
 	for i := range frames {
-		frames[i] = metricsFrame{Snapshot: monitor.Snapshot{CollectedAt: now, Instances: []monitor.InstanceMetrics{{Project: "default", Name: "first", UUID: "instance-a"}, {Project: "tenant", Name: "second", UUID: "instance-b"}}, Quality: monitor.Quality{Reasons: []string{"instance_attribution_unknown"}}, HostQuality: monitor.Quality{Complete: true, AttributionComplete: true, Reasons: []string{}}}, AgentBootID: metricsTestBoot, SchemaVersion: 1, SampleSequence: uint64(i + 5), WindowStart: now.Add(-time.Second), WindowEnd: now, WindowSeconds: 1, CollectionComplete: true, CollectionErrors: []string{}, CollectionStartedAt: now.Add(-100 * time.Millisecond).Truncate(time.Microsecond)}
+		frames[i] = metricsFrame{Snapshot: monitor.Snapshot{CollectedAt: now, Instances: []monitor.InstanceMetrics{{Project: "default", Name: "first", UUID: "instance-a"}, {Project: "tenant", Name: "second", UUID: "instance-b"}}, Quality: monitor.Quality{Reasons: []string{"instance_attribution_unknown"}}, HostQuality: monitor.Quality{Complete: true, AttributionComplete: true, ContextAttributionComplete: true, Reasons: []string{}}}, AgentBootID: metricsTestBoot, SchemaVersion: 1, SampleSequence: uint64(i + 5), WindowStart: now.Add(-time.Second), WindowEnd: now, WindowSeconds: 1, CollectionComplete: true, CollectionErrors: []string{}, CollectionStartedAt: now.Add(-100 * time.Millisecond).Truncate(time.Microsecond)}
 	}
 	s.metrics = &metricsSampler{bootID: metricsTestBoot, interval: time.Second, timeLimit: time.Second, history: frames, count: 3, next: 0, sequence: 7}
 	return s
@@ -52,7 +52,7 @@ func TestMetricsProjectAndCursorBoundaries(t *testing.T) {
 	if err := json.Unmarshal(payload["host_quality"], &hostQuality); err != nil {
 		t.Fatal(err)
 	}
-	if !hostQuality.AttributionComplete || !hostQuality.Complete {
+	if !hostQuality.AttributionComplete || !hostQuality.ContextAttributionComplete || !hostQuality.Complete {
 		t.Fatalf("project filtering replaced independent host quality: %s", payload["host_quality"])
 	}
 	status, payload = call("/agent/v1/instances/metrics/samples?project=*&agent_boot_id=" + metricsTestBoot + "&after_sequence=4&limit=2")
@@ -62,7 +62,7 @@ func TestMetricsProjectAndCursorBoundaries(t *testing.T) {
 		t.Fatalf("cursor lost or repeated samples: %d %s", status, payload)
 	}
 	for _, sample := range samples {
-		if !sample.HostQuality.Complete || !sample.HostQuality.AttributionComplete || sample.Quality.AttributionComplete || sample.CollectionStartedAt.IsZero() {
+		if !sample.HostQuality.Complete || !sample.HostQuality.AttributionComplete || !sample.HostQuality.ContextAttributionComplete || sample.Quality.AttributionComplete || sample.Quality.ContextAttributionComplete || sample.CollectionStartedAt.IsZero() {
 			t.Fatalf("history lost separate host evidence or collection start: %+v", sample)
 		}
 	}

@@ -148,7 +148,7 @@ func (e *Engine) setInventory(inventory []GPUDevice) {
 		}
 	}
 	for _, name := range []string{"/dev/nvidiactl", "/dev/nvidia-uvm", "/dev/nvidia-uvm-tools"} {
-		if info, err := os.Stat(name); err == nil {
+		if info, err := os.Stat(name); err == nil && info.Mode()&os.ModeCharDevice != 0 {
 			if number, ok := deviceNumber(info); ok {
 				e.controlDevices[number] = true
 			}
@@ -165,7 +165,7 @@ func cloneUint(value *uint64) *uint64 {
 }
 
 func quality(reasons ...string) Quality {
-	return Quality{Complete: len(reasons) == 0, AttributionComplete: len(reasons) == 0, Reasons: append([]string{}, reasons...)}
+	return Quality{Complete: len(reasons) == 0, AttributionComplete: len(reasons) == 0, ContextAttributionComplete: len(reasons) == 0, Reasons: append([]string{}, reasons...)}
 }
 
 func addReason(q *Quality, reason string) {
@@ -177,20 +177,29 @@ func addReason(q *Quality, reason string) {
 	q.Reasons = append(q.Reasons, reason)
 	q.Complete = false
 	q.AttributionComplete = false
+	q.ContextAttributionComplete = false
 }
 
 func addMetricReason(q *Quality, reason string) {
-	complete := q.AttributionComplete
+	complete, contextComplete := q.AttributionComplete, q.ContextAttributionComplete
 	addReason(q, reason)
-	q.AttributionComplete = complete
+	q.AttributionComplete, q.ContextAttributionComplete = complete, contextComplete
+}
+
+func addSharedReferenceReason(q *Quality) {
+	contextComplete := q.ContextAttributionComplete
+	addReason(q, "gpu_shared_control_references")
+	q.ContextAttributionComplete = contextComplete
 }
 
 func mergeQuality(dst *Quality, src Quality) {
 	complete := dst.AttributionComplete && src.AttributionComplete
+	contextComplete := dst.ContextAttributionComplete && src.ContextAttributionComplete
 	for _, reason := range src.Reasons {
 		addReason(dst, reason)
 	}
 	dst.AttributionComplete = complete
+	dst.ContextAttributionComplete = contextComplete
 }
 
 // Sample emits only immutable aggregation DTOs. idle_candidate means that no
@@ -235,6 +244,19 @@ func (e *Engine) Sample(ctx context.Context, instances []Instance) Snapshot {
 			addReason(&out.Quality, "instance_identity_changed")
 		}
 	}
+	// FD-only holders need the same identity window as NVML context holders.
+	// A known shared rdev is scoped only while its PID/cgroup owner is stable.
+	for pid, before := range proc.records {
+		if !before.hasReferences {
+			continue
+		}
+		after, readErr := readProcess(e.procRoot, pid)
+		if readErr != nil || before.start != after.start || !sameGroups(before.groups, after.groups) {
+			before.owner = -1
+			proc.records[pid] = before
+			addReason(&out.Quality, "process_scan_incomplete")
+		}
+	}
 	owners := make(map[uint32]int)
 	nextProcesses := make(map[uint32]processBaseline)
 	utilizationSince := make(map[uint32]time.Time)
@@ -246,8 +268,12 @@ func (e *Engine) Sample(ctx context.Context, instances []Instance) Snapshot {
 			owner := -1
 			before, exists := proc.records[process.PID]
 			if exists && before.owner >= 0 {
-				after, readErr := readProcess(e.procRoot, process.PID)
-				if _, valid := proc.roots[before.owner]; valid && readErr == nil && before.start == after.start && sameGroups(before.groups, after.groups) {
+				validIdentity := before.hasReferences // Already checked across Query above.
+				if !validIdentity {
+					after, readErr := readProcess(e.procRoot, process.PID)
+					validIdentity = readErr == nil && before.start == after.start && sameGroups(before.groups, after.groups)
+				}
+				if _, valid := proc.roots[before.owner]; valid && validIdentity {
 					owner = before.owner
 					instance := instances[owner]
 					key := instance.Project + "\x00" + instance.Name + "\x00" + instance.UUID
@@ -338,7 +364,10 @@ func (e *Engine) Sample(ctx context.Context, instances []Instance) Snapshot {
 	}
 	nextCPU := make(map[string]cpuBaseline, len(instances))
 	hostQuality := out.Quality
-	out.HostQuality = hostQuality
+	mergeQuality(&out.HostQuality, hostQuality)
+	if len(proc.sharedReferences) > 0 {
+		addSharedReferenceReason(&out.HostQuality)
+	}
 	for i, instance := range instances {
 		row := InstanceMetrics{Project: instance.Project, Name: instance.Name, UUID: instance.UUID, Type: instance.Type, State: instance.State, StartedAt: instance.StartedAt, GPUs: []GPUMetrics{}, GPUState: "unknown", Quality: quality()}
 		row.CPU = e.cpu(instance, now, proc.roots[i].start, nextCPU)
@@ -368,6 +397,9 @@ func (e *Engine) Sample(ctx context.Context, instances []Instance) Snapshot {
 				addReason(&row.Quality, "device_inventory_incomplete")
 				rowContextComplete = false
 			}
+		}
+		if proc.sharedReferences[i] > 0 {
+			addSharedReferenceReason(&row.Quality)
 		}
 		inUse := false
 		for uuid, device := range devices {

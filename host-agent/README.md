@@ -126,7 +126,15 @@ Agent默认每5秒只读采样，采集期限4秒；可通过可选 `metrics` �
 
 CPU用累计计数差分和独立观测时间窗，首次/重启/缺测不构造差分；跨容量变化的窗口保留使用核数但归一化百分比为null，不拿GPU耗时当CPU窗口。GPU在Linux amd64/arm64上无CGO动态读取NVML，内部关联宿主PID/cgroup与设备引用，公开只返回每实例/每卡的统计值及匿名数量，不返回PID、命令行、进程名或路径。配置与实际观察取并集，可看到换卡后留在旧卡上的占用。进程复用、短任务已退出但仍有未归属活动、MPS/MIG/权限或驱动不支持均保守降级，不把无样本当0。
 
-指标快照新增顶层 `host_quality`（`complete`、`attribution_complete`、`reasons`），保留实例行合并前的全节点扫描、上下文归属、设备引用和库存质量；原 `quality` 仍汇总全部实例，包括缺少PID的Stopped实例。因此无关Stopped实例可使 `quality.attribution_complete=false`，但不会单独使 `host_quality.attribution_complete=false`。权限/扫描限额、未归属上下文或近期活动、未知设备引用、MIG归属不全、库存缺失、取消或陈旧采样仍会阻止宿主归属完整；仅缺失可选利用率可使 `complete=false` 而不否定 `attribution_complete`。宿主归属完整不表示GPU空闲。
+指标快照顶层 `host_quality`（`complete`、`attribution_complete`、`context_attribution_complete`、`reasons`）保留实例行合并前的全节点扫描、上下文归属、设备引用和库存质量；原 `quality` 仍汇总全部实例，包括缺少PID的Stopped实例。因此无关Stopped实例可使 `quality.attribution_complete=false`，但不会单独使 `host_quality.attribution_complete=false`。权限/扫描限额、未归属上下文或近期活动、未知设备引用、MIG归属不全、库存缺失、取消或陈旧采样仍会阻止宿主归属完整；仅缺失可选利用率可使 `complete=false` 而不否定 `attribution_complete`。宿主归属完整不表示GPU空闲。
+
+所有质量对象显式输出 `context_attribution_complete`。稳定PID/starttime及cgroup祖先可以确认嵌套Docker进程属于外层Incus实例，不要求PID namespace相同；物理卡仅按可信设备rdev映射UUID，不按容器内 `nvidia0` 名称推断。已识别共享 `nvidiactl`/`nvidia-uvm` 引用使用 `gpu_shared_control_references`：只降低持有者及其卡的完整引用归属，不污染其他实例，不计为匿名未知引用。持有者的已验证进程数、显存和可用SM保留，`context_attribution_complete=true` 可以与 `attribution_complete=false` 并存；物理FD也不能证明共享引用仅涉及该卡，shared-only仍不能成为idle_candidate。宿主完整归属仍保守为false；真正未知引用、扫描失败及身份变化不能获得context-only例外。
+
+后端只有在新鲜完整采集、目标身份/运行态与原生物理配置均确认，且原生实际GPU集合是请求集合的子集时，才可把显式context证据用于纯新增。旧Agent缺字段时仍须完整归属为true；移除、换绑、空闲及删除后回收永远不能用这个字段代替原有完整归属条件。
+
+本地无GPU硬件回归：在Linux的 `host-agent` 目录运行 `go test ./internal/monitor -run 'TestVerifiedGPUContextsSurviveSharedControlReferences|TestSharedControlFailuresStayGlobalUnknown' -v`。fixtureReader向实际 `Engine.Sample` 注入NVML样本，临时proc树模拟Incus/systemd/嵌套Docker，`/dev/null`、`/dev/zero`、`/dev/random` 仅提供可stat的rdev，不打开GPU。日志仅输出安全布尔值/计数JSON（持有者context=true、full=false，无关实例两者true、匿名引用0），不需Incus、NVML、root或运行中的任务；root会跳过权限拒绝分支。非Linux默认跳过这些进程归属测试，交叉编译不代表已在Linux或真实GPU验收。
+
+2026-11-07 本地修复验收（未部署）：在macOS常规Agent race回归及vet通过，节点API实际调用夹具验证add_only保留设备名/属性、请求重排不卸卡、原生额外卡及ETag竞争拒绝。Linux进程归属用临时Go overlay启用相同Stat_t.rdev算法及Linux式proc/cgroup夹具，修复前A共享引用使无关B归属false，修复后A context=true/full=false、B context/full=true、A进程1/显存678MiB保留、匿名未知引用0；监控夹具race回归通过。仅为本地合成/proc及NVML输入，非Linux内核运行、真实NVML或嵌套Docker CUDA硬件验收；未连接服务器、不停止业务任务。Linux/amd64产物已交叉构建。
 
 顶层 `collection_started_at` 为实例/设备输入采集开始前记录的时间，UTC、微秒精度，覆盖后续GPU采样；它不是CPU窗口起点，也不能用 `collected_at` 减耗时替代。当前快照和历史samples都保留该字段，项目过滤不改变这两个宿主字段。原生删除已确认完成后的资源回收须使用 `collection_started_at` 严格晚于完成时间的新鲜、`collection_complete=true`、完整实例列表快照，并要求 `host_quality.attribution_complete` 显式为true、按目标身份核对实例确实缺席；字段缺失/未知不能授权释放，不能仅凭汇总质量或不存在某行释放。
 
@@ -147,12 +155,14 @@ CPU用累计计数差分和独立观测时间窗，首次/重启/缺测不构造
 ```json
 {
   "gpu_uuids": ["GPU-7f665bf9-5911-4f71-ac6a-a66e32362574"],
-  "allow_live": false
+  "allow_live": false,
+  "add_only": false
 }
 ```
 
 - 多 UUID 为多卡，空数组移除 Agent 管理的显卡配置；只管理 `agent-gpu-N`，不静默删除其他 GPU 或 profile 配置。
 - 默认要求实例已停止。`allow_live: true` 显式允许在线改入口，**不迁移 CUDA context、不杀旧进程、不保证旧卡显存释放**。
+- `add_only` 可选，默认false；true时仍需运行态显式 `allow_live:true`，在实例锁及ETag保护下核对最新原生配置是请求集合的子集，拒绝隐式移除、未知物理映射和配置冲突。保留已有GPU的设备名和所有属性，只追加真正新增的卡；请求顺序变化不重命名/卸载旧卡。它不绕过后端指标、配额、库存或授权检查，不是释放授权；不支持此字段的旧Agent会拒绝而非降级执行。
 - CPU 工作空间以后要在线接卡，应在首次启动前准备 `nvidia.runtime=true` 和库环境；热插卡不重新执行 NVIDIA 启动 hook。
 - 使用 ETag 防止覆盖配置；返回 `operation_id`、`operation_completed`、`configuration_state`、`actual`、`etag`，失败不假定已回滚。
 - `resource_release` 始终是 `not_verified`，配置成功不等于设备挂载和进程状态一致。配额、共享人数、计费和实际占用核验仍由业务层组织。

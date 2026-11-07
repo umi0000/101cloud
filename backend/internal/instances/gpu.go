@@ -486,12 +486,12 @@ func storedIdle(ctx context.Context, a *platform.App, db *gorm.DB, r platform.Ro
 	}
 	return nil
 }
-func liveGPU(ctx context.Context, a *platform.App, r platform.Row) (map[string]map[string]any, error) {
+func liveGPU(ctx context.Context, a *platform.App, r platform.Row, additive bool) (map[string]map[string]any, error) {
 	frame, e := a.Agent(ctx, platform.Uint(r["node_id"]), "GET", "/agent/v1/instances/metrics?project="+url.QueryEscape(platform.Text(r["project_name"])), nil)
 	if e != nil {
 		return nil, e
 	}
-	if !platform.Bool(frame["collection_complete"]) {
+	if !platform.Bool(frame["collection_complete"]) || platform.Bool(frame["stale"]) {
 		return nil, conflict("observation_incomplete", "实时 GPU 采集不完整，请等待节点恢复完整采集。")
 	}
 	stamp := platform.Stamp(frame["collected_at"])
@@ -502,23 +502,61 @@ func liveGPU(ctx context.Context, a *platform.App, r platform.Row) (map[string]m
 	if stamp.IsZero() || a.Time().Sub(stamp) > time.Duration(platform.Uint(policy["metrics_max_age_seconds"]))*time.Second || stamp.After(a.Time().Add(time.Second)) {
 		return nil, conflict("observation_incomplete", "实时 GPU 样本已过期，请等待最新采集。")
 	}
+	if platform.Text(r["incus_uuid"]) == "" || platform.Text(r["incus_name"]) == "" || platform.Text(r["project_name"]) == "" {
+		return nil, conflict("observation_incomplete", "实例身份信息不完整，暂不能安全调整 GPU。")
+	}
 	for _, item := range rows(frame["instances"]) {
 		instance := object(item)
-		if platform.Text(instance["uuid"]) != platform.Text(r["incus_uuid"]) || platform.Text(instance["name"]) != platform.Text(r["incus_name"]) {
+		if platform.Text(instance["uuid"]) != platform.Text(r["incus_uuid"]) || platform.Text(instance["name"]) != platform.Text(r["incus_name"]) || platform.Text(instance["project"]) != platform.Text(r["project_name"]) {
 			continue
 		}
+		if !strings.EqualFold(platform.Text(instance["state"]), "running") {
+			return nil, conflict("observation_incomplete", "实时采集中实例未稳定运行，暂不能安全调整 GPU。")
+		}
 		q := object(instance["quality"])
-		if !platform.Bool(q["attribution_complete"]) {
+		sharedOnly := !platform.Bool(q["attribution_complete"])
+		if sharedOnly && (!additive || !sharedControlContextComplete(q)) {
 			return nil, conflict("observation_incomplete", "实时 GPU 归属信息不完整，暂不能安全调整分配。")
 		}
 		out := map[string]map[string]any{"_frame": {"collected_at": stamp, "state": instance["state"], "started_at": instance["started_at"]}}
 		for _, v := range rows(instance["gpus"]) {
 			g := object(v)
+			if sharedOnly {
+				cardQuality := object(g["quality"])
+				if !platform.Bool(cardQuality["attribution_complete"]) && !sharedControlContextComplete(cardQuality) {
+					return nil, conflict("observation_incomplete", "GPU 仍有未确认的归属或设备引用，暂不能安全新增分配。")
+				}
+			}
 			out[platform.Text(g["uuid"])] = g
 		}
 		return out, nil
 	}
 	return nil, conflict("observation_incomplete", "实时采集中未找到此实例，暂不能安全调整 GPU。")
+}
+
+// This is not release evidence. Only a verified owner of recognized shared
+// control references may add devices while physical reference scope is unknown.
+func sharedControlContextComplete(q map[string]any) bool {
+	contextComplete, explicit := q["context_attribution_complete"].(bool)
+	if !explicit || !contextComplete {
+		return false
+	}
+	shared := false
+	for _, value := range rows(q["reasons"]) {
+		reason, ok := value.(string)
+		if !ok {
+			return false
+		}
+		switch reason {
+		case "gpu_shared_control_references":
+			shared = true
+		case "gpu_metric_unavailable", "gpu_utilization_unknown", "gpu_utilization_no_samples", "gpu_utilization_stale", "gpu_utilization_identity_unconfirmed":
+			// Missing utilization samples do not weaken verified context ownership.
+		default:
+			return false
+		}
+	}
+	return shared
 }
 func safeLiveCard(g map[string]any, removed bool) error {
 	if g == nil {
@@ -625,7 +663,7 @@ func runGPU(ctx context.Context, a *platform.App, job platform.Job) error {
 		}
 		deadline := after.Add(time.Duration(2*platform.Uint(policy["poll_interval_seconds"])+30) * time.Second)
 		for {
-			live, e := liveGPU(ctx, a, r)
+			live, e := liveGPU(ctx, a, r, false)
 			if e != nil {
 				return platform.Unknown(e)
 			}
@@ -677,32 +715,33 @@ func runGPU(ctx context.Context, a *platform.App, job platform.Job) error {
 }
 func configureGPU(ctx context.Context, a *platform.App, job platform.Job, r platform.Row, want []string, removed []platform.Row, allowLive bool, state string) error {
 	path := "/1.0/instances/" + url.PathEscape(platform.Text(r["incus_name"])) + "?project=" + url.QueryEscape(platform.Text(r["project_name"]))
+	desired := make(map[string]bool, len(want))
+	for _, uuid := range want {
+		desired[uuid] = true
+	}
+	var actual []string
 	observe := func() (bool, error) {
 		response, e := a.Agent(ctx, job.NodeID, "GET", path, nil)
 		if e != nil {
 			return false, e
 		}
 		native := object(response["metadata"])
-		if platform.Text(object(native["config"])["volatile.uuid"]) != platform.Text(r["incus_uuid"]) {
+		if platform.Text(r["incus_uuid"]) == "" || platform.Text(object(native["config"])["volatile.uuid"]) != platform.Text(r["incus_uuid"]) {
 			return false, conflict("instance_identity_changed", "原生实例 UUID 已变化，为避免操作错误实例已停止变更，请联系管理员核对身份。")
 		}
 		inventory, e := a.Agent(ctx, job.NodeID, "GET", "/agent/v1/resources", nil)
 		if e != nil {
 			return false, e
 		}
-		actual, e := configuredGPUUUIDs(native, inventory)
+		actual, e = configuredGPUUUIDs(native, inventory)
 		if e != nil {
 			return false, e
 		}
 		if len(actual) != len(want) {
 			return false, nil
 		}
-		set := map[string]bool{}
 		for _, uuid := range actual {
-			set[uuid] = true
-		}
-		for _, uuid := range want {
-			if !set[uuid] {
+			if !desired[uuid] {
 				return false, nil
 			}
 		}
@@ -741,8 +780,18 @@ func configureGPU(ctx context.Context, a *platform.App, job platform.Job, r plat
 		}
 		return platform.Unknown(conflict("observation_incomplete", "上一次 GPU 变更结果尚未确认，需先完成对账；系统不会盲目重放。"))
 	}
+	additive := len(removed) == 0
+	if additive {
+		// The native expanded devices are authoritative, not the allocation list.
+		// An untracked existing GPU must never become an implicit detach.
+		for _, uuid := range actual {
+			if !desired[uuid] {
+				return conflict("observation_incomplete", "原生实例仍配置了请求外的 GPU，不能将新增操作隐式变为卸载，请先核对分配。")
+			}
+		}
+	}
 	if state == "running" {
-		live, e := liveGPU(ctx, a, r)
+		live, e := liveGPU(ctx, a, r, additive)
 		if e != nil {
 			return e
 		}
@@ -755,7 +804,13 @@ func configureGPU(ctx context.Context, a *platform.App, job platform.Job, r plat
 	if e = a.Step(ctx, job, "gpu.configure", "", "running"); e != nil {
 		return e
 	}
-	result, e := a.Agent(platform.WithTaskDispatch(ctx, job, "gpu.configure"), job.NodeID, "PUT", "/agent/v1/instances/"+url.PathEscape(platform.Text(r["incus_name"]))+"/gpu?project="+url.QueryEscape(platform.Text(r["project_name"])), platform.Row{"gpu_uuids": want, "allow_live": allowLive})
+	request := platform.Row{"gpu_uuids": want, "allow_live": allowLive}
+	if additive {
+		// The Agent rechecks the subset under its native read/ETag and preserves
+		// existing device entries. Never retry without this guard on old Agents.
+		request["add_only"] = true
+	}
+	result, e := a.Agent(platform.WithTaskDispatch(ctx, job, "gpu.configure"), job.NodeID, "PUT", "/agent/v1/instances/"+url.PathEscape(platform.Text(r["incus_name"]))+"/gpu?project="+url.QueryEscape(platform.Text(r["project_name"])), request)
 	if e != nil {
 		return platform.Unknown(e)
 	}

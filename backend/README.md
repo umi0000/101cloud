@@ -587,6 +587,12 @@ GPU 实例删除先确认原生消失，再最多等待约 95 秒的独立监控
 
 删除回归沿用固定证书 TLS 节点 fixture 与连接内 MySQL 临时表，需 `CLOUD_TEST_MYSQL_DSN` 指向可创建临时表的测试 MySQL（按既有约定使用已迁移测试库）；无该变量时 MySQL 用例跳过。用例覆盖删除前缓存到删除后新样本、过期 operation 404/无 ID 意图的对账不重放、重复处理、证据不足保留全部资源及无 GPU 跳过指标。正向等待约 1 秒/场景，负向用调用方 300ms 上下文测试取消，不等待生产 95 秒上限；不代表真实 GPU 硬件验收。
 
+在线纯新增 GPU 支持已验证上下文归属、但共享 nvidiactl/uvm 引用物理范围尚不确定的实例；要求内部实时 `context_attribution_complete=true`、明确 `gpu_shared_control_references` 及仅指标级附加原因，不能凭 context 标记忽略其他未知引用。该原因以 `reference_scan_quality=partial` 保留在监控中，完整 `attribution_complete` 仍为 false，移除/换卡/空闲/回收不放宽。所有纯新增均检查原生配置 GPU 是期望集合子集，并下发 `add_only:true` 让 Agent 在读/ETag 保护下保留旧设备、只追加新卡。部署顺序必须先 Agent 后后端；旧 Agent 不支持时拒绝，不作无保护重试。无数据库迁移，库存、动态负载采样时效、配额和定价不变。
+
+本地协议回归 `internal/instances/gpu_additive_mysql_test.go` 使用 `CLOUD_TEST_MYSQL_ADMIN_DSN` 创建并销毁隔离库、应用真实迁移，经 loopback HTTP 准入、生产 worker 与固定证书 TLS Agent 夹具覆盖新增成功、旧健康完整归属兼容、缺 context/未知引用/过期/错身份拒绝、原生额外卡防隐式卸载、旧 Agent 拒绝 add_only 不降级，以及移除/换卡仍受存储和实时严格证据阻止。可运行 `go test ./internal/instances -run TestMySQLGPUAdditiveHTTPWorkerTLS -count=1`；协议夹具不代表真实 GPU、嵌套 Docker CUDA 或 Incus 硬件热插拔验收。
+
+2026-11-07 本地验收（未部署）：隔离MySQL8.4.13下instances/monitoring整包race回归和全后端vet通过，新增24场景loopback HTTP→生产worker→固定证书TLS Agent回归通过；额外按Agent实际`Running`状态大小写复验成功。共享引用的纯新增只派发一次受保护PUT，保留已有分配；未知引用、陈旧/错身份、隐式删卡及卸载/换绑拒绝，不释放歧义分配。前端类型检查与69项GPU监控回归通过，生产前端和Linux/amd64应用构建通过。Agent与后端需配套更新，先Agent后后端；本次GPU修复不新增迁移。临时验收文件已移除，真实硬件热插拔未验证。
+
 强制清理回归位于 `internal/instances/stuck_delete_mysql_test.go`，使用 `CLOUD_TEST_MYSQL_ADMIN_DSN` 创建隔离库并应用全部真实迁移/外键，经真实 Gin HTTP 变更中间件验证 queued/running/waiting/unknown 接管、权限/确认/重放，再使用固定证书 TLS 原生 fixture 验证初始缺席、强停删除、GPU 指标不可用仍回收、冲突身份/离线保留资源、严格 HTTP+Incus404、已知原生操作取消与恢复、派发中 CREATE 接管串行化以及撤销 worker 不再派发/改 SQL。`platform/jobs_mysql_test.go` 另覆盖撤销后的 finishTask/Step 拒绝迟到写入。不涉及真实节点/硬件删除。
 
 完整架构、配置边界和本地验收记录见 [后端设计方案](后端设计方案.md)。本地协议验收不替代真实 KVM 启动、多GPU驱动热调整及VGA硬件验收；上线前需在获准的测试节点验证。

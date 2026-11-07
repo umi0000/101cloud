@@ -2174,7 +2174,7 @@ func workerIdleStop(ctx context.Context, a *platform.App, r platform.Row) error 
 	if err = storedIdle(ctx, a, a.DB, r, allocations); err != nil {
 		return err
 	}
-	live, err := liveGPU(ctx, a, r)
+	live, err := liveGPU(ctx, a, r, false)
 	if err != nil {
 		return err
 	}

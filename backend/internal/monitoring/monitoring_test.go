@@ -89,3 +89,18 @@ func TestMetricReasonsRetainsExpectedGPUObservationStates(t *testing.T) {
 		t.Fatalf("expected observation states or real failure reasons were dropped: %s", got)
 	}
 }
+
+func TestSharedControlReferencesRemainPartialAndPublic(t *testing.T) {
+	q := metricQuality{Reasons: []string{"gpu_shared_control_references", "gpu_utilization_no_samples", "gpu_shared_control_references", "/private/process/path"}}
+	if got := metricReference(q); got != "partial" {
+		t.Fatalf("shared references reported as %q", got)
+	}
+	if got := metricReasons(q); got != `["gpu_shared_control_references","gpu_utilization_no_samples"]` {
+		t.Fatalf("shared-control reason lost or private reason leaked: %s", got)
+	}
+	// A contradictory incoming flag must not make reference scope complete.
+	q.AttributionComplete = true
+	if got := metricReference(q); got != "partial" {
+		t.Fatalf("shared-reference reason was overridden by full flag: %q", got)
+	}
+}

@@ -77,7 +77,7 @@ func TestGPUConflictPlanning(t *testing.T) {
 			"agent-gpu-0": {"type": "gpu", "pci": "0000:01:00.0"},
 		},
 	}}
-	put, err := planGPUUpdate(&base, nil, map[string]map[string]string{})
+	put, err := planGPUUpdate(&base, nil, map[string]map[string]string{}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,12 +102,130 @@ func TestGPUConflictPlanning(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			instance := api.Instance{InstancePut: api.InstancePut{Devices: test.local}, ExpandedDevices: test.expanded}
 			before, _ := json.Marshal(instance)
-			if _, err := planGPUUpdate(&instance, test.profiles, nil); err == nil {
+			if _, err := planGPUUpdate(&instance, test.profiles, nil, false); err == nil {
 				t.Fatal("conflicting configuration was accepted")
 			}
 			after, _ := json.Marshal(instance)
 			if string(before) != string(after) {
 				t.Fatal("conflicting devices were modified")
+			}
+		})
+	}
+}
+
+func TestGPUAddOnlyPlanning(t *testing.T) {
+	for _, order := range [][]string{{firstUUID, secondUUID}, {secondUUID, firstUUID}} {
+		instance := api.Instance{InstancePut: api.InstancePut{
+			Config: map[string]string{"security.nesting": "true", "user.owner": "unchanged"},
+			Devices: map[string]map[string]string{
+				"root":        {"type": "disk", "pool": "default", "path": "/"},
+				"agent-gpu-7": {"type": "gpu", "gputype": "physical", "pci": "01:00.0", "uid": "1000", "gid": "1000", "mode": "0660"},
+			},
+		}}
+		selected, err := selectedDevices(testResources(), order)
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, _ := json.Marshal(instance)
+		put, err := planGPUUpdate(&instance, nil, selected, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		after, _ := json.Marshal(instance)
+		if string(before) != string(after) || len(put.Devices) != 3 || !maps.Equal(put.Config, instance.Config) || !maps.Equal(put.Devices["agent-gpu-7"], instance.Devices["agent-gpu-7"]) || !maps.Equal(put.Devices["root"], instance.Devices["root"]) || put.Devices["agent-gpu-0"]["pci"] != "0000:41:00.0" {
+			t.Fatalf("addition renamed/replaced an existing device or unrelated config: %+v", put)
+		}
+	}
+	for _, mode := range []string{"implicit_remove", "empty", "unknown_pci", "missing_pci", "nonphysical", "selector", "duplicate_pci", "expanded_mismatch", "unmanaged", "profile"} {
+		t.Run(mode, func(t *testing.T) {
+			instance := api.Instance{InstancePut: api.InstancePut{Devices: map[string]map[string]string{
+				"agent-gpu-0": {"type": "gpu", "gputype": "physical", "pci": "0000:01:00.0"},
+			}}}
+			uuids := []string{firstUUID, secondUUID}
+			var profiles []*api.Profile
+			switch mode {
+			case "implicit_remove":
+				uuids = []string{secondUUID}
+			case "empty":
+				uuids = nil
+			case "unknown_pci":
+				instance.Devices["agent-gpu-0"]["pci"] = "0000:81:00.0"
+			case "missing_pci":
+				delete(instance.Devices["agent-gpu-0"], "pci")
+			case "nonphysical":
+				instance.Devices["agent-gpu-0"]["gputype"] = "mig"
+			case "selector":
+				instance.Devices["agent-gpu-0"]["id"] = "0"
+			case "duplicate_pci":
+				instance.Devices["agent-gpu-7"] = maps.Clone(instance.Devices["agent-gpu-0"])
+			case "expanded_mismatch":
+				instance.ExpandedDevices = map[string]map[string]string{"agent-gpu-0": {"type": "gpu", "pci": "0000:41:00.0"}}
+			case "unmanaged":
+				instance.Devices["manual"] = map[string]string{"type": "gpu", "pci": "0000:41:00.0"}
+			case "profile":
+				profiles = []*api.Profile{{Name: "gpu", ProfilePut: api.ProfilePut{Devices: map[string]map[string]string{"gpu": {"type": "gpu"}}}}}
+			}
+			selected, err := selectedDevices(testResources(), uuids)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, _ := json.Marshal(instance)
+			if _, err := planGPUUpdate(&instance, profiles, selected, true); err == nil {
+				t.Fatal("unsafe additive plan accepted")
+			}
+			after, _ := json.Marshal(instance)
+			if string(before) != string(after) {
+				t.Fatal("rejected addition mutated existing configuration")
+			}
+		})
+	}
+}
+
+func TestSDKGPUAddOnlyPreservesNativeDevices(t *testing.T) {
+	for _, mode := range []string{"append", "reorder", "native_extra", "etag-gpu-conflict", "live_consent"} {
+		t.Run(mode, func(t *testing.T) {
+			fixtureMode := ""
+			if mode == "etag-gpu-conflict" {
+				fixtureMode = mode
+			}
+			service, fixture := newFixture(t, fixtureMode)
+			instance := fixture.instances["default"]
+			instance.Status, instance.StatusCode = "Running", api.Running
+			instance.Devices["agent-gpu-0"]["uid"] = "1000"
+			original := maps.Clone(instance.Devices["agent-gpu-0"])
+			uuids := []string{secondUUID, firstUUID}
+			if mode == "reorder" || mode == "native_extra" {
+				instance.Devices["agent-gpu-7"] = map[string]string{"type": "gpu", "gputype": "physical", "pci": "0000:41:00.0", "mode": "0660"}
+			}
+			if mode == "native_extra" {
+				uuids = []string{firstUUID}
+			}
+			body, err := json.Marshal(gpuRequest{GPUUUIDs: uuids, AllowLive: mode != "live_consent", AddOnly: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := invokeGPU(service, "", string(body))
+			fixture.mu.Lock()
+			defer fixture.mu.Unlock()
+			if !maps.Equal(fixture.instances["default"].Devices["agent-gpu-0"], original) {
+				t.Fatal("busy GPU device was renamed or changed")
+			}
+			switch mode {
+			case "native_extra", "live_consent":
+				if response.Code != http.StatusConflict || fixture.puts != 0 {
+					t.Fatalf("unsafe add-only write reached Incus: %d %s", response.Code, response.Body)
+				}
+			case "etag-gpu-conflict":
+				if response.Code != http.StatusPreconditionFailed || fixture.puts != 1 || fixture.waits != 0 || fixture.instances["default"].Devices["agent-gpu-7"]["pci"] != "0000:41:00.0" {
+					t.Fatalf("racing native GPU was removed or update retried: %d %s", response.Code, response.Body)
+				}
+			default:
+				if response.Code != http.StatusOK || fixture.puts != 1 || fixture.ifMatch != `"v1"` || len(fixture.instances["default"].Devices) != 3 {
+					t.Fatalf("safe addition failed: %d %s", response.Code, response.Body)
+				}
+				if mode == "reorder" && fixture.instances["default"].Devices["agent-gpu-7"]["mode"] != "0660" {
+					t.Fatal("reordered request changed existing GPU attributes")
+				}
 			}
 		})
 	}
@@ -226,6 +344,10 @@ func (f *incusFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.ifMatch = r.Header.Get("If-Match")
 		if f.mode == "etag-conflict" {
 			instance.Config["user.external"] = "changed"
+			f.versions[project]++
+		}
+		if f.mode == "etag-gpu-conflict" {
+			instance.Devices["agent-gpu-7"] = map[string]string{"type": "gpu", "gputype": "physical", "pci": "0000:41:00.0"}
 			f.versions[project]++
 		}
 		if f.ifMatch != fmt.Sprintf(`"v%d"`, f.versions[project]) {
@@ -424,6 +546,8 @@ func TestRequestValidation(t *testing.T) {
 		``, `{`, `null`, `[]`, `{}`, `{"gpu_uuids":null}`,
 		`{"gpu_uuids":[],"unknown":true}`, `{"gpu_uuids":[],"allow_live":null}`,
 		`{"gpu_uuids":[],"allow_live":"true"}`, `{"gpu_uuids":[]} {"gpu_uuids":[]}`,
+		`{"gpu_uuids":[],"add_only":null}`, `{"gpu_uuids":[],"add_only":"true"}`,
+		`{"gpu_uuids":[],"add_only":1}`, `{"gpu_uuids":[],"add_only":true,"add_only":false}`,
 		`{"gpu_uuids":[],"gpu_uuids":[]}`, `{"gpu_uuids":["0000:01:00.0"]}`,
 		`{"gpu_uuids":["` + firstUUID + `","` + firstUUID + `"]}`,
 	} {

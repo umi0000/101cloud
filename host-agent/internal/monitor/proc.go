@@ -12,18 +12,27 @@ import (
 )
 
 type processRecord struct {
-	start  uint64
-	groups map[string]string
-	owner  int
+	start         uint64
+	groups        map[string]string
+	owner         int
+	hasReferences bool
 }
 
 type procSnapshot struct {
 	records            map[uint32]processRecord
 	roots              map[int]processRecord
 	references         map[int]map[string]int
+	sharedReferences   map[int]int
 	unresolved         int
 	complete           bool
 	referencesComplete bool
+}
+
+type fdReferences struct {
+	physical   map[string]bool
+	shared     bool
+	unresolved int
+	complete   bool
 }
 
 func readBounded(name string, max int64) ([]byte, error) {
@@ -188,7 +197,7 @@ func boundedEntries(ctx context.Context, name string, max int) ([]os.DirEntry, e
 }
 
 func (e *Engine) scanProcesses(ctx context.Context, instances []Instance) procSnapshot {
-	result := procSnapshot{records: make(map[uint32]processRecord), roots: make(map[int]processRecord), references: make(map[int]map[string]int), complete: true, referencesComplete: true}
+	result := procSnapshot{records: make(map[uint32]processRecord), roots: make(map[int]processRecord), references: make(map[int]map[string]int), sharedReferences: make(map[int]int), complete: true, referencesComplete: true}
 	for i, instance := range instances {
 		if i >= e.maxProcesses {
 			result.complete = false
@@ -284,21 +293,28 @@ func (e *Engine) scanProcesses(ctx context.Context, instances []Instance) procSn
 		if rec.owner < 0 {
 			continue
 		}
-		refs, unknown, complete := e.scanFDs(ctx, uint32(pid), &remaining)
+		refs := e.scanFDs(ctx, uint32(pid), &remaining)
 		after, err := readProcess(e.procRoot, uint32(pid))
 		if err != nil || after.start != rec.start || !sameGroups(after.groups, rec.groups) {
 			result.complete = false
 			continue
 		}
-		if !complete {
+		rec.hasReferences = len(refs.physical) > 0 || refs.shared || refs.unresolved > 0
+		result.records[uint32(pid)] = rec
+		if !refs.complete {
 			result.referencesComplete = false
 		}
-		result.unresolved += unknown
-		if result.references[rec.owner] == nil {
-			result.references[rec.owner] = make(map[string]int)
+		result.unresolved += refs.unresolved
+		if refs.shared {
+			result.sharedReferences[rec.owner]++
 		}
-		for uuid := range refs {
-			result.references[rec.owner][uuid]++
+		if len(refs.physical) > 0 {
+			if result.references[rec.owner] == nil {
+				result.references[rec.owner] = make(map[string]int)
+			}
+			for uuid := range refs.physical {
+				result.references[rec.owner][uuid]++
+			}
 		}
 	}
 	return result
@@ -316,24 +332,24 @@ func sameGroups(a, b map[string]string) bool {
 	return true
 }
 
-func (e *Engine) scanFDs(ctx context.Context, pid uint32, remaining *int) (map[string]bool, int, bool) {
-	refs := make(map[string]bool)
+func (e *Engine) scanFDs(ctx context.Context, pid uint32, remaining *int) fdReferences {
+	refs := fdReferences{}
 	if *remaining <= 0 {
-		return refs, 0, false
+		return refs
 	}
 	base := filepath.Join(e.procRoot, strconv.FormatUint(uint64(pid), 10), "fd")
 	entries, err := boundedEntries(ctx, base, *remaining)
-	complete := err == nil
-	unknown := 0
+	refs.complete = err == nil
 	for _, entry := range entries {
 		if ctx.Err() != nil {
-			return refs, unknown, false
+			refs.complete = false
+			return refs
 		}
 		*remaining -= 1
 		name := filepath.Join(base, entry.Name())
 		info, err := os.Stat(name)
 		if err != nil {
-			complete = false
+			refs.complete = false
 			continue
 		}
 		if info.Mode()&os.ModeCharDevice == 0 {
@@ -341,33 +357,35 @@ func (e *Engine) scanFDs(ctx context.Context, pid uint32, remaining *int) (map[s
 		}
 		rdev, ok := deviceNumber(info)
 		if !ok {
-			complete = false
+			refs.complete = false
 			continue
 		}
 		if e.controlDevices[rdev] {
-			unknown++
-			complete = false
+			refs.shared = true
 			continue
 		}
 		if uuid, exists := e.devices[rdev]; exists {
 			if uuid == "" {
-				unknown++
-				complete = false
+				refs.unresolved++
+				refs.complete = false
 			} else {
-				refs[uuid] = true
+				if refs.physical == nil {
+					refs.physical = make(map[string]bool)
+				}
+				refs.physical[uuid] = true
 			}
 			continue
 		}
 		target, err := os.Readlink(name)
 		if err != nil {
-			complete = false
+			refs.complete = false
 			continue
 		}
 		leaf := filepath.Base(target)
-		if e.controlDevices[rdev] || strings.HasPrefix(leaf, "nvidia") || strings.Contains(target, "/dri/") {
-			unknown++
-			complete = false
+		if strings.HasPrefix(leaf, "nvidia") || strings.Contains(target, "/dri/") {
+			refs.unresolved++
+			refs.complete = false
 		}
 	}
-	return refs, unknown, complete
+	return refs
 }
