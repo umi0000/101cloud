@@ -306,7 +306,7 @@ func TestMySQLRegistrationCopiesDefaultsAndDailyGrantWithoutPrivilege(t *testing
 		Joins("JOIN credit_ledger l ON l.bucket_id=b.id AND l.account_id=b.account_id").
 		Joins("JOIN credit_accounts a ON a.id=b.account_id").
 		Joins("JOIN users u ON u.id=a.user_id").
-		Where("a.user_id=? AND b.source_type='daily' AND b.business_key=CONCAT('daily:',g.business_date) AND l.business_key=b.business_key AND l.entry_type='grant' AND b.granted_pt=7 AND b.remaining_pt=7 AND b.reserved_pt=0 AND l.amount_delta_pt=7 AND l.remaining_after_pt=7 AND g.policy_version_id=1 AND b.valid_from>=u.created_at AND b.valid_from=g.valid_from AND b.expires_at=g.expires_at AND b.expires_at=DATE_ADD(b.valid_from, INTERVAL 86400 SECOND) AND a.grant_cursor_at<=b.valid_from", userID).
+		Where("a.user_id=? AND b.source_type='daily' AND b.business_key=CONCAT('daily:',g.business_date) AND l.business_key=b.business_key AND l.entry_type='grant' AND b.granted_pt=7 AND b.remaining_pt=7 AND b.reserved_pt=0 AND l.amount_delta_pt=7 AND l.remaining_after_pt=7 AND g.policy_version_id=1 AND b.valid_from>=u.created_at AND b.valid_from=g.valid_from AND b.expires_at=g.expires_at AND b.expires_at=TIMESTAMP(DATE_ADD(g.business_date, INTERVAL 1 DAY),'06:30:00') AND g.reset_capped=TRUE AND a.grant_cursor_at<=b.valid_from", userID).
 		Count(&granted).Error; err != nil || granted != 1 {
 		t.Fatalf("registration daily bucket/ledger/cycle mismatch: count=%d error=%v", granted, err)
 	}

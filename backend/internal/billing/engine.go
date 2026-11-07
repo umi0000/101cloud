@@ -385,6 +385,11 @@ func releaseReservation(db *gorm.DB, r row, t time.Time) error {
 	if e = mutateBucket(db, b, "release:"+sid(r["id"]), "release", decimal.Zero, v.Neg(), row{"reservation_id": r["id"]}); e != nil {
 		return e
 	}
+	if expiry := stamp(b["expires_at"]); !expiry.IsZero() && !expiry.After(t) && v.IsPositive() {
+		if e = mutateBucket(db, b, "release-expire:"+sid(r["id"]), "expire", v.Neg(), decimal.Zero, row{"reservation_id": r["id"]}); e != nil {
+			return e
+		}
+	}
 	return db.Table("credit_reservations").Where("id = ?", r["id"]).Updates(row{"released_pt": money(dec(r["released_pt"]).Add(v)), "status": "released", "closed_at": t, "revision": gorm.Expr("revision+1")}).Error
 }
 
@@ -661,6 +666,9 @@ func endSession(db *gorm.DB, ac, p, s row, t time.Time) error {
 	return db.Table("usage_sessions").Where("id = ?", s["id"]).Updates(row{"status": "ended", "ended_at": t, "revision": gorm.Expr("revision + 1")}).Error
 }
 func cycleAt(p row, t time.Time) (time.Time, error) {
+	if platform.Text(p["timezone"]) == "" {
+		return time.Time{}, invalid("daily policy timezone is required")
+	}
 	loc, e := time.LoadLocation(platform.Text(p["timezone"]))
 	if e != nil {
 		return time.Time{}, e
@@ -672,7 +680,7 @@ func cycleAt(p row, t time.Time) (time.Time, error) {
 	local := t.In(loc)
 	cycle := time.Date(local.Year(), local.Month(), local.Day(), clock.Hour(), clock.Minute(), clock.Second(), 0, loc)
 	if cycle.After(local) {
-		cycle = cycle.AddDate(0, 0, -1)
+		cycle = time.Date(local.Year(), local.Month(), local.Day()-1, clock.Hour(), clock.Minute(), clock.Second(), 0, loc)
 	}
 	return cycle, nil
 }
@@ -686,12 +694,15 @@ func grantDailyCycle(db *gorm.DB, ac, cfg row, cycle, validFrom time.Time) error
 		return e
 	}
 	if n == 0 {
-		end := validFrom.Add(time.Duration(platform.Uint(cfg["daily_validity_seconds"])) * time.Second)
+		end, e := dailyExpiry(cfg, cycle, validFrom)
+		if e != nil {
+			return e
+		}
 		b, e := grant(db, ac, "daily", "daily:"+date, dec(cfg["daily_allowance_pt"]), validFrom.In(zone), &end, 0)
 		if e != nil {
 			return e
 		}
-		record := row{"account_id": ac["id"], "business_date": date, "policy_version_id": ac["credit_policy_version_id"], "bucket_id": b["id"], "valid_from": validFrom.In(zone), "expires_at": end.In(zone)}
+		record := row{"account_id": ac["id"], "business_date": date, "policy_version_id": ac["credit_policy_version_id"], "bucket_id": b["id"], "valid_from": validFrom.In(zone), "expires_at": end.In(zone), "reset_capped": true}
 		if e = db.Table("credit_daily_grants").Create(&record).Error; e != nil {
 			return e
 		}
@@ -721,27 +732,17 @@ func dailyGrants(ctx context.Context, a *platform.App) error {
 			if e != nil {
 				return e
 			}
-			start := stamp(ac["grant_cursor_at"])
-			if start.IsZero() {
-				created := stamp(ac["created_at"])
-				start, e = cycleAt(cfg, created)
-				if e != nil {
-					return e
-				}
-				if start.Before(created) {
-					start = start.AddDate(0, 0, 1)
-				}
-			} else {
-				start = start.In(last.Location()).AddDate(0, 0, 1)
+			// Closed periods never become a spendable catch-up balance. An account
+			// created administratively after this boundary waits for the next one;
+			// registration has already consumed its current business date.
+			cursor := stamp(ac["grant_cursor_at"])
+			if (cursor.IsZero() && last.Before(stamp(ac["created_at"]))) || !cursor.Before(last) {
+				return nil
 			}
-			cycles := 0
-			for cycle := start; !cycle.After(last) && cycles < settlementChunkSize; cycle = cycle.AddDate(0, 0, 1) {
-				cycles++
-				if e = grantDailyCycle(db, ac, cfg, cycle, cycle); e != nil {
-					return e
-				}
+			if e = expireBuckets(db, ac, now()); e != nil {
+				return e
 			}
-			return nil
+			return grantDailyCycle(db, ac, cfg, last, last)
 		}); e != nil {
 			return e
 		}

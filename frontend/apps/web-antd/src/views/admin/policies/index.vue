@@ -209,7 +209,7 @@ onMounted(() => {
       </div>
     </Card>
 
-    <Drawer v-model:open="drawerOpen" :title="current ? versionLabel(current) : '配置档'" :width="640">
+    <Drawer v-model:open="drawerOpen" :title="current ? versionLabel(current) : '配置档'" width="min(640px, 100vw)">
       <template v-if="current" #extra>
         <Space>
           <Button danger @click="removeOpen = true">删除</Button>

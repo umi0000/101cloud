@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"101cloud/backend/internal/auth"
+	"101cloud/backend/internal/billing"
 	"101cloud/backend/internal/install"
 	"101cloud/backend/internal/platform"
 	"101cloud/backend/internal/server"
@@ -62,9 +63,17 @@ func run() error {
 	a := platform.New(db, cfg)
 	switch command {
 	case "migrate":
-		return migrations.Up(ctx, db)
+		if e = migrations.Up(ctx, db); e != nil {
+			return e
+		}
+		return billing.NormalizeDailyBuckets(ctx, db)
 	case "serve":
 		if e = migrations.Ready(ctx, db); e != nil {
+			return e
+		}
+		// Complete the financial cutover before any HTTP request or worker can
+		// observe legacy daily buckets with overlapping validity.
+		if e = billing.NormalizeDailyBuckets(ctx, db); e != nil {
 			return e
 		}
 		initial, err := auth.EnsureAdministrator(ctx, a)

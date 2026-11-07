@@ -133,7 +133,7 @@ func TestMySQLDailyAllowanceStartsAtAccountCreationAndIgnoresInstanceProfiles(t 
 	}
 }
 
-func TestMySQLRegistrationDailyCycleAndFullValidity(t *testing.T) {
+func TestMySQLRegistrationDailyCycleAndResetCappedValidity(t *testing.T) {
 	f := newAdjustmentMySQLFixture(t)
 	cases := []struct {
 		name, timezone, at, cycle string
@@ -147,6 +147,8 @@ func TestMySQLRegistrationDailyCycleAndFullValidity(t *testing.T) {
 		{"leap_day", "UTC", "2028-03-01T06:29:59Z", "2028-02-29T06:30:00Z", 86400},
 		{"DST_short_day", "America/New_York", "2026-03-08T06:29:59-04:00", "2026-03-07T06:30:00-05:00", 86400},
 		{"DST_long_day", "America/New_York", "2026-11-01T06:29:59-05:00", "2026-10-31T06:30:00-04:00", 86400},
+		{"long_TTL", "Asia/Shanghai", "2026-10-30T22:00:00+08:00", "2026-10-30T06:30:00+08:00", 604800},
+		{"short_TTL", "Asia/Shanghai", "2026-10-30T22:00:00+08:00", "2026-10-30T06:30:00+08:00", 60},
 	}
 	for i, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -183,6 +185,15 @@ func TestMySQLRegistrationDailyCycleAndFullValidity(t *testing.T) {
 				t.Fatal(err)
 			}
 			expiry := at.Add(time.Duration(tc.validity) * time.Second)
+			loc, err := time.LoadLocation(tc.timezone)
+			if err != nil {
+				t.Fatal(err)
+			}
+			localCycle := wantCycle.In(loc)
+			next := time.Date(localCycle.Year(), localCycle.Month(), localCycle.Day()+1, 6, 30, 0, 0, loc)
+			if next.Before(expiry) {
+				expiry = next
+			}
 			key := "daily:" + tc.cycle[:10]
 			if !stamp(ac["grant_cursor_at"]).Equal(wantCycle) || wantCycle.After(at) ||
 				platform.Text(b["business_key"]) != key || platform.Text(b["source_type"]) != "daily" ||
@@ -283,7 +294,7 @@ func TestMySQLRegistrationDailyPollerReplayAndNextCycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	if f.count(t, "credit_daily_grants", "account_id="+sid(prior["id"])) != 2 ||
-		f.count(t, "credit_ledger", "account_id="+sid(prior["id"])) != 2 ||
+		f.count(t, "credit_ledger", "account_id="+sid(prior["id"])) != 3 ||
 		!stamp(scheduled["valid_from"]).Equal(cycle) || !stamp(scheduled["expires_at"]).Equal(cycle.Add(24*time.Hour)) {
 		t.Fatalf("next scheduled cycle changed: %#v", scheduled)
 	}

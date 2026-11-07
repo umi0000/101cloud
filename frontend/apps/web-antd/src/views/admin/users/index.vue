@@ -236,7 +236,7 @@ onMounted(() => list.load());
           <Select v-model:value="form.role" :options="roleOptions" />
         </FormItem>
         <FormItem
-          help="用户共享钱包的每日额度规则独立于实例套餐；选择套餐不会发放额度。"
+          help="用户共享钱包的每日额度按政策重置，未用部分不结转；兑换及管理员额外发放仍按各自有效期保留。该政策独立于实例套餐，选择套餐不会发放额度。"
           label="共享钱包额度政策"
           required
         >

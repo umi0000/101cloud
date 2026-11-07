@@ -79,6 +79,9 @@ func policyFor(db *gorm.DB, source uint64) (row, error) {
 	if e = json.Unmarshal([]byte(platform.Text(r["config"])), &cfg); e != nil {
 		return nil, e
 	}
+	if cfg == nil {
+		return nil, invalid("credit policy config must be an object")
+	}
 	cfg["source_id"] = source
 	cfg["policy_version_id"] = r["id"]
 	return cfg, nil
@@ -138,7 +141,7 @@ func CreateAccount(db *gorm.DB, user uint64, policyID string) (platform.Row, err
 
 // CreateRegistrationAccount grants the current business cycle only for a new
 // self-service account. The caller's transaction also owns user creation/audit.
-// Unlike scheduled grants, its full validity starts when the user registers.
+// Its validity starts at registration and ends no later than the next reset.
 func CreateRegistrationAccount(db *gorm.DB, user uint64, policyID string, at time.Time) error {
 	ac, e := CreateAccount(db, user, policyID)
 	if e != nil {

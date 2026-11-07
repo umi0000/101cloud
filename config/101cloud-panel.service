@@ -11,7 +11,7 @@ User=101cloud
 Group=101cloud
 WorkingDirectory=/
 #EnvironmentFile=/usr/local/etc/101cloud-panel/config.env
-ExecStart=/usr/local/bin/101cloud-backend serve -c /usr/local/etc/101cloud-panel/config.env
+ExecStart=/usr/local/bin/101cloud-panel serve -c /usr/local/etc/101cloud-panel/config.env
 
 Restart=on-failure
 RestartSec=5s

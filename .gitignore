@@ -59,3 +59,20 @@ vite.config.ts.*
 skills-lock.json
 .atomcode
 datalog
+
+# Backend
+/backend/bin/
+/backend/backend
+/backend/*.test
+/backend/coverage.out
+/backend/.env
+/backend/internal/webui/dist/
+/backend/internal/webui/.dist-build.*/
+
+# Host Agent
+/host-agent/bin/
+/host-agent/agent-state/
+/host-agent/**/connection.json
+/host-agent/**/token
+/host-agent/**/*.key
+/host-agent/agent.local.json

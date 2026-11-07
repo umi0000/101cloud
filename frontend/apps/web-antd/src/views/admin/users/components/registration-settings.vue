@@ -110,7 +110,7 @@ onMounted(() => { void reload(); void loadPolicies(); });
 
 <template>
   <div>
-    <Alert class="mb-4" message="仅影响之后自助注册的用户" description="不会修改已有用户或管理员创建用户的配额。0 表示禁止新增该项资源。自助注册成功即按所选政策获得当前业务日的每日额度（非额外赠送），有效期从注册时起算；之后按政策时间发放，同一业务日不重复。" show-icon type="info" />
+    <Alert class="mb-4" message="仅影响之后自助注册的用户" description="不会修改已有用户或管理员创建用户的配额。0 表示禁止新增该项资源。自助注册成功即获得所选政策当前业务周期的每日额度（非额外赠送），从注册时生效，按有效期或下一次每日重置时间中较早者到期。业务周期按政策时区和重置时间划分，同一周期只发放一次、消耗后不补满；未用每日额度不结转，兑换及管理员额外发放仍按各自有效期保留。" show-icon type="info" />
     <Alert v-if="settings.error.value" class="mb-4" message="注册设置加载失败，不能保存" show-icon type="error">
       <template #action><Button :loading="settings.loading.value" @click="reload">重试</Button></template>
     </Alert>

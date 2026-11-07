@@ -593,7 +593,10 @@ func accountDTO(db *gorm.DB, ac row) (row, error) {
 	if e != nil {
 		return nil, e
 	}
-	next := cycle.AddDate(0, 0, 1)
+	next, e := nextDailyReset(p, cycle)
+	if e != nil {
+		return nil, e
+	}
 	events, e := rows(db.Order("shutdown_deadline, id"), "credit_enforcements", "account_id = ? AND status IN ('grace','stopping','unknown')", ac["id"])
 	if e != nil {
 		return nil, e

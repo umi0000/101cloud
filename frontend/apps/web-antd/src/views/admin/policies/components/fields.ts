@@ -65,10 +65,10 @@ export const ACCESS_MODES: ChoiceOption[] = [
 
 export const POLICY_FIELDS: Record<PolicyKind, PolicyField[]> = {
   credit: [
-    { key: 'daily_allowance_pt', label: '每日额度', type: 'pt', unit: 'pt' },
-    { key: 'timezone', label: '时区', placeholder: 'Asia/Shanghai', type: 'text', hint: 'IANA 时区名' },
-    { key: 'grant_time', label: '发放时间', placeholder: '00:00:00', type: 'text', hint: '格式 HH:MM:SS，按上面的时区' },
-    seconds('daily_validity_seconds', '每日额度有效期', 315_360_000),
+    { key: 'daily_allowance_pt', label: '每日重置额度', type: 'pt', unit: 'pt', hint: '每天重置为此固定额度，上一周期未用的每日额度清零、不累加；兑换及管理员额外发放仍按各自有效期保留。' },
+    { key: 'timezone', label: '时区', placeholder: 'Asia/Shanghai', type: 'text', hint: 'IANA 时区名，用于划分每日重置周期' },
+    { key: 'grant_time', label: '每日重置时间', placeholder: '00:00:00', type: 'text', hint: '格式 HH:MM:SS，按上面的时区；同一周期只发放一次，消耗后不会重复补满。' },
+    seconds('daily_validity_seconds', '每日额度最长有效期', 315_360_000, '可使每日额度提前到期，但最迟在下一次每日重置时到期；增大此值不会跨周期累加。'),
     seconds('billing_window_seconds', '计费区间', 86_400),
     seconds('shutdown_grace_seconds', '停机宽限期', 86_400, '额度耗尽后到停机的时长，1–86400 秒'),
     {

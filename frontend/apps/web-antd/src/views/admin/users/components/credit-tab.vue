@@ -77,7 +77,7 @@ onMounted(load);
     <template v-else-if="loaded && !account">
       <Alert
         class="mb-3"
-        description="请选择已生效的额度政策并创建共享钱包。创建账户本身不发放额度；后续每日额度按所选政策执行，选择实例套餐不会发放额度或切换钱包政策。"
+        description="请选择已生效的额度政策并创建共享钱包。创建账户本身不发放额度；后续每日额度按所选政策重置，未用部分不结转；兑换及管理员额外发放仍按各自有效期保留。选择实例套餐不会发放额度或切换钱包政策。"
         message="该用户尚未配置共享钱包"
         show-icon
         type="info"
@@ -156,7 +156,7 @@ onMounted(load);
           </Space>
         </DescriptionsItem>
       </Descriptions>
-      <p class="text-muted-foreground mt-3 text-xs">这是用户共享钱包，独立于实例套餐。套餐的额度政策仅控制实例的宽限、停机与磁盘规则，不会重复发放每日额度或更改钱包政策。</p>
+      <p class="text-muted-foreground mt-3 text-xs">这是用户共享钱包，独立于实例套餐。每日额度按钱包政策重置，未用部分不结转；兑换及管理员额外发放仍按各自有效期保留。套餐的额度政策仅控制实例的宽限、停机与磁盘规则，不会重复发放每日额度或更改钱包政策。</p>
       <p class="text-muted-foreground mt-3 text-xs">剩余与可用已扣除欠款，可用还扣除预留；欠款未还清时可能为负数。未偿欠款总额不应从净余额中再次扣除，无待处理任务不代表欠款已还清。</p>
       <Space class="mt-3">
         <Button :loading="loading" @click="load">刷新</Button>

@@ -70,7 +70,7 @@
           "auth"
         ],
         "security": [],
-        "description": "Self-register an active ordinary user, atomically copying current default limits, creating a credit account, granting its full current business-cycle daily allowance, and writing audit. The cycle follows the policy timezone and grant_time: before today's scheduled grant, use the previous business_date, never a future cycle. Uses the existing daily source, daily:YYYY-MM-DD key, daily record and cursor; no extra gift or prorating. The initial valid_from is registration time and expires_at is that time plus daily_validity_seconds, ensuring immediate availability and full validity even when the scheduled cycle's usual expiry has passed. Subsequent grants keep the existing schedule and validity; the same account/business_date cannot be granted twice. Zero allowance records the cycle and a zero bucket without a zero-value ledger entry. Any failure rolls back users, limits, account, funds and audit together. Existing users and manual administrator account creation are unchanged. Same-origin CSRF required; no Idempotency-Key and no automatic login. 403 registration_disabled, 409 username_taken, 422 validation_failed, 429 rate_limited with Retry-After. Unknown fields, including role/limits/policy, are rejected.",
+        "description": "Self-register an active ordinary user, atomically copying current default limits, creating a credit account, granting its full current business-cycle daily allowance, and writing audit. The cycle follows policy timezone and grant_time: before today's reset, use the previous business_date, never a future cycle. Uses daily source, daily:YYYY-MM-DD key, daily record and cursor; no extra gift or prorating. Initial valid_from is registration time; expires_at is the earlier of registration time plus daily_validity_seconds and the next policy calendar reset. Daily quota never rolls over; only daily funds reset to the policy amount, while redemption and administrator grants retain their own expiry. Same-cycle polling/restarts never refill consumed quota. Missed closed cycles are skipped. Zero allowance records a zero bucket and cycle without a zero-value ledger entry. Any failure rolls back users, limits, account, funds and audit together. Manual administrator account creation is unchanged. Same-origin CSRF required; no Idempotency-Key and no automatic login. 403 registration_disabled, 409 username_taken, 422 validation_failed, 429 rate_limited with Retry-After. Unknown fields, including role/limits/policy, are rejected.",
         "parameters": [
           {
             "in": "header",
@@ -13181,6 +13181,7 @@
           },
           "daily_validity_seconds": {
             "type": "integer",
+            "description": "Maximum daily bucket lifetime in seconds; actual expiry is capped at the next reset in timezone/grant_time. Cannot enable rollover. Registration starts validity immediately; redemption and administrator grant expiry is unchanged.",
             "minimum": 1
           },
           "billing_window_seconds": {

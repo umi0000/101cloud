@@ -1,6 +1,0 @@
-/bin/
-/agent-state/
-**/connection.json
-**/token
-*.key
-/agent.local.json
