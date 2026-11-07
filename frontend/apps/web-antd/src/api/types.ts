@@ -357,7 +357,11 @@ export interface NetworkOption {
 
 /* ---------- nodes ---------- */
 
-export type AdministrativeState = 'active' | 'disabled' | 'draining' | 'maintenance';
+export type AdministrativeState =
+  | 'active'
+  | 'disabled'
+  | 'draining'
+  | 'maintenance';
 export type NodeHealth = 'offline' | 'online' | 'unknown';
 export type ObservationQuality = 'cached' | 'stale' | 'unavailable';
 
@@ -412,7 +416,12 @@ export interface NodeGPUObservation {
   uuid: string;
 }
 
-export type GPUStatus = 'available' | 'disabled' | 'error' | 'maintenance' | 'missing';
+export type GPUStatus =
+  | 'available'
+  | 'disabled'
+  | 'error'
+  | 'maintenance'
+  | 'missing';
 export type GPUHealth = 'error' | 'healthy' | 'missing' | 'unknown';
 
 export interface NodeGPU {
@@ -466,7 +475,12 @@ export interface NodeResources {
       cpu?: { architecture?: string; total?: number };
       memory?: { total?: number; used?: number };
       storage?: {
-        disks?: Array<{ id?: string; model?: string; size?: number; type?: string }>;
+        disks?: Array<{
+          id?: string;
+          model?: string;
+          size?: number;
+          type?: string;
+        }>;
         total?: number;
       };
       system?: { product?: string; type?: string; vendor?: string };
@@ -508,7 +522,12 @@ export interface NetworkPool {
   updated_at: Time;
 }
 
-export type AddressStatus = 'available' | 'bound' | 'conflict' | 'quarantined' | 'reserved';
+export type AddressStatus =
+  | 'available'
+  | 'bound'
+  | 'conflict'
+  | 'quarantined'
+  | 'reserved';
 
 export interface IPAddress {
   address: string;
@@ -543,7 +562,14 @@ export interface NetworkBinding {
 
 /* ---------- instances ---------- */
 
-export type ObservedState = 'deleted' | 'error' | 'frozen' | 'pending' | 'running' | 'stopped' | 'unknown';
+export type ObservedState =
+  | 'deleted'
+  | 'error'
+  | 'frozen'
+  | 'pending'
+  | 'running'
+  | 'stopped'
+  | 'unknown';
 export type ProvisioningState =
   | 'creating'
   | 'deleted'
@@ -571,16 +597,30 @@ export interface PlanSnapshot extends Resources {
 
 export interface Instance {
   active_task_id: ID | null;
+  /** Actual selected task status; an active cancelled task remains a safety barrier pending reconciliation. */
+  active_task_status?: null | TaskStatus;
   creation_task_id?: ID | null;
   initialization_pending?: boolean;
-  login_mode?: 'none' | 'password' | 'password_and_ssh_key' | 'ssh_key' | 'unknown';
+  login_mode?:
+    | 'none'
+    | 'password'
+    | 'password_and_ssh_key'
+    | 'ssh_key'
+    | 'unknown';
   billing_mode: 'admin_exempt' | 'credit';
   capabilities: Capabilities;
   created_at: Time;
   credit_enforcement: {
     event_id: ID | null;
     shutdown_deadline: null | Time;
-    status: 'cancelled' | 'completed' | 'exempt' | 'grace' | 'normal' | 'stopping' | 'unknown';
+    status:
+      | 'cancelled'
+      | 'completed'
+      | 'exempt'
+      | 'grace'
+      | 'normal'
+      | 'stopping'
+      | 'unknown';
   };
   desired_state: 'deleted' | 'running' | 'stopped';
   id: ID;
@@ -643,14 +683,31 @@ export interface GPUAllocation {
 }
 
 export interface GPUPolicyConfig {
-  idle: { action: 'detach_gpu' | 'stop_instance'; enabled: boolean; timeout_seconds: number };
+  idle: {
+    action: 'detach_gpu' | 'stop_instance';
+    enabled: boolean;
+    timeout_seconds: number;
+  };
   rebalance: { allow_live: boolean; enabled: boolean; max_hourly_pt: Pt };
 }
 
 export interface GPUPolicy extends GPUPolicyConfig {
-  gpu_binding: null | { policy_version_id: ID; model: string; access_mode: AccessMode; gpu_hourly_pt: Pt };
+  gpu_binding: null | {
+    policy_version_id: ID;
+    model: string;
+    access_mode: AccessMode;
+    gpu_hourly_pt: Pt;
+  };
   allowed_ranges: {
-    editable: Record<'allow_live' | 'idle' | 'idle_action' | 'idle_timeout' | 'max_hourly_pt' | 'rebalance', boolean>;
+    editable: Record<
+      | 'allow_live'
+      | 'idle'
+      | 'idle_action'
+      | 'idle_timeout'
+      | 'max_hourly_pt'
+      | 'rebalance',
+      boolean
+    >;
     idle: {
       allowed_actions: Array<'detach_gpu' | 'stop_instance'>;
       default_timeout_seconds: number;
@@ -658,11 +715,17 @@ export interface GPUPolicy extends GPUPolicyConfig {
       max_timeout_seconds: number;
       min_timeout_seconds: number;
     };
-    rebalance: { allow_price_increase: boolean; max_hourly_pt: Pt; min_hourly_pt: Pt };
+    rebalance: {
+      allow_price_increase: boolean;
+      max_hourly_pt: Pt;
+      min_hourly_pt: Pt;
+    };
   };
   allowed_user_actions: string[];
   blocked_reasons: string[];
-  effective_policy: GPUPolicyConfig & { safety: Record<string, boolean | number> };
+  effective_policy: GPUPolicyConfig & {
+    safety: Record<string, boolean | number>;
+  };
   gpu_user_permissions: Record<string, boolean>;
   idle_since: null | Time;
   last_rebound_at: null | Time;
@@ -700,7 +763,11 @@ export interface LatestMetrics {
   gpus: LatestGPUMetric[];
   instance_id: ID;
   instance_state: string;
-  memory: { limit_bytes: Bytes | null; peak_bytes: Bytes | null; used_bytes: Bytes | null };
+  memory: {
+    limit_bytes: Bytes | null;
+    peak_bytes: Bytes | null;
+    used_bytes: Bytes | null;
+  };
   quality: MetricQuality;
   sampled_at: Time;
   stale: boolean;
@@ -746,7 +813,13 @@ export interface MetricsHistory {
 }
 
 export type ConsoleKind = 'serial' | 'terminal' | 'vga';
-export type ConsoleStatus = 'active' | 'closed' | 'expired' | 'failed' | 'preparing' | 'ready';
+export type ConsoleStatus =
+  | 'active'
+  | 'closed'
+  | 'expired'
+  | 'failed'
+  | 'preparing'
+  | 'ready';
 
 export interface ConsoleSession {
   kind: ConsoleKind;
@@ -759,7 +832,14 @@ export interface ConsoleSession {
 
 /* ---------- tasks ---------- */
 
-export type TaskStatus = 'cancelled' | 'failed' | 'queued' | 'running' | 'succeeded' | 'unknown' | 'waiting';
+export type TaskStatus =
+  | 'cancelled'
+  | 'failed'
+  | 'queued'
+  | 'running'
+  | 'succeeded'
+  | 'unknown'
+  | 'waiting';
 
 export interface TaskStep {
   error?: null | PublicError;
@@ -770,8 +850,21 @@ export interface TaskStep {
   status: TaskStatus;
 }
 
-export type CreationStageKey = 'preflight' | 'native' | 'gpu' | 'start' | 'cloud_init' | 'script' | 'verify';
-export type CreationStageStatus = 'pending' | 'running' | 'succeeded' | 'skipped' | 'failed' | 'unknown';
+export type CreationStageKey =
+  | 'preflight'
+  | 'native'
+  | 'gpu'
+  | 'start'
+  | 'cloud_init'
+  | 'script'
+  | 'verify';
+export type CreationStageStatus =
+  | 'pending'
+  | 'running'
+  | 'succeeded'
+  | 'skipped'
+  | 'failed'
+  | 'unknown';
 
 export interface CreationStage {
   key: CreationStageKey;
@@ -792,12 +885,21 @@ export interface CreationCleanup {
 }
 
 export interface Task {
+  can_force_stop?: boolean;
+  force_stop_blocked_reason?: string;
   creation_cleanup?: CreationCleanup | null;
   creation_progress?: CreationProgress | null;
   error?: null | PublicError;
   created_at: Time;
   error_code: null | string;
   finished_at: null | Time;
+  force_stop?: null | {
+    orchestration_stopped: true;
+    external_state: 'not_dispatched' | 'requires_reconciliation';
+    requires_reconciliation: boolean;
+    resources_retained?: boolean;
+    reconciliation_completed?: boolean;
+  };
   id: ID;
   instance_id: ID | null;
   next_action: string;
@@ -878,7 +980,6 @@ export interface PolicyVersion {
   version: string;
 }
 
-
 export interface CreditEnforcement {
   account_id?: ID;
   created_at?: Time;
@@ -929,7 +1030,14 @@ export interface LedgerEntry {
   amount_delta_pt: Pt;
   bucket_id: ID;
   created_at: Time;
-  entry_type: 'adjust' | 'expire' | 'grant' | 'refund' | 'release' | 'reserve' | 'settle';
+  entry_type:
+    | 'adjust'
+    | 'expire'
+    | 'grant'
+    | 'refund'
+    | 'release'
+    | 'reserve'
+    | 'settle';
   id: ID;
   remaining_after_pt: Pt;
   reserved_after_pt: Pt;

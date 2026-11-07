@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import type { Task } from '#/api/types';
 
-import { computed, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue';
 import { useRoute } from 'vue-router';
 
 import { Page } from '@vben/common-ui';
@@ -9,17 +9,26 @@ import { Page } from '@vben/common-ui';
 import { Button, Card, Descriptions, DescriptionsItem, Drawer, Input, Select, Table } from 'ant-design-vue';
 
 import { opsApi } from '#/api/backend';
+import { TaskStatusSchema } from '#/api/task-schema';
 import ConfirmAction from '#/components/confirm-action.vue';
 import CursorPager from '#/components/cursor-pager.vue';
 import ErrorFeedback from '#/components/error-feedback.vue';
 import StatusTag from '#/components/status-tag.vue';
 import TimeText from '#/components/time-text.vue';
+import TaskForceStopConfirm from '#/components/task-force-stop-confirm.vue';
 import UserName from '#/components/user-name.vue';
-import { errorToast, trackAccepted, useAction, useCursorList, useResource } from '#/composables/api';
+import { errorToast, trackAccepted, useAction, useCursorList } from '#/composables/api';
 import { ENUMS, TASK_NEXT_ACTIONS, TASK_TYPES } from '#/locales/enums';
-import { describeTaskError } from '#/locales/errors';
+import { describeError, describeTaskError } from '#/locales/errors';
+import { useAuthStore } from '#/store/auth';
+import { useTaskStore } from '#/store/tasks';
 
 const route = useRoute();
+const auth = useAuthStore();
+const tasks = useTaskStore();
+const actor = computed(() => `${auth.me?.user.id ?? ''}:${auth.me?.user.role ?? ''}`);
+let detailSequence = 0;
+let disposed = false;
 type TaskFilters = Record<'instance_id' | 'node_id' | 'status' | 'user_id', string | undefined>;
 const filters = ref<TaskFilters>({
   instance_id: (route.query.instance_id as string) || undefined,
@@ -41,25 +50,113 @@ const columns = [
   { key: 'created', title: '创建', width: 130 },
   { key: 'finished', title: '结束', width: 130 },
   { key: 'error', title: '失败原因 / 处理建议', width: 300 },
+  { key: 'actions', title: '操作', width: 160, fixed: 'right' as const },
 ];
 
 const selectedId = ref<null | string>(null);
-const detail = useResource(() => (selectedId.value ? opsApi.task(selectedId.value) : null));
+const detail = {
+  data: shallowRef<Task | null>(null),
+  etag: ref<string | null>(null),
+  error: shallowRef<unknown>(null),
+  loading: ref(false),
+  requestId: ref(''),
+  reload: reloadDetail,
+};
+const stopOpen = ref(false);
+const stopState = computed(() => tasks.tracked.find((task) => task.taskId === selectedId.value)?.stop);
+
+function canStop(task: unknown) {
+  if (typeof task !== 'object' || task === null || !('status' in task)) return false;
+  const status = TaskStatusSchema.safeParse(task.status);
+  return status.success && !['cancelled', 'failed', 'succeeded'].includes(status.data);
+}
+
+async function reloadDetail() {
+  const id = selectedId.value;
+  if (!id || disposed) return false;
+  const mine = ++detailSequence;
+  const owner = actor.value;
+  detail.loading.value = true;
+  try {
+    const response = await opsApi.task(id);
+    if (disposed || mine !== detailSequence || actor.value !== owner || selectedId.value !== id) return false;
+    detail.data.value = response.data;
+    detail.etag.value = response.etag;
+    detail.requestId.value = response.requestId;
+    detail.error.value = null;
+    return true;
+  } catch (failure) {
+    if (disposed || mine !== detailSequence || actor.value !== owner || selectedId.value !== id) return false;
+    detail.error.value = failure;
+    errorToast(failure);
+    return false;
+  } finally {
+    if (!disposed && mine === detailSequence && actor.value === owner) detail.loading.value = false;
+  }
+}
 const drawerOpen = computed({
   get: () => !!selectedId.value,
   set: (v) => {
-    if (!v) selectedId.value = null;
+    if (!v) {
+      selectedId.value = null;
+      stopOpen.value = false;
+      reconcileOpen.value = false;
+      detailSequence++;
+      detail.loading.value = false;
+    }
   },
 });
 
 async function openTask(id: string) {
+  stopOpen.value = false;
+  reconcileOpen.value = false;
   selectedId.value = id;
-  try {
-    await detail.reload();
-  } catch (error) {
-    errorToast(error);
-  }
+  detail.data.value = null;
+  detail.etag.value = null;
+  detail.error.value = null;
+  return detail.reload();
 }
+
+async function prepareStop(id: string) {
+  if (await openTask(id) && detail.data.value && selectedId.value === id && canStop(detail.data.value)) stopOpen.value = true;
+}
+
+async function forceStop() {
+  const task = detail.data.value;
+  const id = selectedId.value;
+  if (!task || !id || task.id !== id || detail.loading.value || !canStop(task)) return false;
+  const owner = actor.value;
+  return tasks.forceStop(id, {
+    task,
+    etag: detail.etag.value,
+    onDone: () => {
+      if (disposed || actor.value !== owner) return;
+      void list.load();
+      if (selectedId.value !== id) return;
+      const updated = tasks.tracked.find((item) => item.taskId === id);
+      if (updated?.task) {
+        detail.data.value = updated.task;
+        detail.etag.value = updated.etag;
+      }
+      void detail.reload();
+    },
+  });
+}
+
+watch(actor, () => {
+  detailSequence++;
+  selectedId.value = null;
+  detail.data.value = null;
+  detail.etag.value = null;
+  detail.error.value = null;
+  detail.loading.value = false;
+  stopOpen.value = false;
+  reconcileOpen.value = false;
+});
+watch(() => detail.data.value?.status, (status) => {
+  if (!status || ['cancelled', 'failed', 'succeeded'].includes(status)) stopOpen.value = false;
+});
+onBeforeUnmount(() => { disposed = true; detailSequence++; });
 
 const reconcileOpen = ref(false);
 const action = useAction();
@@ -67,7 +164,7 @@ async function reconcile() {
   const id = selectedId.value;
   if (!id) return false;
   const r = await action.run((key) => opsApi.reconcile(id, { ifMatch: detail.etag.value, key }), {
-    onConflict: () => detail.reload(),
+    onConflict: async () => { await detail.reload(); },
     success: '已请求核对',
   });
   if (!r) return false;
@@ -122,6 +219,11 @@ onMounted(() => list.load());
           <template v-else-if="column.key === 'error'">
             <ErrorFeedback :feedback="describeTaskError(record, list.requestId.value)" />
           </template>
+          <template v-else-if="column.key === 'actions'">
+            <Button v-if="canStop(record)" danger size="small" :loading="selectedId === record.id && stopState?.pending" :disabled="record.can_force_stop === false || (selectedId === record.id && stopState?.pending)" @click.stop="prepareStop(record.id)">强制停止</Button>
+            <p v-if="canStop(record) && record.can_force_stop === false" class="text-muted-foreground mb-0 mt-1 text-xs">{{ record.force_stop_blocked_reason === 'task_stop_not_allowed' ? '系统执行任务仅管理员可强停' : '当前账号无权强停此任务，请核对权限。' }}</p>
+            <span v-if="!canStop(record)" class="text-muted-foreground text-xs">历史记录</span>
+          </template>
         </template>
       </Table>
       <CursorPager
@@ -135,17 +237,30 @@ onMounted(() => list.load());
       />
     </Card>
 
-    <Drawer v-model:open="drawerOpen" :title="`任务 #${selectedId ?? ''}`" :width="520">
+    <Drawer v-model:open="drawerOpen" :title="`任务 #${selectedId ?? ''}`" width="min(520px, 100vw)">
       <template v-if="detail.data.value" #extra>
+        <Button v-if="canStop(detail.data.value)" danger class="mr-2" :loading="stopState?.pending" :disabled="detail.loading.value || stopState?.pending || (detail.data.value.can_force_stop === false && !stopState?.uncertain)" @click="prepareStop(detail.data.value.id)">{{ stopState?.uncertain ? '重试原强停请求' : '强制停止' }}</Button>
         <Button
-          v-if="detail.data.value.status === 'unknown'"
+          v-if="detail.data.value.status === 'unknown' || detail.data.value.force_stop?.requires_reconciliation"
           type="primary"
+          :disabled="stopState?.pending || stopState?.uncertain || detail.loading.value"
           @click="reconcileOpen = true"
         >
           请求核对
         </Button>
       </template>
+      <p v-if="detail.loading.value" class="text-muted-foreground text-sm" role="status">正在读取任务详情与版本…</p>
+      <div v-if="detail.error.value" class="mb-3" role="alert"><ErrorFeedback :feedback="describeError(detail.error.value)" /><Button size="small" :loading="detail.loading.value" @click="detail.reload">刷新任务详情</Button></div>
       <template v-if="detail.data.value">
+        <p v-if="canStop(detail.data.value) && detail.data.value.can_force_stop === false" class="text-muted-foreground mb-3 text-sm">{{ detail.data.value.force_stop_blocked_reason === 'task_stop_not_allowed' ? '系统执行任务仅管理员可强停' : '当前账号无权强停此任务，请核对权限。' }}</p>
+        <div v-if="stopState?.feedback" class="mb-3" role="alert"><ErrorFeedback :feedback="stopState.feedback" /></div>
+        <p v-if="stopState?.uncertain" class="mb-3 text-sm text-orange-500" role="status">强停提交结果尚未确认，请使用原强停请求核对；不会重放任务。</p>
+        <div v-if="detail.data.value.force_stop" class="mb-3 text-sm" role="status">
+          <p class="mb-1">任务编排已强制停止，历史记录保留。</p>
+          <p v-if="detail.data.value.force_stop.reconciliation_completed" class="text-muted-foreground mb-0">外部结果核对已完成；资源与计费仍以实际记录为准。</p>
+          <p v-else-if="detail.data.value.force_stop.requires_reconciliation" class="mb-0 text-orange-500">已发出的外部操作不保证停止，资源与计费不视为已释放。请请求核对，勿重复提交原操作。</p>
+          <p v-else class="text-muted-foreground mb-0">服务端确认尚未派发外部操作；资源与计费以实际记录为准。</p>
+        </div>
         <Descriptions bordered :column="1" size="small">
           <DescriptionsItem label="类型">{{ TASK_TYPES[detail.data.value.type] ?? detail.data.value.type }}</DescriptionsItem>
           <DescriptionsItem label="状态"><StatusTag kind="task" :value="detail.data.value.status" /></DescriptionsItem>
@@ -198,6 +313,18 @@ onMounted(() => list.load());
       </template>
     </Drawer>
 
+    <TaskForceStopConfirm
+      v-if="detail.data.value && selectedId"
+      :key="selectedId"
+      v-model:open="stopOpen"
+      :task-id="selectedId"
+      :label="TASK_TYPES[detail.data.value.type] ?? detail.data.value.type"
+      :disabled="detail.loading.value || !canStop(detail.data.value) || (detail.data.value.can_force_stop === false && !stopState?.uncertain)"
+      :pending="stopState?.pending"
+      :uncertain="stopState?.uncertain"
+      :feedback="stopState?.feedback"
+      :on-confirm="forceStop"
+    />
     <ConfirmAction
       v-model:open="reconcileOpen"
       description="重新查询节点上的实际状态，并根据结果结束该任务。不会重新执行原操作。"

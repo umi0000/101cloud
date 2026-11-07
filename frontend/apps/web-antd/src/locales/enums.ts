@@ -10,10 +10,17 @@ export interface EnumLabel {
 
 type Dict = Record<string, EnumLabel>;
 
-const L = (text: string, color: Tone = 'default'): EnumLabel => ({ color, text });
+const L = (text: string, color: Tone = 'default'): EnumLabel => ({
+  color,
+  text,
+});
 
 export const ENUMS: Record<string, Dict> = {
-  accountStatus: { active: L('正常', 'success'), closed: L('关闭'), frozen: L('冻结', 'warning') },
+  accountStatus: {
+    active: L('正常', 'success'),
+    closed: L('关闭'),
+    frozen: L('冻结', 'warning'),
+  },
   addressStatus: {
     available: L('可用'),
     bound: L('已绑定', 'success'),
@@ -37,7 +44,10 @@ export const ENUMS: Record<string, Dict> = {
     reserved: L('已预留', 'processing'),
     unknown: L('未知', 'warning'),
   },
-  billingMode: { admin_exempt: L('免额度', 'processing'), credit: L('额度计费') },
+  billingMode: {
+    admin_exempt: L('免额度', 'processing'),
+    credit: L('额度计费'),
+  },
   catalogStatus: {
     active: L('已发布', 'success'),
     disabled: L('停用'),
@@ -95,9 +105,17 @@ export const ENUMS: Record<string, Dict> = {
     maintenance: L('维护', 'warning'),
     missing: L('未找到', 'error'),
   },
-  health: { offline: L('离线', 'error'), online: L('在线', 'success'), unknown: L('未知', 'warning') },
+  health: {
+    offline: L('离线', 'error'),
+    online: L('在线', 'success'),
+    unknown: L('未知', 'warning'),
+  },
   instanceType: { container: L('容器'), 'virtual-machine': L('虚拟机') },
-  networkMode: { bridge: L('网桥'), macvlan: L('macvlan 直连'), managed_bridge: L('托管网桥') },
+  networkMode: {
+    bridge: L('网桥'),
+    macvlan: L('macvlan 直连'),
+    managed_bridge: L('托管网桥'),
+  },
   observed: {
     deleted: L('已删除'),
     error: L('异常', 'error'),
@@ -107,9 +125,17 @@ export const ENUMS: Record<string, Dict> = {
     stopped: L('已停止'),
     unknown: L('未知', 'warning'),
   },
-  poolStatus: { active: L('启用', 'success'), disabled: L('停用'), exhausted: L('已用尽', 'warning') },
+  poolStatus: {
+    active: L('启用', 'success'),
+    disabled: L('停用'),
+    exhausted: L('已用尽', 'warning'),
+  },
   productType: { custom: L('自定义', 'processing'), elastic: L('标准') },
-  quality: { cached: L('正常', 'success'), stale: L('已过期', 'warning'), unavailable: L('无数据') },
+  quality: {
+    cached: L('正常', 'success'),
+    stale: L('已过期', 'warning'),
+    unavailable: L('无数据'),
+  },
   role: { admin: L('管理员', 'processing'), user: L('成员') },
   simpleStatus: { active: L('启用', 'success'), disabled: L('停用') },
   task: {
@@ -121,11 +147,22 @@ export const ENUMS: Record<string, Dict> = {
     unknown: L('结果待核对', 'warning'),
     waiting: L('等待中', 'processing'),
   },
-  userStatus: { active: L('正常', 'success'), deleted: L('已删除'), disabled: L('已停用', 'warning') },
-  validation: { failed: L('验证失败', 'error'), pending: L('待验证', 'warning'), verified: L('已验证', 'success') },
+  userStatus: {
+    active: L('正常', 'success'),
+    deleted: L('已删除'),
+    disabled: L('已停用', 'warning'),
+  },
+  validation: {
+    failed: L('验证失败', 'error'),
+    pending: L('待验证', 'warning'),
+    verified: L('已验证', 'success'),
+  },
 };
 
-export function enumLabel(kind: string, value: null | string | undefined): EnumLabel {
+export function enumLabel(
+  kind: string,
+  value: null | string | undefined,
+): EnumLabel {
   if (value === null || value === undefined) return L('—');
   return ENUMS[kind]?.[value] ?? L(value);
 }
@@ -217,9 +254,61 @@ export const GPU_PERMISSION_NAMES: Record<string, string> = {
   rebalance: '自动均衡开关',
 };
 
+interface InstanceTaskLabel extends EnumLabel {
+  message: string;
+  type: 'info' | 'warning';
+}
+
+const TASK_RUNNING: InstanceTaskLabel = {
+  ...L('操作中', 'processing'),
+  type: 'info',
+  message: '实例操作正在处理，请等待结果。',
+};
+const TASK_CANCELLED: InstanceTaskLabel = {
+  ...L('编排已停，待核对', 'warning'),
+  type: 'warning',
+  message:
+    '任务编排已停止，需管理员核对外部状态；已发出的操作不保证停止，资源与计费不视为已释放。核对完成前安全控制仍禁用，请勿重复提交原操作。',
+};
+const TASK_UNKNOWN: InstanceTaskLabel = {
+  ...L('操作结果待核对', 'warning'),
+  type: 'warning',
+  message:
+    '实例操作结果尚未确认，需管理员核对外部状态；安全控制仍禁用，请勿重复提交原操作。',
+};
+
+/** The ID, not the status, owns the safety barrier. Missing/legacy statuses never imply release. */
+export function instanceTaskState(
+  i: Pick<Instance, 'active_task_id' | 'active_task_status'>,
+): InstanceTaskLabel | undefined {
+  if (!i.active_task_id) return undefined;
+  switch (i.active_task_status) {
+    case 'cancelled':
+      return TASK_CANCELLED;
+    case 'queued':
+    case 'running':
+    case 'waiting':
+      return TASK_RUNNING;
+    default:
+      return TASK_UNKNOWN;
+  }
+}
+
 /** 已确认未派发且释放预留的创建失败优先；其他实例仍以 stale 为先。 */
-export function instanceState(i: Pick<Instance, 'observed_state' | 'provisioning_state' | 'resource_reservations_released' | 'state_stale'>): EnumLabel {
-  if (i.provisioning_state === 'failed' && i.resource_reservations_released === true) return L('创建失败', 'error');
+export function instanceState(
+  i: Pick<
+    Instance,
+    | 'observed_state'
+    | 'provisioning_state'
+    | 'resource_reservations_released'
+    | 'state_stale'
+  >,
+): EnumLabel {
+  if (
+    i.provisioning_state === 'failed' &&
+    i.resource_reservations_released === true
+  )
+    return L('创建失败', 'error');
   if (i.state_stale) return L('状态未知', 'warning');
   switch (i.provisioning_state) {
     case 'creating':

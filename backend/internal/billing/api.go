@@ -469,7 +469,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		if e := json.Unmarshal(j.Parameters, &p); e != nil {
 			return e
 		}
-		return reconcileEvent(ctx, a, p.ID)
+		return reconcileEvent(context.WithValue(ctx, enforcementJobKey{}, j), a, p.ID)
 	})
 }
 func registerFinancialList(a *platform.App, g *gin.RouterGroup, path, table string, admin bool) {

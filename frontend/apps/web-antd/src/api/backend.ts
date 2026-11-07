@@ -95,6 +95,14 @@ const put = <T>(url: string, body: unknown, w: Write) =>
 const del = <T>(url: string, body: unknown, w: Write) =>
   api.delete<T>(url, { body, idempotencyKey: w.key, ifMatch: w.ifMatch });
 
+function taskResult(result: ApiResult<unknown>): ApiResult<Task> {
+  const parsed = TaskSchema.safeParse(result.data);
+  if (!parsed.success) {
+    throw new ApiError(result.status, { code: 'invalid_response', details: null, message: '任务数据格式异常，请联系管理员' }, result.requestId, null);
+  }
+  return { ...result, data: parsed.data };
+}
+
 /* ---------------- 认证与本人 ---------------- */
 
 export const authApi = {
@@ -152,14 +160,10 @@ export const memberApi = {
   networkOptions: (q?: Query) => list<NetworkOption>('/catalog/network-options', q),
   plans: (q?: Query) => list<Plan>('/catalog/plans', q),
   quote: (body: ElasticQuoteSpec, w: Write) => post<ElasticQuote>('/quotes', body, w),
-  task: async (id: ID): Promise<ApiResult<Task>> => {
-    const result = await detail<unknown>(`/tasks/${id}`);
-    const parsed = TaskSchema.safeParse(result.data);
-    if (!parsed.success) {
-      throw new ApiError(result.status, { code: 'invalid_response', details: null, message: '任务数据格式异常，请联系管理员' }, result.requestId, null);
-    }
-    return { ...result, data: parsed.data };
-  },
+  forceStopTask: async (id: ID, w: Write) =>
+    taskResult(await post<unknown>(`/tasks/${encodeURIComponent(id)}/force-stop`, { confirm: true }, w)),
+  task: async (id: ID): Promise<ApiResult<Task>> =>
+    taskResult(await detail<unknown>(`/tasks/${encodeURIComponent(id)}`)),
 };
 
 export const memberConsoleApi = {
@@ -545,16 +549,12 @@ export const financeApi = {
 
 export const opsApi = {
   audit: (q?: Query) => list<AuditLog>('/admin/audit-logs', q),
+  forceStopTask: async (id: ID, w: Write) =>
+    taskResult(await post<unknown>(`/admin/tasks/${encodeURIComponent(id)}/force-stop`, { confirm: true }, w)),
   reconcile: (id: ID, w: Write) =>
     post<TaskAccepted>(`/admin/tasks/${id}/reconcile`, {}, w),
-  task: async (id: ID): Promise<ApiResult<Task>> => {
-    const result = await detail<unknown>(`/admin/tasks/${id}`);
-    const parsed = TaskSchema.safeParse(result.data);
-    if (!parsed.success) {
-      throw new ApiError(result.status, { code: 'invalid_response', details: null, message: '任务数据格式异常，请联系管理员' }, result.requestId, null);
-    }
-    return { ...result, data: parsed.data };
-  },
+  task: async (id: ID): Promise<ApiResult<Task>> =>
+    taskResult(await detail<unknown>(`/admin/tasks/${encodeURIComponent(id)}`)),
   tasks: async (q?: Query): Promise<ApiResult<Page<Task>>> => {
     const result = await api.get<unknown>('/admin/tasks', { params: clean(q) });
     const parsed = TaskPageSchema.safeParse(result.data);

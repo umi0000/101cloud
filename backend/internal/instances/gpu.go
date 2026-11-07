@@ -540,6 +540,11 @@ func safeLiveCard(g map[string]any, removed bool) error {
 	return nil
 }
 func runGPU(ctx context.Context, a *platform.App, job platform.Job) error {
+	// This fenced, read-only entry journal distinguishes a live preflight from
+	// legacy work with missing mutation evidence after its lease is revoked.
+	if e := a.Step(ctx, job, "gpu.preflight", "", "running"); e != nil {
+		return e
+	}
 	var p struct {
 		Action        string   `json:"action"`
 		AllocationIDs []uint64 `json:"allocation_ids"`

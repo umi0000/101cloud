@@ -234,7 +234,7 @@ func pollFailedCreations(ctx context.Context, a *platform.App) error {
 			// reconciliation wrapper. The old unknown mutation slot is handed over only
 			// after all of its external operations have become quiescent.
 			var active int64
-			if err = db.Table("tasks").Where("instance_id=? AND status IN ('queued','running','waiting')", r["id"]).Count(&active).Error; err != nil || active != 0 {
+			if err = db.Table("tasks").Where("instance_id=? AND (status IN ('queued','running','waiting') OR (is_instance_mutation=1 AND status='cancelled' AND error_code='task_force_stopped'))", r["id"]).Count(&active).Error; err != nil || active != 0 {
 				return err
 			}
 			var cleanup []platform.Row
@@ -276,7 +276,10 @@ func creationQuiescent(ctx context.Context, a *platform.App, j platform.Job) err
 			continue
 		}
 		if op == "" {
-			if status == "succeeded" || status == "cancelled" {
+			if platform.Bool(object(step["result_redacted"])["native_dispatch_started"]) && status != "succeeded" {
+				return errors.New("original mutation has ambiguous dispatch; retain resources")
+			}
+			if status == "succeeded" || (status == "cancelled" && platform.Text(step["error_code"]) != "task_force_stopped") || platform.Bool(object(step["result_redacted"])["native_dispatch_fenced"]) {
 				continue
 			}
 			return errors.New("original mutation has ambiguous dispatch; retain resources")

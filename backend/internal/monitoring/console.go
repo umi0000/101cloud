@@ -65,6 +65,7 @@ type consoleResult struct {
 	err       error
 }
 type consoleBridge struct {
+	taskID  uint64
 	data    *consoleWire
 	control *consoleWire
 	frames  chan consoleFrame
@@ -87,16 +88,19 @@ func (b *consoleBridge) close(code int, message string) {
 }
 
 type consoleService struct {
-	a       *platform.App
-	mu      sync.Mutex
-	bridges map[string]*consoleBridge
+	a              *platform.App
+	mu             sync.Mutex
+	bridges        map[string]*consoleBridge
+	prepareCancels map[uint64]context.CancelFunc
+	bridgeTasks    map[uint64]*consoleBridge
 }
 
 // RegisterConsole owns the durable preparation task and the browser-facing bridge.
 // Prepared sockets must remain on their backend process; multi-replica deployments
 // must route a session's stream to the process that prepared it.
 func RegisterConsole(a *platform.App, user, admin *gin.RouterGroup) {
-	s := &consoleService{a: a, bridges: make(map[string]*consoleBridge)}
+	s := &consoleService{a: a, bridges: make(map[string]*consoleBridge), prepareCancels: make(map[uint64]context.CancelFunc), bridgeTasks: make(map[uint64]*consoleBridge)}
+	consoleServices.Store(a, s)
 	for _, group := range []*gin.RouterGroup{user, admin} {
 		group.POST("/instances/:id/console-sessions", platform.Handle(s.create))
 		group.GET("/console-sessions/:session_id", platform.Handle(s.status))
@@ -104,6 +108,14 @@ func RegisterConsole(a *platform.App, user, admin *gin.RouterGroup) {
 		group.GET("/console-sessions/:session_id/stream", s.stream)
 	}
 	a.RegisterJob("monitoring.console.prepare", s.prepare)
+	a.RegisterReconciler("monitoring.console.prepare", s.reconcileForceStopped)
+	a.RegisterTaskStopHook("monitoring.console.prepare", func(tx *gorm.DB, task platform.Row, now time.Time) (func(), error) {
+		id := platform.Uint(task["id"])
+		if err := ForceStopConsole(tx, id, now); err != nil {
+			return nil, err
+		}
+		return func() { CancelConsolePreparation(a, id) }, nil
+	})
 	a.AddPoller("monitoring.console.revoke", 2*time.Second, s.revoke)
 	a.AddShutdownHook(s.shutdown)
 }
@@ -331,6 +343,24 @@ func consoleOperationPath(v string) (string, error) {
 }
 
 func (s *consoleService) prepare(ctx context.Context, a *platform.App, job platform.Job) error {
+	ctx, cancelPrepare := context.WithCancel(ctx)
+	s.mu.Lock()
+	if s.prepareCancels == nil {
+		s.prepareCancels = make(map[uint64]context.CancelFunc)
+	}
+	if s.prepareCancels[job.ID] != nil {
+		s.mu.Unlock()
+		cancelPrepare()
+		return platform.Unknown(errors.New("console preparation is already in flight; upstream operation must not be replayed"))
+	}
+	s.prepareCancels[job.ID] = cancelPrepare
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.prepareCancels, job.ID)
+		s.mu.Unlock()
+		cancelPrepare()
+	}()
 	var args struct {
 		SessionID string `json:"session_id"`
 	}
@@ -344,20 +374,18 @@ func (s *consoleService) prepare(ctx context.Context, a *platform.App, job platf
 	if row.Status != "preparing" {
 		return nil
 	}
-	if err := s.authorized(ctx, row, true); err != nil {
-		s.finish(row.ID, "closed")
+	fail := func(err error) error {
+		finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = s.prepareUpdate(finishCtx, job, row.ID, platform.Row{"status": "failed", "closed_at": a.Time(), "secrets_ciphertext": nil, "revision": gorm.Expr("revision+1")}, false)
 		return err
 	}
-	now := a.Time()
-	result := a.DB.WithContext(ctx).Table("console_sessions").Where("id = ? AND status = 'preparing' AND prepare_started_at IS NULL", row.ID).Updates(map[string]any{"prepare_started_at": now, "revision": gorm.Expr("revision + 1")})
-	if result.Error != nil {
-		return result.Error
+	if err := s.authorized(ctx, row, true); err != nil {
+		return fail(err)
 	}
-	if result.RowsAffected != 1 {
-		s.finish(row.ID, "failed")
-		return platform.Unknown(errors.New("console preparation was interrupted; upstream operation must not be replayed"))
+	if err := s.prepareUpdate(ctx, job, row.ID, platform.Row{"prepare_started_at": a.Time(), "revision": gorm.Expr("revision+1")}, true); err != nil {
+		return fail(err)
 	}
-	fail := func(err error) error { s.finish(row.ID, "failed"); return err }
 	if err := a.Step(ctx, job, "prepare_console", "", "running"); err != nil {
 		return fail(err)
 	}
@@ -408,12 +436,14 @@ func (s *consoleService) prepare(ctx context.Context, a *platform.App, job platf
 	if err != nil {
 		return fail(err)
 	}
-	if err = a.DB.WithContext(ctx).Table("console_sessions").Where("id = ?", row.ID).Updates(map[string]any{"operation_path": opPath, "secrets_ciphertext": encrypted, "revision": gorm.Expr("revision + 1")}).Error; err != nil {
+	if err = s.prepareUpdate(ctx, job, row.ID, platform.Row{"operation_path": opPath, "secrets_ciphertext": encrypted, "revision": gorm.Expr("revision+1")}, false); err != nil {
 		return fail(platform.Unknown(err))
 	}
 	// The task lease ends on success; live channels have no fixed lifetime.
 	// Shutdown closes only bridges owned by this process.
 	liveCtx, cancelLive := context.WithCancel(context.Background())
+	stopPreparation := context.AfterFunc(ctx, cancelLive)
+	defer stopPreparation()
 	control, err := s.connect(liveCtx, row.NodeID, opPath, project, controlSecret)
 	if err != nil {
 		cancelLive()
@@ -425,7 +455,7 @@ func (s *consoleService) prepare(ctx context.Context, a *platform.App, job platf
 		cancelLive()
 		return fail(err)
 	}
-	bridge := &consoleBridge{data: data, control: control, frames: make(chan consoleFrame, 4), result: make(chan consoleResult, 1), done: make(chan struct{}), cancel: cancelLive}
+	bridge := &consoleBridge{taskID: job.ID, data: data, control: control, frames: make(chan consoleFrame, 4), result: make(chan consoleResult, 1), done: make(chan struct{}), cancel: cancelLive}
 	// Observe completion while the operation is live, not after browser output
 	// has drained: Incus removes completed operations after a short retention.
 	go func() {
@@ -434,6 +464,10 @@ func (s *consoleService) prepare(ctx context.Context, a *platform.App, job platf
 	}()
 	s.mu.Lock()
 	s.bridges[row.ID] = bridge
+	if s.bridgeTasks == nil {
+		s.bridgeTasks = make(map[uint64]*consoleBridge)
+	}
+	s.bridgeTasks[job.ID] = bridge
 	s.mu.Unlock()
 	go s.readData(bridge)
 	go func() {
@@ -443,14 +477,10 @@ func (s *consoleService) prepare(ctx context.Context, a *platform.App, job platf
 			}
 		}
 	}()
-	result = a.DB.WithContext(ctx).Table("console_sessions").Where("id = ? AND status = 'preparing'", row.ID).Updates(map[string]any{"status": "ready", "revision": gorm.Expr("revision + 1")})
-	if result.Error != nil || result.RowsAffected != 1 {
+	if err = s.prepareUpdate(ctx, job, row.ID, platform.Row{"status": "ready", "revision": gorm.Expr("revision+1")}, false); err != nil {
 		bridge.close(1008, "会话已撤销")
 		s.forget(row.ID, bridge)
-		if result.Error != nil {
-			return fail(result.Error)
-		}
-		return nil
+		return fail(err)
 	}
 	row.OperationPath = opPath
 	go s.guard(liveCtx, row, bridge)
@@ -472,6 +502,9 @@ func (s *consoleService) forget(id string, b *consoleBridge) {
 	s.mu.Lock()
 	if s.bridges[id] == b {
 		delete(s.bridges, id)
+		if s.bridgeTasks[b.taskID] == b {
+			delete(s.bridgeTasks, b.taskID)
+		}
 	}
 	s.mu.Unlock()
 }
@@ -542,16 +575,37 @@ func (s *consoleService) guard(ctx context.Context, row consoleSession, b *conso
 	}
 }
 
-// Revoke abandoned rows only when their bound login is no longer authorized.
+// Revoke unauthorized rows and interrupt preparations closed by another replica.
 // Process-local absence alone is not evidence that another replica's bridge died.
 func (s *consoleService) revoke(ctx context.Context, a *platform.App) error {
-	return a.DB.WithContext(ctx).Exec("UPDATE console_sessions c LEFT JOIN user_sessions s ON s.id=c.auth_session_id AND s.user_id=c.user_id LEFT JOIN users u ON u.id=c.user_id SET c.status='closed', c.closed_at=?, c.secrets_ciphertext=NULL, c.revision=c.revision+1 WHERE c.status IN ('preparing','ready','active') AND (s.id IS NULL OR s.revoked_at IS NOT NULL OR s.expires_at<=? OR u.id IS NULL OR u.status<>'active')", a.Time(), a.Time()).Error
+	if err := a.DB.WithContext(ctx).Exec("UPDATE console_sessions c LEFT JOIN user_sessions s ON s.id=c.auth_session_id AND s.user_id=c.user_id LEFT JOIN users u ON u.id=c.user_id SET c.status='closed', c.closed_at=?, c.secrets_ciphertext=NULL, c.revision=c.revision+1 WHERE c.status IN ('preparing','ready','active') AND (s.id IS NULL OR s.revoked_at IS NOT NULL OR s.expires_at<=? OR u.id IS NULL OR u.status<>'active')", a.Time(), a.Time()).Error; err != nil {
+		return err
+	}
+	s.mu.Lock()
+	ids := make([]uint64, 0, len(s.prepareCancels))
+	for id := range s.prepareCancels {
+		ids = append(ids, id)
+	}
+	s.mu.Unlock()
+	if len(ids) == 0 {
+		return nil
+	}
+	var stopped []uint64
+	if err := a.DB.WithContext(ctx).Table("console_sessions").Where("prepare_task_id IN ? AND status NOT IN ?", ids, []string{"preparing", "ready", "active"}).Pluck("prepare_task_id", &stopped).Error; err != nil {
+		return err
+	}
+	for _, id := range stopped {
+		s.cancelPreparation(id)
+	}
+	return nil
 }
 
 func (s *consoleService) shutdown() {
+	consoleServices.Delete(s.a)
 	s.mu.Lock()
 	bridges := s.bridges
 	s.bridges = make(map[string]*consoleBridge)
+	s.bridgeTasks = make(map[uint64]*consoleBridge)
 	s.mu.Unlock()
 	for id, bridge := range bridges {
 		bridge.close(1001, "服务已停止")

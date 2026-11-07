@@ -63,9 +63,12 @@ type App struct {
 	mu            sync.RWMutex
 	jobs          map[string]JobHandler
 	reconcilers   map[string]JobHandler
+	taskStopHooks map[string]TaskStopHook
 	pollers       []poller
 	agentClients  sync.Map
 	shutdownHooks []func()
+	executionMu   sync.Mutex
+	executions    map[uint64]map[*taskExecution]context.CancelFunc
 }
 
 func New(db *gorm.DB, cfg Config) *App {

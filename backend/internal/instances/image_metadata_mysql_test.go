@@ -18,7 +18,7 @@ func TestMySQLInstanceSourceImageMetadata(t *testing.T) {
 	for _, statement := range []string{
 		"ALTER TABLE instances ADD logical_name VARCHAR(128), ADD billing_mode VARCHAR(20), ADD image_type VARCHAR(20), ADD image_id BIGINT, ADD instance_plan_id BIGINT, ADD plan_snapshot JSON, ADD policy_versions JSON, ADD observed_at DATETIME(6), ADD allowed_user_actions JSON, ADD created_at DATETIME(6), ADD updated_at DATETIME(6), ADD creation_failed_at DATETIME(6)",
 		"CREATE TABLE images (id BIGINT PRIMARY KEY,name VARCHAR(128),os_name VARCHAR(100),os_release VARCHAR(100),status VARCHAR(20),source_config JSON)",
-		"CREATE TABLE tasks (id BIGINT PRIMARY KEY,instance_id BIGINT,task_type VARCHAR(64),is_instance_mutation BOOLEAN,status VARCHAR(20))",
+		"CREATE TABLE tasks (id BIGINT PRIMARY KEY,instance_id BIGINT,task_type VARCHAR(64),is_instance_mutation BOOLEAN,status VARCHAR(20),error_code VARCHAR(96),result_redacted JSON)",
 		"CREATE TABLE credit_enforcements (id BIGINT PRIMARY KEY,status VARCHAR(20),shutdown_deadline DATETIME(6))",
 		"CREATE TABLE credit_enforcement_instances (enforcement_id BIGINT,instance_id BIGINT)",
 		"INSERT INTO images VALUES (10,'not-the-os','Ubuntu','24.04','active',JSON_OBJECT('secret','private-image-secret')),(20,'Ubuntu-looking-name','Debian','12','retired',JSON_OBJECT('secret','private-image-secret')),(30,'Ubuntu','Fedora','41','disabled',JSON_OBJECT('secret','private-image-secret'))",

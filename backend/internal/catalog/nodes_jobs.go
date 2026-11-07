@@ -21,6 +21,10 @@ var nodeGPUUUIDPattern = regexp.MustCompile(`^GPU-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-
 // These jobs only read Agent/Incus state. Drain changes eligibility in the
 // request transaction; no worker here stops, migrates or reconfigures a guest.
 func nodeInventoryJob(ctx context.Context, a *platform.App, job platform.Job) error {
+	ctx, job, e := catalogReadOnlyJob(ctx, a, job)
+	if e != nil {
+		return e
+	}
 	start := a.Time()
 	initial, e := platform.Get(a.DB.WithContext(ctx), "nodes", job.NodeID, false)
 	if e != nil {
@@ -60,7 +64,7 @@ func nodeInventoryJob(ctx context.Context, a *platform.App, job platform.Job) er
 		if e != nil {
 			return e
 		}
-		if e = nodeInventoryFence(tx, job, node, initial, start); e != nil {
+		if e = nodeInventoryFence(ctx, tx, job, node, initial, start, a.Time()); e != nil {
 			return e
 		}
 		if gpuCount, e = nodeSaveGPUs(tx, a, job.NodeID, snapshot, start); e != nil {
@@ -104,18 +108,11 @@ func nodeSameConnection(a, b platform.Row) bool {
 	}
 	return true
 }
-func nodeInventoryFence(tx *gorm.DB, job platform.Job, current, initial platform.Row, sampled time.Time) error {
+func nodeInventoryFence(ctx context.Context, tx *gorm.DB, job platform.Job, current, initial platform.Row, sampled, now time.Time) error {
 	if e := nodeObservationFence(current, initial, sampled); e != nil {
 		return e
 	}
-	var task platform.Row
-	if e := tx.Table("tasks").Clauses(clause.Locking{Strength: "UPDATE"}).Where("id = ?", job.ID).Take(&task).Error; e != nil {
-		return e
-	}
-	if platform.Uint(task["lease_generation"]) != job.LeaseGeneration || platform.Text(task["status"]) != "running" || !platform.Stamp(task["lease_until"]).After(time.Now()) {
-		return platform.E(409, "task_lease_lost", "task no longer owns the inventory lease")
-	}
-	return nil
+	return catalogTaskFence(ctx, tx, job, now)
 }
 
 func nodeObservationFence(current, initial platform.Row, sampled time.Time) error {
@@ -133,7 +130,7 @@ func nodeRecordHealth(ctx context.Context, a *platform.App, job platform.Job, in
 		if e != nil {
 			return e
 		}
-		if e = nodeInventoryFence(tx, job, current, initial, sampled); e != nil {
+		if e = nodeInventoryFence(ctx, tx, job, current, initial, sampled, a.Time()); e != nil {
 			return e
 		}
 		state := "offline"

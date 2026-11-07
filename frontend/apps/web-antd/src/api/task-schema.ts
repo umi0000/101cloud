@@ -45,12 +45,21 @@ export const CreationCleanupSchema = z.object({
 
 
 export const TaskSchema = z.object({
+  can_force_stop: z.boolean().optional(),
+  force_stop_blocked_reason: z.string().optional(),
   creation_cleanup: CreationCleanupSchema.nullable().optional(),
   creation_progress: CreationProgressSchema.nullable().optional(),
   created_at: z.string(),
   error: PublicErrorSchema.nullable().optional(),
   error_code: z.string().nullable(),
   finished_at: z.string().nullable(),
+  force_stop: z.object({
+    orchestration_stopped: z.literal(true),
+    external_state: z.enum(['not_dispatched', 'requires_reconciliation']),
+    requires_reconciliation: z.boolean(),
+    resources_retained: z.boolean().optional(),
+    reconciliation_completed: z.boolean().optional(),
+  }).nullable().optional(),
   id: z.string(),
   instance_id: z.string().nullable(),
   next_action: z.string(),

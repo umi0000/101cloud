@@ -157,6 +157,10 @@ func networkReconcileJob(ctx context.Context, a *platform.App, j platform.Job) e
 	return networkRunValidation(ctx, a, j, true)
 }
 func networkRunValidation(ctx context.Context, a *platform.App, j platform.Job, reconcile bool) error {
+	ctx, j, e := catalogReadOnlyJob(ctx, a, j)
+	if e != nil {
+		return e
+	}
 	var raw map[string]any
 	if e := json.Unmarshal(j.Parameters, &raw); e != nil {
 		return e
@@ -189,16 +193,27 @@ func networkRunValidation(ctx context.Context, a *platform.App, j platform.Job, 
 	if e != nil {
 		return e
 	}
-	q := a.DB.WithContext(ctx).Table("node_network_bindings").Where("id=? AND revision=? AND EXISTS (SELECT 1 FROM network_pools WHERE id=? AND revision=?)", id, revision, p["id"], p["revision"])
-	if !reconcile {
-		q = q.Where("validation_status='pending'")
-	}
-	result := q.Updates(platform.Row{"validation_status": status, "validated_at": a.Time(), "validation_details": string(encoded), "status": "disabled", "revision": gorm.Expr("revision + 1")})
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected != 1 {
-		return platform.E(409, "stale_validation", "网络绑定或地址池在验证期间已变更，请刷新并重新验证。")
+	// Native observations can outlive cancellation. Lock the original live task
+	// before publishing either a successful or a failed validation projection.
+	e = a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := catalogTaskFence(ctx, tx, j, a.Time()); err != nil {
+			return err
+		}
+		q := tx.Table("node_network_bindings").Where("id=? AND revision=? AND EXISTS (SELECT 1 FROM network_pools WHERE id=? AND revision=?)", id, revision, p["id"], p["revision"])
+		if !reconcile {
+			q = q.Where("validation_status='pending'")
+		}
+		result := q.Updates(platform.Row{"validation_status": status, "validated_at": a.Time(), "validation_details": string(encoded), "status": "disabled", "revision": gorm.Expr("revision + 1")})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected != 1 {
+			return platform.E(409, "stale_validation", "网络绑定或地址池在验证期间已变更，请刷新并重新验证。")
+		}
+		return nil
+	})
+	if e != nil {
+		return e
 	}
 	if e = a.TaskResult(ctx, j, platform.Row{"binding_id": fmt.Sprint(id), "validation_status": status}); e != nil {
 		return e

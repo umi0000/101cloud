@@ -82,7 +82,7 @@ func InstanceUsage(ctx context.Context, db *gorm.DB, instance row, event string,
 }
 
 func instanceUsageAt(ctx context.Context, db *gorm.DB, instance row, event string, allocationIDs []uint64, t time.Time) error {
-	if !in(event, "disk_reserved", "running", "stopped", "resize_stopped", "deleted", "resize", "resize_reserved", "resize_running_reserved", "gpu_reserved", "gpu_attached", "gpu_released") {
+	if !in(event, "disk_reserved", "running", "stopped", "resize_stopped", "deleted", "resize", "resize_reserved", "resize_running_reserved", "gpu_reserved", "gpu_attached", "gpu_released", "gpu_reservation_cancelled") {
 		return invalid("unsupported usage lifecycle event")
 	}
 	db = db.WithContext(ctx)
@@ -171,7 +171,7 @@ func instanceUsageAt(ctx context.Context, db *gorm.DB, instance row, event strin
 			}
 		}
 	}
-	if in(event, "gpu_reserved", "gpu_attached", "gpu_released") {
+	if in(event, "gpu_reserved", "gpu_attached", "gpu_released", "gpu_reservation_cancelled") {
 		for _, id := range allocationIDs {
 			g, e := platform.Get(db, "gpu_allocations", id, true)
 			if e != nil {
@@ -180,8 +180,12 @@ func instanceUsageAt(ctx context.Context, db *gorm.DB, instance row, event strin
 			if platform.Uint(g["instance_id"]) != iid {
 				return conflict("invalid_state", "GPU allocation belongs to another instance")
 			}
-			if event == "gpu_released" {
-				ss, e := rows(db.Clauses(clause.Locking{Strength: "UPDATE"}), "usage_sessions", "gpu_allocation_id = ? AND status = 'active'", id)
+			if in(event, "gpu_released", "gpu_reservation_cancelled") {
+				q := db.Clauses(clause.Locking{Strength: "UPDATE"})
+				if event == "gpu_reservation_cancelled" {
+					q = q.Where("metering_state = 'held'")
+				}
+				ss, e := rows(q, "usage_sessions", "gpu_allocation_id = ? AND status = 'active'", id)
 				if e != nil {
 					return e
 				}

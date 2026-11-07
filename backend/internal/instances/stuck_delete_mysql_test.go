@@ -313,25 +313,30 @@ func TestMySQLStuckDeleteDispatchFenceSerializesInflightCreate(t *testing.T) {
 		})
 		failed <- err
 	}()
-	select {
-	case <-accepted:
-		t.Fatal("takeover passed in-flight dispatch before operation journal")
-	case <-time.After(100 * time.Millisecond):
-	}
-	close(release)
-	if err := <-dispatched; err != nil {
-		t.Fatal(err)
-	}
 	var out platform.Row
 	select {
 	case out = <-accepted:
 	case <-time.After(10 * time.Second):
-		t.Fatal("takeover did not proceed after native operation was journaled")
+		t.Fatal("takeover could not revoke orchestration while native response was pending")
 	}
 	if err := <-failed; err != nil {
 		t.Fatal(err)
 	}
 	job := stuckDeleteClaim(t, f, platform.Uint(out["task_id"]))
+	if err := runDelete(t.Context(), f.a, job); err == nil || platform.PublicError(err, true)["code"] != "cleanup_native_submission_unknown" {
+		t.Fatalf("cleanup passed unidentified in-flight CREATE: %v", err)
+	}
+	if f.instance(job.InstanceID)["deleted_at"] != nil {
+		t.Fatal("unidentified submission released instance before reconciliation")
+	}
+	close(release)
+	if err := <-dispatched; err != nil {
+		t.Fatal(err)
+	}
+	var journal platform.Row
+	if err := f.db.Table("task_steps").Where("task_id=? AND step_key='create.native'", oldJob.ID).Take(&journal).Error; err != nil || platform.Text(journal["operation_id"]) != "/1.0/operations/inflight?project=default" {
+		t.Fatalf("late operation identity was not retained on revoked attempt: %+v %v", journal, err)
+	}
 	if err := runDelete(t.Context(), f.a, job); err != nil {
 		t.Fatal(err)
 	}

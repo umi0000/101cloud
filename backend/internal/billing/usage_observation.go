@@ -73,7 +73,7 @@ func refreshUsageObservation(ctx context.Context, a *platform.App, instanceID ui
 			}
 		}
 		var active int64
-		if err = tx.Table("tasks").Where("instance_id=? AND is_instance_mutation=1 AND status IN ('queued','running','waiting')", instanceID).Count(&active).Error; err != nil {
+		if err = tx.Table("tasks").Where("instance_id=? AND ((is_instance_mutation=1 AND status IN ('queued','running','waiting')) OR ("+platform.RetainedTaskMutationSQL+"))", instanceID).Count(&active).Error; err != nil {
 			return err
 		}
 		if active != 0 {

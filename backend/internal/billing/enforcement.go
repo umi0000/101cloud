@@ -293,7 +293,7 @@ func registerEnforcements(a *platform.App, g *gin.RouterGroup) {
 		if e = platform.Revision(c, r); e != nil {
 			return nil, e
 		}
-		task, e := platform.Enqueue(platform.DB(c, a), "credit_enforcement_reconcile", platform.Uint(r["user_id"]), 0, 0, false, row{"enforcement_id": id})
+		task, e := platform.Enqueue(platform.DB(c, a), "credit_enforcement_reconcile", platform.Uint(r["user_id"]), 0, 0, false, row{"enforcement_id": id, "manual_reconcile": true})
 		if e != nil {
 			return nil, e
 		}
@@ -358,6 +358,9 @@ func advanceEventChunk(ctx context.Context, a *platform.App, id, first, last uin
 		if e != nil {
 			return e
 		}
+		if e = enforcementWriteLease(ctx, a, db); e != nil {
+			return e
+		}
 		if e = restoreEnforcement(db, ac, now()); e != nil {
 			return e
 		}
@@ -400,6 +403,13 @@ func advanceEventChunk(ctx context.Context, a *platform.App, id, first, last uin
 					return e
 				}
 				status := platform.Text(task["status"])
+				if status == "cancelled" && platform.Text(task["error_code"]) == "task_force_stopped" {
+					unknown = true
+					if e = notifyOnce(db, event, "credit_stop_force_stopped", "An administrator stopped the shutdown orchestration. Debt, billing and resource reservations remain unchanged. Administrator reconciliation is required before any replacement shutdown is dispatched."); e != nil {
+						return e
+					}
+					continue
+				}
 				if status == "unknown" {
 					unknown = true
 					var online int64
@@ -483,6 +493,13 @@ func queueEventReconcile(db *gorm.DB, event row) error {
 	if count > 0 {
 		return nil
 	}
+	var latest []row
+	if e := db.Table("tasks").Select("status,error_code").Where("task_type='credit_enforcement_reconcile' AND JSON_EXTRACT(parameters_redacted,'$.enforcement_id')=?", platform.Uint(event["id"])).Order("id DESC").Limit(1).Find(&latest).Error; e != nil {
+		return e
+	}
+	if len(latest) != 0 && platform.Text(latest[0]["status"]) == "cancelled" && platform.Text(latest[0]["error_code"]) == "task_force_stopped" {
+		return notifyOnce(db, event, "credit_stop_force_stopped", "An administrator stopped credit reconciliation. Debt and billing remain unchanged; use explicit administrator reconciliation to resume observation.")
+	}
 	_, e := platform.Enqueue(db, "credit_enforcement_reconcile", platform.Uint(event["user_id"]), 0, 0, false, row{"enforcement_id": platform.Uint(event["id"])})
 	return e
 }
@@ -519,6 +536,9 @@ func reconcileEvent(ctx context.Context, a *platform.App, id uint64) error {
 			if _, e := account(db, platform.Uint(i["user_id"])); e != nil {
 				return e
 			}
+			if e := enforcementWriteLease(ctx, a, db); e != nil {
+				return e
+			}
 			instance, e := platform.Get(db, "instances", platform.Uint(i["id"]), true)
 			if e != nil {
 				return e
@@ -536,6 +556,9 @@ func reconcileEvent(ctx context.Context, a *platform.App, id uint64) error {
 				task, e := platform.Get(db, "tasks", platform.Uint(item["task_id"]), false)
 				if e != nil {
 					return e
+				}
+				if platform.Text(task["status"]) == "cancelled" && platform.Text(task["error_code"]) == "task_force_stopped" && !enforcementManualReconcile(ctx) {
+					return nil
 				}
 				if in(platform.Text(task["status"]), "succeeded", "failed", "cancelled") {
 					return db.Table("credit_enforcement_instances").Where("id = ?", item["id"]).Updates(row{"task_id": nil, "status": "pending", "revision": gorm.Expr("revision + 1")}).Error

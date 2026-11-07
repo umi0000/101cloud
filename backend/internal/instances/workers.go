@@ -289,7 +289,8 @@ func workerInstance(ctx context.Context, a *platform.App, j platform.Job) (platf
 	if platform.Uint(r["node_id"]) != j.NodeID || platform.Uint(r["user_id"]) != j.UserID {
 		return nil, errors.New("task instance ownership or placement changed")
 	}
-	if r["creation_failed_at"] != nil && !cleanup && j.Type != "instance.creation_cleanup" && ctx.Value(creationCleanupAuthorityKey{}) != j.ID {
+	readOnlyStoppedRecovery := j.Type == "instance.reconcile" && ctx.Value(forceStopObservationKey{}) != nil
+	if r["creation_failed_at"] != nil && !cleanup && !readOnlyStoppedRecovery && j.Type != "instance.creation_cleanup" && ctx.Value(creationCleanupAuthorityKey{}) != j.ID {
 		return nil, platform.E(404, "not_found", "Instance not found")
 	}
 	return r, nil
@@ -1899,6 +1900,15 @@ func runReconcile(ctx context.Context, a *platform.App, j platform.Job) error {
 	if err != nil {
 		return err
 	}
+	if sourceID := platform.Uint(p["source_task_id"]); sourceID != 0 {
+		source, e := platform.Get(a.DB.WithContext(ctx), "tasks", sourceID, false)
+		if e != nil {
+			return e
+		}
+		if forceStoppedSource(source) {
+			return reconcileForceStopped(ctx, a, j, source)
+		}
+	}
 	if j.InstanceID != 0 {
 		instance, e := platform.Get(a.DB.WithContext(ctx), "instances", j.InstanceID, false)
 		if e != nil {
@@ -2384,12 +2394,21 @@ func lockWorkerAccount(db *gorm.DB, a *platform.App, j platform.Job, owner uint6
 	return workerLease(a, db, j)
 }
 func workerLease(a *platform.App, db *gorm.DB, j platform.Job) error {
+	if err := db.Statement.Context.Err(); err != nil {
+		return err
+	}
+	if db.Statement.Context.Value(forceStopObservationKey{}) != nil {
+		return errors.New("read-only force-stop observation cannot authorize resource state writes")
+	}
 	task, e := platform.Get(db, "tasks", j.ID, true)
 	if e != nil {
 		return e
 	}
 	if platform.Uint(task["lease_generation"]) != j.LeaseGeneration || platform.Text(task["status"]) != "running" || !platform.Stamp(task["lease_until"]).After(a.Time()) || platform.Uint(task["user_id"]) != j.UserID || platform.Uint(task["node_id"]) != j.NodeID {
 		return errors.New("worker lease no longer authorizes resource state writes")
+	}
+	if !platform.TaskCanResolveMutationBarrier(task) {
+		return platform.TaskMutationBarrier(db, platform.Uint(task["instance_id"]))
 	}
 	return nil
 }

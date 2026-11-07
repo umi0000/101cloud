@@ -56,3 +56,65 @@ sudo chmod 600 /usr/local/etc/101cloud-panel/master.key
 ```
 
 主密钥用于保护节点凭据等数据，文件必须为 `0600`
+
+配置文件见配置文件模板
+
+初始化：
+不需要手动初始化数据库，通过程序会自动创建业务用户并建表
+```bash
+sudo 101cloud-panel install -c /usr/local/etc/101cloud-panel/config.env #通过socket使用数据库root连接数据库需要系统root用户执行
+#systemd启动
+systemctl start 101cloud-panel 
+systemctl enable 101cloud-panel
+#或者直接启动
+101cloud-panel serve -c /usr/local/etc/101cloud-panel/config.env 
+```
+首次serve时会在日志中输出管理员账户密码
+```bash
+journalctl -u 101cloud-panel -f
+```
+进去找账号密码，然后就可以登录了
+
+**补充**：面板二进制文件的cli命令
+```text
+101cloud-backend install [-c /path/to/backend.env] #首次安装，需要root权限
+101cloud-backend migrate [-c /path/to/backend.env] #数据库迁移，需要root权限
+101cloud-backend serve [-c /path/to/backend.env] #启动服务
+```
+
+### Host-agent
+首先需要在节点机上安装incus
+```bash
+apt install incus
+incus admin init
+```
+
+host agent也是用go写的
+首先编译
+```bash
+cd host-agent
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o bin/hostagent ./cmd/hostagent
+```
+传输到服务器上
+```
+scp host-agent/bin/hostagent root@xx.xx.xx.xx:/usr/local/bin
+scp config/101cloud-agent.service root@xx.xx.xx.xx:/etc/systemd/system
+systemctl daemon-reload
+```
+初始化hostagent
+```bash
+hostagent init --state-dir /usr/local/etc/101cloud-agent --endpoint https://127.0.0.1:8443
+```
+获取连接信息，用于在面板上添加节点
+```bash
+cat /usr/local/etc/101cloud-agent/connection.json
+```
+**启动**
+
+```bash
+#systemd启动
+systemctl start 101cloud-agent
+systemctl enable 101cloud-agent
+#或者直接启动
+hostagent -config /usr/local/etc/101cloud-agent/agent.json
+```

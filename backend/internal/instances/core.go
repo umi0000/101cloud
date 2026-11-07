@@ -139,6 +139,11 @@ func ownedQuery(c *gin.Context, a *platform.App, q *gorm.DB) (platform.Row, erro
 		if current["creation_failed_at"] != nil && !c.GetBool("allow_stuck_cleanup") {
 			return nil, platform.E(404, "not_found", "Instance not found")
 		}
+		if !c.GetBool("allow_stuck_cleanup") {
+			if err = platform.TaskMutationBarrier(db, id); err != nil {
+				return nil, err
+			}
+		}
 		return current, nil
 	}
 	return r, nil
@@ -282,7 +287,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 					q = q.Where(f+"=?", v)
 				}
 			}
-			return platform.ListMap(c, a, q, []string{"instance_id", "status", "user_id", "node_id"}, func(r platform.Row) (platform.Row, error) { return taskDTO(db, r) })
+			return platform.ListMap(c, a, q, []string{"instance_id", "status", "user_id", "node_id"}, func(r platform.Row) (platform.Row, error) { return taskRequestDTO(c, db, r) })
 		}))
 		g.GET("/tasks/:id", platform.Handle(func(c *gin.Context) (any, error) {
 			id, e := platform.ID(c, "id")
@@ -294,8 +299,9 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 				return nil, e
 			}
 			platform.SetETag(c, r)
-			return taskDTO(platform.DB(c, a), r)
+			return taskRequestDTO(c, platform.DB(c, a), r)
 		}))
+		g.POST("/tasks/:id/force-stop", platform.Handle(func(c *gin.Context) (any, error) { return forceStopTask(c, a) }))
 	}
 	user.POST("/instances", platform.Handle(func(c *gin.Context) (any, error) {
 		var in struct {
@@ -338,10 +344,11 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		if e = platform.Decode(c, &struct{}{}); e != nil {
 			return nil, e
 		}
-		if platform.Text(r["status"]) != "unknown" {
-			return nil, conflict("task_not_unknown", "Only unknown tasks require reconciliation")
+		stopped := platform.Text(r["status"]) == "cancelled" && platform.Text(r["error_code"]) == "task_force_stopped" && platform.Bool(object(object(r["result_redacted"])["force_stop"])["requires_reconciliation"])
+		if platform.Text(r["status"]) != "unknown" && !stopped {
+			return nil, conflict("task_not_unknown", "Only unknown or force-stopped tasks with retained evidence require reconciliation")
 		}
-		out, e := platform.Enqueue(platform.DB(c, a), "instance.reconcile", platform.Uint(r["user_id"]), platform.Uint(r["node_id"]), platform.Uint(r["instance_id"]), false, platform.Row{"source_task_id": id})
+		out, e := platform.Enqueue(platform.DB(c, a), "instance.reconcile", platform.Uint(r["user_id"]), platform.Uint(r["node_id"]), platform.Uint(r["instance_id"]), false, platform.Row{"source_task_id": id, "read_only_force_stop_reconcile": stopped})
 		if e != nil {
 			return nil, e
 		}
@@ -709,12 +716,14 @@ func instanceView(c *gin.Context, a *platform.App, r platform.Row) (platform.Row
 	caps["delete"] = ready && (state == "stopped" || (state == "running" && c.GetBool("admin"))) && permitted(c, r, "delete") == nil
 	db := platform.DB(c, a)
 	var active []platform.Row
-	if e := db.Table("tasks").Select("id").Where("instance_id=? AND is_instance_mutation=1 AND status IN ?", r["id"], []string{"queued", "running", "waiting", "unknown"}).Order("id DESC").Limit(1).Find(&active).Error; e != nil {
+	if e := db.Table("tasks").Select("id,status").Where("instance_id=? AND ((is_instance_mutation=1 AND status IN ?) OR ("+platform.RetainedTaskMutationSQL+"))", r["id"], []string{"queued", "running", "waiting", "unknown"}).Order("id DESC").Limit(1).Find(&active).Error; e != nil {
 		return nil, e
 	}
 	out["active_task_id"] = nil
+	out["active_task_status"] = nil
 	if len(active) > 0 {
 		out["active_task_id"] = strconv.FormatUint(platform.Uint(active[0]["id"]), 10)
+		out["active_task_status"] = platform.Text(active[0]["status"])
 	}
 	var events []platform.Row
 	if e := db.Table("credit_enforcements e").Select("e.id,e.status,e.shutdown_deadline").Joins("JOIN credit_enforcement_instances i ON i.enforcement_id=e.id").Where("i.instance_id=? AND e.status IN ?", r["id"], []string{"grace", "stopping", "unknown"}).Order("e.id DESC").Limit(1).Find(&events).Error; e != nil {
@@ -740,6 +749,9 @@ func instanceView(c *gin.Context, a *platform.App, r platform.Row) (platform.Row
 func taskDTO(db *gorm.DB, r platform.Row) (platform.Row, error) {
 	out := platform.Public(r, "id", "instance_id", "node_id", "user_id", "status", "phase", "created_at", "started_at", "finished_at", "error_code", "revision")
 	out["type"] = platform.Text(r["task_type"])
+	if stopped := object(object(r["result_redacted"])["force_stop"]); platform.Bool(stopped["orchestration_stopped"]) {
+		out["force_stop"] = platform.Row{"orchestration_stopped": true, "external_state": platform.Text(stopped["external_state"]), "requires_reconciliation": platform.Bool(stopped["requires_reconciliation"]) && !platform.Bool(stopped["reconciliation_completed"]), "resources_retained": platform.Bool(stopped["resources_retained"]), "reconciliation_completed": platform.Bool(stopped["reconciliation_completed"])}
+	}
 	if platform.Text(r["task_type"]) == "instance.create" {
 		progress, err := creationProgress(db, r)
 		if err != nil {
@@ -803,6 +815,9 @@ func taskDTO(db *gorm.DB, r platform.Row) (platform.Row, error) {
 				out["next_action"] = "inspect_failure"
 			}
 		}
+	}
+	if stopped := object(out["force_stop"]); platform.Bool(stopped["requires_reconciliation"]) {
+		out["next_action"] = "administrator_reconcile"
 	}
 	return out, nil
 }

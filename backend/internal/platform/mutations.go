@@ -2,6 +2,7 @@ package platform
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -104,7 +105,8 @@ func (a *App) Mutations() gin.HandlerFunc {
 		c.Writer = buffer
 		defer func() { c.Writer = original }()
 		rollback := errors.New("request rejected")
-		e = a.DB.WithContext(c.Request.Context()).Transaction(func(tx *gorm.DB) error {
+		mutationCtx := context.WithValue(c.Request.Context(), initiatingUserKey{}, Current(c).ID)
+		e = a.DB.WithContext(mutationCtx).Transaction(func(tx *gorm.DB) error {
 			c.Set("transaction", tx)
 			defer c.Set("transaction", a.DB.WithContext(c.Request.Context()))
 			if needKey {
@@ -169,6 +171,13 @@ func (a *App) Mutations() gin.HandlerFunc {
 		if e != nil && !errors.Is(e, rollback) {
 			Fail(c, WrapDB(e))
 			return
+		}
+		if e == nil {
+			if value, ok := c.Get("after_commit"); ok {
+				for _, hook := range value.([]func()) {
+					hook()
+				}
+			}
 		}
 		for k, v := range buffer.Header() {
 			if e != nil && (strings.EqualFold(k, "Set-Cookie") || strings.EqualFold(k, "ETag") || strings.EqualFold(k, "Location")) {

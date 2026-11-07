@@ -4,6 +4,26 @@
 
 后端自身提供 **HTTP**，默认 `127.0.0.1:8080`。浏览器入口的 HTTPS 交给 Nginx/Caddy；Host Agent 仍使用独立的 HTTPS 和证书指纹认证。当前不提供 NAT 或端口映射。
 
+## 任务中心强制停止（2026-11-07，未部署）
+
+- 成员 `POST /api/v1/tasks/:id/force-stop`，管理员 `POST /api/v1/admin/tasks/:id/force-stop`，固定请求 `{ "confirm": true }`，沿用会话 CSRF、`Idempotency-Key` 与任务 `If-Match`。同步返回 **200 Task DTO + ETag**，不是新增异步停止任务；任务历史保留。`queued/running/waiting/unknown` 全类型可撤销，已终态幂等原样返回。
+- 成员仅能停止本人主动发起的任务，不是所有 `user_id` 属于本人的内部任务。新任务记录可信请求发起人；历史任务从已提交响应与审计映射核实。欠费强制停机、后台清理及管理员代办不授予成员取消权，返回 `403 task_stop_not_allowed`；管理员覆盖全部类型。DTO 的 `can_force_stop` / `force_stop_blocked_reason` 提供能力，不按类型猜权限。
+- 撤销任务租约代次、取消活动执行上下文，并同时撤销恢复任务引用的源任务和包装链；旧 worker 不能写终态或继续派发下一步。控制台准备/预连接同时关闭。不会仅从列表移除，也不调用外部 operation DELETE 冒充物理取消。
+- 执行上下文仅在包含领域变更、幂等记录和审计的事务成功提交后取消；校验失败、版本冲突和事务回滚都不停止 worker。派发行锁只覆盖持久意图到 HTTP 实际写出请求的边界，不覆盖等待响应；迟到的 operation ID 只补记原 attempt 的 journal，不恢复租约或改写取消状态。
+- 当前注册的16类任务均覆盖：`instance.create/start/stop/restart/resize/delete/import/reconcile/gpu/creation_cleanup`，`image.prepare`、`node.probe`、`node.drain`、`network.validate`、`monitoring.console.prepare`、`credit_enforcement_reconcile`。任务端点不按类型设豁免；镜像/节点/网络发布同样受租约围栏，控制台事务关闭会话并在提交后终止本进程预连接，其它进程通过持久状态撤销检查收敛。
+- `cancelled + task_force_stopped` 表示**编排已停止**；`force_stop.external_state` 区分 `not_dispatched` 与 `requires_reconciliation`。已发出、operation ID 丢失或旧任务证据不足时，保留 native journal、GPU/IP、额度/费用预留和实例变更屏障；不退款、清欠、回滚或自动释放。`requires_reconciliation` 明确提示管理员待核对，不等于实例已关机。
+- `instance.gpu` 仅在持久证据证明尚未派发时可安全回滚：只将本任务拥有的源卡 `releasing` 恢复为 `active`，只释放本任务拥有且未配置、未被观察到的目标 `reserved` 分配，并只结束目标的 `held` 用量；保留已 active/已配置目标卡、历史费用和账本。`unknown` 状态本身不是已派发证据；已派发或证据有歧义仍保留锁，不推测释放。
+- 新 GPU worker 在执行只读前置检查前持久化 `gpu.preflight` fence；强停先撤销整个来源链租约，再检查 journal，不能只凭缺少 operation ID 放行。历史任务仅对实现可定位的精确归属前置错误保留受限 legacy 识别，文案变更不会自动扩大授权；任一来源存在 dispatch-started、operation ID 或未受 fence 保护的 journal 都继续保留屏障。目标预留逻辑撤销为 `cancelled`，不写物理释放验证；额度回收追加正常 release 流水，旧账不改。
+- 实例 DTO 的 `active_task_status` 与同一行 `active_task_id` 配对，无选中任务时均为 null；保留屏障时可返回 `cancelled`，表示安全屏障而非仍在执行。
+- 管理员强停欠费停机或额度核对任务后，后台保留原任务引用并标明待核对，不在下一轮自动新建同来源任务。欠款、余额和运行中的计费照常保留；管理员须显式调用 `/admin/credit-enforcements/:id/reconcile` 核对/恢复执行。这不是成员免欠费或暂停计费接口。
+- 管理员可对保留证据的强停任务调用原 `/admin/tasks/:id/reconcile`，仅只读核对既有操作与资源身份，绝不重放原步骤。充分证据后解除变更屏障并记录核对完成，原取消历史不改。无 operation ID 的已派发歧义持续返回明确待核对，不能靠一次 404 或手动改状态跳过；管理员显式故障清理仍须原确认及安全核验。
+- 历史 GPU 强停屏障也可通过上述管理员 GET-only 核对模式清除：整个已撤销来源链的持久证据证明派发前安全时，执行同样的本地回滚，无需向节点派发变更或伪造物理释放观测；证据不足仍走原有只读外部核对，不重放、不释放歧义或已派发资源。
+- 升级需备份并停止所有旧后端，使用新增前向迁移 `20261107_20_task_force_stop.sql` 后启动新版；历史 `init.sql` 和迁移未改。数据库唯一变更键包含保留安全屏障的强停任务，防止其它进程绕过 HTTP 检查并发派发。此变更未部署。
+
+本地验收（未部署）：独立 MySQL 8.4.13，后端各包真实数据库 race 回归通过（全量运行及派发边界旧断言修订后的 instances 整包重跑），`go vet ./...`、原生 arm64 与静态 Linux/amd64 内嵌构建通过；CLI 首次及重复迁移成功。真实 loopback HTTP → worker → 固定证书 TLS native 烟测覆盖 queued / 在途 / unknown，native PUT 仅1次、DELETE为0，迟到结果不能复活任务、IP及变更屏障保留；强制审计失败500回滚时运行上下文、租约代次和revision均不变，同原请求随后成功停止。消费者回归覆盖GPU/资金预留不释放、来源/跨账号拒绝、恢复链、并发、控制台连接及只读解除屏障。前端类型检查、59文件616项测试、生产构建通过；构建仍有既有 BigInt / 顶层 await 目标环境提示，测试仍有既有 sortablejs mock 提升警告。临时MySQL已正常停止，未操作线上任务或真实宿主实例。
+
+本次 GPU 前置失败修复验收（未部署）：以原强停逻辑 overlay 执行新增 unknown 消费者回归先失败（源卡仍为 `releasing`）；修复后 queued / fenced-running / legacy-unknown、已配置目标保留及派发歧义回归均通过。真实 loopback HTTP → 生产 worker → 固定证书 TLS Agent 的归属不完整失败只发生 GET、无 `gpu.configure`，强停后原卡保留、目标预留逻辑取消、仅目标 held 用量结束，实例 `active_task_id/active_task_status` 均为 null 且下一停机请求被接受。管理员真实 HTTP `/admin/tasks/:id/reconcile` 经生产 worker 一次核对历史 cancelled 来源链即可安全解除，无需再次强停、重建实例或改库；本次无新增迁移。独立 MySQL 8.4.13 下各后端包 race 均通过（首次共享测试库未迁移导致 auth/monitoring/platform 缺表，迁移后仅重跑这三包通过），vet、OpenAPI 339 个内部引用、前端 60 文件 643 项测试、vue-tsc、前端内嵌生产构建及 arm64 / 静态 Linux amd64 后端构建通过；保留既有 sortablejs mock 提升和 BigInt/目标环境构建警告。隔离 MySQL、临时密钥、overlay 和构建资源已清理，未做线上操作。
+
 ## 用户自助注册（2026-11-06，未部署）
 
 - 管理员入口：**用户与配额 → 注册设置**。配置注册开关、默认实例数、自定义实例数、vCPU、内存、磁盘、GPU配额，以及默认共享钱包额度政策。
@@ -67,7 +87,7 @@ GPU采样正常空状态传递修复（未部署）：指标原因allowlist保�
 
 删除必须精确确认实例名并提交 `delete_data:true`。运行中删除仅管理员可用，另须 `mode:"force"`、`confirm_data_loss_risk:true`；强停可能丢失未保存数据。同一持久化任务保存 force=true，确认强停后才向 Agent 发 DELETE，确认删除后获取新鲜 GPU 实际占用证据才释放分配。超时/未知保留预留并核对记录操作，不盲目重放破坏性步骤；普通用户仅可删除已停止实例。
 
-管理员故障恢复删除：`DELETE /admin/instances/{id}`（亦支持 `POST /admin/instances/{id}/delete`）提交 `cleanup_stuck:true`、`mode:"force"`、`confirm_data_loss_risk:true`、精确 `confirm_name`、`delete_data:true`，可接管操作中/pending/unknown/陈旧实例并返回真实 task_id。事务撤销旧任务/租约、保留任务步骤和审计；原生派发持有 task 行锁并在释放前保存 operation_id，防止迟到 CREATE/START 复活。先核实/取消并等旧原生操作终态，再确认目标缺席；最初已不存在也成功且不发 stop/delete。此显式清理以目标缺席为准，不等主机 GPU 指标；普通删除严格校验不变。财务/IP/GPU 释放一次，保留 deleted_at 墓碑及所有账本历史，不退还历史消费。丢失提交编号/旧版歧义 journal 公开 cleanup_native_submission_unknown，需从可信原生日志恢复编号后协调当前清理，不盲目重放旧创建或启动。
+管理员故障恢复删除：`DELETE /admin/instances/{id}`（亦支持 `POST /admin/instances/{id}/delete`）提交 `cleanup_stuck:true`、`mode:"force"`、`confirm_data_loss_risk:true`、精确 `confirm_name`、`delete_data:true`，可接管操作中/pending/unknown/陈旧实例并返回真实 task_id。事务撤销旧任务/租约、保留任务步骤和审计；原生派发行锁覆盖持久意图到 HTTP 实际写出请求的边界，迟到 operation_id 只追加原 journal，防止迟到 CREATE/START 被当作未派发而重放。先核实/取消并等旧原生操作终态，再确认目标缺席；最初已不存在也成功且不发 stop/delete。此显式清理以目标缺席为准，不等主机 GPU 指标；普通删除严格校验不变。财务/IP/GPU 释放一次，保留 deleted_at 墓碑及所有账本历史，不退还历史消费。丢失提交编号/旧版歧义 journal 公开 cleanup_native_submission_unknown，需从可信原生日志恢复编号后协调当前清理，不盲目重放旧创建或启动。
 
 套餐配置：`PlanCreate`/`PlanPatch`和`Plan`包含`node_ids`、`gpu_policy`、`allowed_user_actions`、`gpu_user_permissions`。node_ids须非空且不重复，网络覆盖全部所选节点，镜像匹配全部节点/网络项目。启用及active编辑要求节点已验证且active/online、网络已验证、项目镜像ready（提供GPU型号还须gpu_ready）。报价/创建node_id若提供必须匹配所选网络节点并在套餐内。
 
@@ -529,7 +549,7 @@ Fedora 使用 `dnf install -y openssh-server` 和 systemd 的 `sshd.service`；�
 
 **主机留存风险：** 生成的密码哈希仍是敏感凭据，Incus 实例配置以及 guest `/var/lib/cloud/instance/user-data.txt`、`cloud-config.txt`、seed/cache、`/etc/shadow` 和主机/实例备份可能留存它。后端数据库加密不消除这些副本，节点管理员和 guest root 仍可访问；限制 Incus/guest/备份权限，使用高强度唯一密码，优先公钥。平台不自动删除 cloud-init 缓存或执行 `cloud-init clean`，后者会改变首次启动语义。参考官方 [cloud-init 模块](https://docs.cloud-init.io/en/latest/reference/modules.html) 与 [Incus cloud-init](https://linuxcontainers.org/incus/docs/main/cloud-init/)。
 
-每日额度由后台任务处理，首次发放完成前账户可能尚未就绪。自定义实例的申请和沟通在平台外完成，平台只保留管理员 `POST /admin/custom-instances` 直接下发（请求字段仍为 `approved_config`）及已有实例纳管，不提供申请/审批页面或接口。自定义实例按admin_exempt记录，不受每日额度停机影响，仍受资源及max_resident_instances配额约束。当前OpenAPI包含147个操作。
+每日额度由后台任务处理，首次发放完成前账户可能尚未就绪。自定义实例的申请和沟通在平台外完成，平台只保留管理员 `POST /admin/custom-instances` 直接下发（请求字段仍为 `approved_config`）及已有实例纳管，不提供申请/审批页面或接口。自定义实例按admin_exempt记录，不受每日额度停机影响，仍受资源及max_resident_instances配额约束。当前OpenAPI包含154个操作。
 
 管理员自定义实例登录接入（本地实现，未部署）：复用成员创建的 `normalizeLogin`、精确节点/项目镜像能力检查、加密准入、网络/登录 cloud-config、首次启动前 prepare 和只读 readiness。可选初始化模板仍是独立阶段，`cloud_init` 模板不覆盖登录或网络 user-data；保留原脚本及阶段语义。`admin_exempt`、用户权限、资源/常驻配额与政策冻结不变。已有实例导入不接受 login，也不下发或重置登录凭据。结果不确定时使用完全相同的 body/key 重试；同 key 不同 body 返回冲突。
 

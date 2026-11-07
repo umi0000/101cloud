@@ -22,7 +22,7 @@ import (
 )
 
 func TestMySQLStaleBillingObservationRequiresNativeIdentityAndStableOwnership(t *testing.T) {
-	for _, scenario := range []string{"confirmed_stop", "foreign_uuid", "offline", "disconnected", "concurrent_change", "queued_stop", "unknown_state"} {
+	for _, scenario := range []string{"confirmed_stop", "foreign_uuid", "offline", "disconnected", "concurrent_change", "queued_stop", "force_stopped", "unknown_state"} {
 		t.Run(scenario, func(t *testing.T) {
 			f := newAdjustmentMySQLFixture(t)
 			old := now().Add(-2 * time.Hour)
@@ -81,9 +81,15 @@ func TestMySQLStaleBillingObservationRequiresNativeIdentityAndStableOwnership(t 
 					t.Fatal(err)
 				}
 			}
-			if scenario == "queued_stop" {
-				if _, err = platform.Enqueue(f.db, "instance.stop", 2, 1, 1, true, row{}); err != nil {
+			if scenario == "queued_stop" || scenario == "force_stopped" {
+				task, err := platform.Enqueue(f.db, "instance.stop", 2, 1, 1, true, row{})
+				if err != nil {
 					t.Fatal(err)
+				}
+				if scenario == "force_stopped" {
+					if err := f.db.Table("tasks").Where("id=?", task["task_id"]).Updates(row{"status": "cancelled", "error_code": "task_force_stopped", "finished_at": now()}).Error; err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 			if err = refreshUsageObservation(f.ctx, a, 1); err != nil {

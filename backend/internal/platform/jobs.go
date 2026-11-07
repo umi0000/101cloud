@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gorm.io/gorm"
@@ -23,6 +24,52 @@ type Job struct {
 	LeaseGeneration uint64
 }
 type JobHandler func(context.Context, *App, Job) error
+
+type taskExecutionKey struct{}
+type taskExecution struct {
+	job           Job
+	dispatch      atomic.Uint64
+	forceStopping atomic.Bool
+}
+
+// CancelTaskExecutions interrupts every local attempt after durable revocation
+// commits. Before-execute races are fenced by execute's persisted lease check;
+// a rejected or rolled-back mutation must never call this method.
+func (a *App) CancelTaskExecutions(ids ...uint64) {
+	a.executionMu.Lock()
+	defer a.executionMu.Unlock()
+	for _, id := range ids {
+		for execution, cancel := range a.executions[id] {
+			execution.forceStopping.Store(true)
+			cancel()
+		}
+	}
+}
+
+func (a *App) registerTaskExecution(ctx context.Context, j Job) (context.Context, context.CancelFunc, func()) {
+	runCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	execution := &taskExecution{job: j}
+	a.executionMu.Lock()
+	if a.executions == nil {
+		a.executions = make(map[uint64]map[*taskExecution]context.CancelFunc)
+	}
+	if a.executions[j.ID] == nil {
+		a.executions[j.ID] = make(map[*taskExecution]context.CancelFunc)
+	}
+	a.executions[j.ID][execution] = cancel
+	a.executionMu.Unlock()
+	return context.WithValue(runCtx, taskExecutionKey{}, execution), cancel, func() {
+		cancel()
+		a.executionMu.Lock()
+		delete(a.executions[j.ID], execution)
+		if len(a.executions[j.ID]) == 0 {
+			delete(a.executions, j.ID)
+		}
+		a.executionMu.Unlock()
+	}
+}
+
+type initiatingUserKey struct{}
 type poller struct {
 	name     string
 	interval time.Duration
@@ -75,6 +122,21 @@ func Enqueue(db *gorm.DB, kind string, userID, nodeID, instanceID uint64, mutati
 	b, e := json.Marshal(params)
 	if e != nil {
 		return nil, e
+	}
+	if userID, ok := db.Statement.Context.Value(initiatingUserKey{}).(uint64); ok && userID != 0 {
+		var parameters map[string]json.RawMessage
+		if e = json.Unmarshal(b, &parameters); e != nil || parameters == nil {
+			return nil, errors.New("task parameters must be an object")
+		}
+		parameters["initiated_by_user_id"], _ = json.Marshal(fmt.Sprint(userID))
+		if b, e = json.Marshal(parameters); e != nil {
+			return nil, e
+		}
+	}
+	if instanceID != 0 && strings.HasPrefix(kind, "instance.") && kind != "instance.reconcile" && !taskCanResolveMutationBarrier(kind, b) {
+		if e = TaskMutationBarrier(db, instanceID); e != nil {
+			return nil, e
+		}
 	}
 	priority := 0
 	if kind == "instance.stop" || kind == "instance.reconcile" {
@@ -195,8 +257,14 @@ func (a *App) execute(ctx context.Context, j Job, owner string) {
 	a.mu.RLock()
 	h := a.jobs[j.Type]
 	a.mu.RUnlock()
-	runCtx, cancel := context.WithTimeout(ctx, 30*time.Minute)
-	defer cancel()
+	runCtx, cancel, unregister := a.registerTaskExecution(ctx, j)
+	defer unregister()
+	// Registration precedes the persisted check: cancellation before execute
+	// cannot be missed, even if its registry lookup found no active worker.
+	var live uint64
+	if err := a.DB.WithContext(runCtx).Raw("SELECT id FROM tasks WHERE id=? AND lease_owner=? AND lease_generation=? AND status='running' AND lease_until>?", j.ID, owner, j.LeaseGeneration, a.Time()).Scan(&live).Error; err != nil || live != j.ID || runCtx.Err() != nil {
+		return
+	}
 	done := make(chan struct{})
 	go func() {
 		tick := time.NewTicker(20 * time.Second)
@@ -218,6 +286,9 @@ func (a *App) execute(ctx context.Context, j Job, owner string) {
 	e := invokeJob(runCtx, a, j, h)
 	cancel()
 	<-done
+	if runCtx.Value(taskExecutionKey{}).(*taskExecution).forceStopping.Load() {
+		return
+	}
 	finishCtx, stop := context.WithTimeout(context.Background(), 10*time.Second)
 	defer stop()
 	status := "succeeded"

@@ -28,15 +28,27 @@ import {
   TypographyText,
 } from 'ant-design-vue';
 
-import { catalogApi, consoleApi, instancesApi, nodesApi, opsApi } from '#/api/backend';
+import {
+  catalogApi,
+  consoleApi,
+  instancesApi,
+  nodesApi,
+  opsApi,
+} from '#/api/backend';
 import { ApiError } from '#/api/request';
 import ConfirmAction from '#/components/confirm-action.vue';
 import ErrorFeedback from '#/components/error-feedback.vue';
 import StatusTag from '#/components/status-tag.vue';
 import TimeText from '#/components/time-text.vue';
 import UserName from '#/components/user-name.vue';
-import { errorToast, trackAccepted, useAction, usePolling, useResource } from '#/composables/api';
-import { enumLabel, instanceState } from '#/locales/enums';
+import {
+  errorToast,
+  trackAccepted,
+  useAction,
+  usePolling,
+  useResource,
+} from '#/composables/api';
+import { enumLabel, instanceState, instanceTaskState } from '#/locales/enums';
 import { describeTaskError } from '#/locales/errors';
 import { useTaskStore } from '#/store/tasks';
 import { formatAge, formatBytes, secondsSince } from '#/utils/format';
@@ -72,7 +84,10 @@ async function reload() {
     }
     throw error;
   }
-  if (inst.data.value?.desired_state === 'deleted' && !inst.data.value.active_task_id) {
+  if (
+    inst.data.value?.desired_state === 'deleted' &&
+    !inst.data.value.active_task_id
+  ) {
     await router.replace('/admin/instances');
     return;
   }
@@ -83,26 +98,40 @@ async function initial() {
   try {
     await reload();
   } catch (error) {
-    if (error instanceof ApiError && error.status === 404) notFound.value = true;
+    if (error instanceof ApiError && error.status === 404)
+      notFound.value = true;
     else errorToast(error);
   }
 }
 onMounted(initial);
 
 const i = computed(() => inst.data.value);
-const failedTasks = useResource(() => i.value?.provisioning_state === 'failed'
-  ? opsApi.tasks({ instance_id: id, limit: 1, status: 'failed' }) : null);
+const failedTasks = useResource(() =>
+  i.value?.provisioning_state === 'failed'
+    ? opsApi.tasks({ instance_id: id, limit: 1, status: 'failed' })
+    : null,
+);
 const failedTask = computed(() => failedTasks.data.value?.items[0] ?? null);
-watch(() => i.value?.revision, () => {
-  if (i.value?.provisioning_state === 'failed') void failedTasks.reload().catch(errorToast);
-}, { immediate: true });
-usePolling(reload, () => (i.value && (i.value.active_task_id || i.value.provisioning_state !== 'ready') ? 5000 : 30_000));
+watch(
+  () => i.value?.revision,
+  () => {
+    if (i.value?.provisioning_state === 'failed')
+      void failedTasks.reload().catch(errorToast);
+  },
+  { immediate: true },
+);
+usePolling(reload, () =>
+  i.value && (i.value.active_task_id || i.value.provisioning_state !== 'ready')
+    ? 5000
+    : 30_000,
+);
 
 const tasks = useTaskStore();
 watch(
   () => i.value?.active_task_id,
   (task) => {
-    if (task) tasks.track(task, '实例操作', () => void reload().catch(errorToast));
+    if (task)
+      tasks.track(task, '实例操作', () => void reload().catch(errorToast));
   },
 );
 
@@ -134,7 +163,8 @@ watch(
     try {
       plan.value = (await catalogApi.plan(planId)).data;
     } catch (error) {
-      if (error instanceof ApiError && error.status === 404) planMissing.value = true;
+      if (error instanceof ApiError && error.status === 404)
+        planMissing.value = true;
       else errorToast(error);
     }
   },
@@ -155,7 +185,8 @@ watch(
 const planText = computed(() => {
   const p = i.value?.plan_id;
   if (!p) return '—';
-  if (plan.value) return `${plan.value.name}（${plan.value.code} v${plan.value.version}）`;
+  if (plan.value)
+    return `${plan.value.name}（${plan.value.code} v${plan.value.version}）`;
   return planMissing.value ? `套餐 #${p}（不可用）` : `套餐 #${p}`;
 });
 
@@ -168,13 +199,23 @@ const age = computed(() => {
 /* ---------- 操作 ---------- */
 
 const busy = computed(() => !!i.value?.active_task_id);
-const lifecycleReady = computed(() => i.value?.provisioning_state === 'ready' && !i.value.state_stale
-  && ['running', 'stopped'].includes(i.value.observed_state));
+const taskState = computed(() =>
+  i.value ? instanceTaskState(i.value) : undefined,
+);
+const lifecycleReady = computed(
+  () =>
+    i.value?.provisioning_state === 'ready' &&
+    !i.value.state_stale &&
+    ['running', 'stopped'].includes(i.value.observed_state),
+);
 const running = computed(() => i.value?.observed_state === 'running');
 const ifMatch = () => inst.etag.value;
 const conflict = () => reload().catch(errorToast);
 
-function afterAccepted(accepted: Awaited<ReturnType<typeof instancesApi.power>> | undefined, label: string) {
+function afterAccepted(
+  accepted: Awaited<ReturnType<typeof instancesApi.power>> | undefined,
+  label: string,
+) {
   if (!accepted) return false;
   trackAccepted(accepted.data, label, () => void reload().catch(errorToast));
   void reload().catch(errorToast);
@@ -195,10 +236,14 @@ const renameValid = computed(() => {
 });
 async function submitRename() {
   if (!renameValid.value) return;
-  const r = await renameAction.run(() => instancesApi.rename(id, renameValue.value.trim(), { ifMatch: ifMatch() }), {
-    onConflict: conflict,
-    success: '已重命名',
-  });
+  const r = await renameAction.run(
+    () =>
+      instancesApi.rename(id, renameValue.value.trim(), { ifMatch: ifMatch() }),
+    {
+      onConflict: conflict,
+      success: '已重命名',
+    },
+  );
   if (!r) return;
   renameOpen.value = false;
   await reload().catch(errorToast);
@@ -206,8 +251,16 @@ async function submitRename() {
 
 // 启动 / 停止 / 重启
 type PowerKind = 'restart' | 'start' | 'stop';
-const POWER_NAMES: Record<PowerKind, string> = { restart: '重启', start: '启动', stop: '停止' };
-const powerActions = { restart: useAction(), start: useAction(), stop: useAction() };
+const POWER_NAMES: Record<PowerKind, string> = {
+  restart: '重启',
+  start: '启动',
+  stop: '停止',
+};
+const powerActions = {
+  restart: useAction(),
+  start: useAction(),
+  stop: useAction(),
+};
 const powerOpen = ref(false);
 const powerKind = ref<PowerKind>('start');
 const powerMode = ref<PowerMode>('graceful');
@@ -226,10 +279,13 @@ async function submitPower() {
       : powerMode.value === 'force'
         ? { confirm_data_loss_risk: true, mode: 'force' as const }
         : { mode: 'graceful' as const };
-  const r = await powerActions[kind].run((key) => instancesApi.power(id, kind, body, { ifMatch: ifMatch(), key }), {
-    onConflict: conflict,
-    success: `已提交${POWER_NAMES[kind]}`,
-  });
+  const r = await powerActions[kind].run(
+    (key) => instancesApi.power(id, kind, body, { ifMatch: ifMatch(), key }),
+    {
+      onConflict: conflict,
+      success: `已提交${POWER_NAMES[kind]}`,
+    },
+  );
   return afterAccepted(r, `${POWER_NAMES[kind]}实例`);
 }
 
@@ -239,7 +295,9 @@ const resizeOpen = ref(false);
 // 销毁实例
 const deleteOpen = ref(false);
 const deleteAction = useAction();
-const recoveryRequired = computed(() => !lifecycleReady.value || busy.value || !i.value?.capabilities.delete);
+const recoveryRequired = computed(
+  () => !lifecycleReady.value || busy.value || !i.value?.capabilities.delete,
+);
 const deleteRecovery = ref(false);
 watch(recoveryRequired, (required) => {
   if (deleteOpen.value && required) deleteRecovery.value = true;
@@ -254,7 +312,10 @@ async function submitDelete() {
   const name = i.value?.name ?? '';
   if (!i.value || deleteAction.pending.value) return false;
   if (!deleteRecovery.value && recoveryRequired.value) return false;
-  const body: Parameters<typeof instancesApi.delete>[1] = { confirm_name: name, delete_data: true };
+  const body: Parameters<typeof instancesApi.delete>[1] = {
+    confirm_name: name,
+    delete_data: true,
+  };
   if (deleteRecovery.value) body.cleanup_stuck = true;
   if (deleteRecovery.value || running.value) {
     body.mode = 'force';
@@ -264,7 +325,10 @@ async function submitDelete() {
     (key) => instancesApi.delete(id, body, { ifMatch: ifMatch(), key }),
     { onConflict: conflict, success: '已提交销毁实例' },
   );
-  return afterAccepted(r, deleteRecovery.value ? '强制清理删除实例' : '销毁实例');
+  return afterAccepted(
+    r,
+    deleteRecovery.value ? '强制清理删除实例' : '销毁实例',
+  );
 }
 
 // 控制台
@@ -291,8 +355,15 @@ function resourcesText(x: Instance) {
 
 <template>
   <Page :title="i ? i.name : '实例详情'">
-    <Result v-if="notFound" status="404" sub-title="实例不存在或已删除" title="未找到实例">
-      <template #extra><RouterLink to="/admin/instances">返回实例列表</RouterLink></template>
+    <Result
+      v-if="notFound"
+      status="404"
+      sub-title="实例不存在或已删除"
+      title="未找到实例"
+    >
+      <template #extra
+        ><RouterLink to="/admin/instances">返回实例列表</RouterLink></template
+      >
     </Result>
     <Spin v-else-if="!i" />
     <template v-else>
@@ -301,61 +372,143 @@ function resourcesText(x: Instance) {
           <div class="min-w-0">
             <div class="flex flex-wrap items-center gap-2">
               <span class="text-lg font-medium">{{ i.name }}</span>
-              <Button size="small" type="link" @click="openRename">重命名</Button>
+              <Button size="small" type="link" @click="openRename"
+                >重命名</Button
+              >
               <StatusTag :label="instanceState(i)" />
-              <Tag v-if="i.product_type === 'custom'" class="m-0" color="processing">自定义</Tag>
-              <Tag v-if="i.billing_mode === 'admin_exempt'" class="m-0" color="cyan">免额度</Tag>
+              <Tag
+                v-if="i.product_type === 'custom'"
+                class="m-0"
+                color="processing"
+                >自定义</Tag
+              >
+              <Tag
+                v-if="i.billing_mode === 'admin_exempt'"
+                class="m-0"
+                color="cyan"
+                >免额度</Tag
+              >
               <GraceTag :enforcement="i.credit_enforcement" />
             </div>
-            <div class="text-muted-foreground mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm">
+            <div
+              class="text-muted-foreground mt-1 flex flex-wrap gap-x-4 gap-y-1 text-sm"
+            >
               <span>所有者 <UserName :id="i.user_id" link /></span>
-              <span>节点 <RouterLink :to="`/admin/nodes/${i.node_id}`">{{ nodeName }}</RouterLink></span>
+              <span
+                >节点
+                <RouterLink :to="`/admin/nodes/${i.node_id}`">{{
+                  nodeName
+                }}</RouterLink></span
+              >
               <span>{{ enumLabel('instanceType', i.instance_type).text }}</span>
               <span>{{ imageName }}</span>
               <span v-if="i.plan_id">{{ planText }}</span>
               <span v-if="network[0]">
-                IP <TypographyText class="font-mono" :copyable="{ text: network[0].ip }">{{ network[0].ip }}</TypographyText>
+                IP
+                <TypographyText
+                  class="font-mono"
+                  :copyable="{ text: network[0].ip }"
+                  >{{ network[0].ip }}</TypographyText
+                >
               </span>
               <span>状态更新于 {{ age }}</span>
             </div>
           </div>
           <Space wrap>
             <template v-if="busy">
-              <Tag class="m-0" color="processing">操作进行中</Tag>
-              <RouterLink :to="`/admin/tasks?instance_id=${i.id}`">查看任务</RouterLink>
+              <StatusTag :label="taskState" />
+              <RouterLink :to="`/admin/tasks?instance_id=${i.id}`"
+                >查看任务</RouterLink
+              >
             </template>
-            <Button v-if="i.capabilities.console" :disabled="busy || !lifecycleReady" @click="consoleRef?.start()">
+            <Button
+              v-if="i.capabilities.console"
+              :disabled="busy || !lifecycleReady"
+              @click="consoleRef?.start()"
+            >
               {{ i.instance_type === 'virtual-machine' ? '控制台' : '终端' }}
             </Button>
-            <span v-if="i.provisioning_state === 'failed' && i.resource_reservations_released === true" class="text-sm text-red-500">
+            <span
+              v-if="
+                i.provisioning_state === 'failed' &&
+                i.resource_reservations_released === true
+              "
+              class="text-sm text-red-500"
+            >
               创建失败，请查看任务原因
             </span>
-            <span v-else-if="i.state_stale" class="text-sm text-orange-500">状态未知，等待同步</span>
+            <span v-else-if="i.state_stale" class="text-sm text-orange-500"
+              >状态未知，等待同步</span
+            >
             <template v-else>
-              <Button v-if="i.capabilities.start" :disabled="busy || !lifecycleReady" type="primary" @click="openPower('start')">启动</Button>
-              <Button v-if="i.observed_state === 'running'" :disabled="busy || !lifecycleReady" @click="openPower('restart')">重启</Button>
-              <Button v-if="i.capabilities.stop" :disabled="busy || !lifecycleReady" @click="openPower('stop')">停止</Button>
-              <Button v-if="lifecycleReady" :disabled="busy || !i.capabilities.resize" @click="resizeOpen = true">修改实例规格</Button>
+              <Button
+                v-if="i.capabilities.start"
+                :disabled="busy || !lifecycleReady"
+                type="primary"
+                @click="openPower('start')"
+                >启动</Button
+              >
+              <Button
+                v-if="i.observed_state === 'running'"
+                :disabled="busy || !lifecycleReady"
+                @click="openPower('restart')"
+                >重启</Button
+              >
+              <Button
+                v-if="i.capabilities.stop"
+                :disabled="busy || !lifecycleReady"
+                @click="openPower('stop')"
+                >停止</Button
+              >
+              <Button
+                v-if="lifecycleReady"
+                :disabled="busy || !i.capabilities.resize"
+                @click="resizeOpen = true"
+                >修改实例规格</Button
+              >
             </template>
-            <Button danger data-testid="admin-instance-delete" @click="openDelete">
+            <Button
+              danger
+              data-testid="admin-instance-delete"
+              @click="openDelete"
+            >
               {{ recoveryRequired ? '强制清理删除' : '销毁实例' }}
             </Button>
           </Space>
         </div>
       </Card>
-      <Alert v-if="i.provisioning_state === 'failed'" class="mb-3" message="实例创建失败" show-icon type="error">
+      <Alert
+        v-if="taskState"
+        class="mb-3"
+        :message="taskState.message"
+        show-icon
+        :type="taskState.type"
+      />
+      <Alert
+        v-if="i.provisioning_state === 'failed'"
+        class="mb-3"
+        message="实例创建失败"
+        show-icon
+        type="error"
+      >
         <template #description>
           <div>
-            {{ i.resource_reservations_released === true
-              ? '创建前失败，IP/GPU及计费预留已释放，可调整配置后重新创建'
-              : '资源预留未确认释放，请查看任务/请求管理员核对' }}
+            {{
+              i.resource_reservations_released === true
+                ? '创建前失败，IP/GPU及计费预留已释放，可调整配置后重新创建'
+                : '资源预留未确认释放，请查看任务/请求管理员核对'
+            }}
           </div>
           <ErrorFeedback
             v-if="failedTask"
             class="my-2"
-            :feedback="describeTaskError(failedTask, failedTasks.requestId.value)"
+            :feedback="
+              describeTaskError(failedTask, failedTasks.requestId.value)
+            "
           />
-          <RouterLink :to="`/admin/tasks?instance_id=${i.id}`">查看失败原因与处理建议</RouterLink>
+          <RouterLink :to="`/admin/tasks?instance_id=${i.id}`"
+            >查看失败原因与处理建议</RouterLink
+          >
         </template>
       </Alert>
 
@@ -364,35 +517,70 @@ function resourcesText(x: Instance) {
           <div class="grid grid-cols-1 gap-3 lg:grid-cols-2">
             <Card size="small" title="配置">
               <Descriptions :column="1" size="small">
-                <DescriptionsItem label="ID"><span class="font-mono">{{ i.id }}</span></DescriptionsItem>
-                <DescriptionsItem label="规格"><span class="font-mono">{{ resourcesText(i) }}</span></DescriptionsItem>
-                <DescriptionsItem label="类型">{{ enumLabel('instanceType', i.instance_type).text }}</DescriptionsItem>
-                <DescriptionsItem label="产品类型"><StatusTag kind="productType" :value="i.product_type" /></DescriptionsItem>
-                <DescriptionsItem label="计费方式"><StatusTag kind="billingMode" :value="i.billing_mode" /></DescriptionsItem>
+                <DescriptionsItem label="ID"
+                  ><span class="font-mono">{{ i.id }}</span></DescriptionsItem
+                >
+                <DescriptionsItem label="规格"
+                  ><span class="font-mono">{{
+                    resourcesText(i)
+                  }}</span></DescriptionsItem
+                >
+                <DescriptionsItem label="类型">{{
+                  enumLabel('instanceType', i.instance_type).text
+                }}</DescriptionsItem>
+                <DescriptionsItem label="产品类型"
+                  ><StatusTag kind="productType" :value="i.product_type"
+                /></DescriptionsItem>
+                <DescriptionsItem label="计费方式"
+                  ><StatusTag kind="billingMode" :value="i.billing_mode"
+                /></DescriptionsItem>
                 <DescriptionsItem label="套餐">{{ planText }}</DescriptionsItem>
-                <DescriptionsItem label="镜像">{{ imageName }}</DescriptionsItem>
-                <DescriptionsItem label="期望状态">{{ enumLabel('observed', i.desired_state).text }}</DescriptionsItem>
-                <DescriptionsItem label="创建时间"><TimeText :value="i.created_at" /></DescriptionsItem>
-                <DescriptionsItem label="更新时间"><TimeText :value="i.updated_at" /></DescriptionsItem>
+                <DescriptionsItem label="镜像">{{
+                  imageName
+                }}</DescriptionsItem>
+                <DescriptionsItem label="期望状态">{{
+                  enumLabel('observed', i.desired_state).text
+                }}</DescriptionsItem>
+                <DescriptionsItem label="创建时间"
+                  ><TimeText :value="i.created_at"
+                /></DescriptionsItem>
+                <DescriptionsItem label="更新时间"
+                  ><TimeText :value="i.updated_at"
+                /></DescriptionsItem>
               </Descriptions>
             </Card>
             <div class="flex flex-col gap-3">
               <Card size="small" title="网络">
                 <Empty v-if="network.length === 0" description="没有网络地址" />
-                <div v-for="n in network" :key="n.ip" class="mb-2 text-sm last:mb-0">
-                  <div class="font-mono">{{ n.ip }}/{{ n.prefix_length }} · 网关 {{ n.gateway }}</div>
-                  <div class="text-muted-foreground">
-                    DNS <span class="font-mono">{{ n.dns.join(', ') || '—' }}</span> ·
-                    {{ enumLabel('networkMode', n.mode).text }} · {{ enumLabel('addressStatus', n.status).text }}
+                <div
+                  v-for="n in network"
+                  :key="n.ip"
+                  class="mb-2 text-sm last:mb-0"
+                >
+                  <div class="font-mono">
+                    {{ n.ip }}/{{ n.prefix_length }} · 网关 {{ n.gateway }}
                   </div>
-                  <div v-if="n.quality.state_stale" class="text-orange-500">网络状态可能已过期</div>
+                  <div class="text-muted-foreground">
+                    DNS
+                    <span class="font-mono">{{ n.dns.join(', ') || '—' }}</span>
+                    · {{ enumLabel('networkMode', n.mode).text }} ·
+                    {{ enumLabel('addressStatus', n.status).text }}
+                  </div>
+                  <div v-if="n.quality.state_stale" class="text-orange-500">
+                    网络状态可能已过期
+                  </div>
                 </div>
               </Card>
               <Card size="small" title="计费">
                 <div class="text-sm">
-                  计费方式：<StatusTag kind="billingMode" :value="i.billing_mode" />
+                  计费方式：<StatusTag
+                    kind="billingMode"
+                    :value="i.billing_mode"
+                  />
                 </div>
-                <div class="text-muted-foreground mt-1 text-xs">后端不提供实例当前总费率，这里不显示。</div>
+                <div class="text-muted-foreground mt-1 text-xs">
+                  后端不提供实例当前总费率，这里不显示。
+                </div>
               </Card>
             </div>
           </div>
@@ -405,18 +593,45 @@ function resourcesText(x: Instance) {
         </TabPane>
         <TabPane key="network" tab="网络">
           <Card size="small">
-            <Table :columns="networkColumns" :data-source="network" :pagination="false" row-key="ip" size="small">
+            <Table
+              :columns="networkColumns"
+              :data-source="network"
+              :pagination="false"
+              row-key="ip"
+              size="small"
+            >
               <template #bodyCell="{ column, record }">
-                <template v-if="column.key === 'ip'"><span class="font-mono">{{ record.ip }}/{{ record.prefix_length }}</span></template>
-                <template v-else-if="column.key === 'gateway'"><span class="font-mono">{{ record.gateway }}</span></template>
-                <template v-else-if="column.key === 'dns'"><span class="font-mono">{{ record.dns.join(', ') || '—' }}</span></template>
-                <template v-else-if="column.key === 'mode'">{{ enumLabel('networkMode', record.mode).text }}</template>
-                <template v-else-if="column.key === 'status'"><StatusTag kind="addressStatus" :value="record.status" /></template>
+                <template v-if="column.key === 'ip'"
+                  ><span class="font-mono"
+                    >{{ record.ip }}/{{ record.prefix_length }}</span
+                  ></template
+                >
+                <template v-else-if="column.key === 'gateway'"
+                  ><span class="font-mono">{{ record.gateway }}</span></template
+                >
+                <template v-else-if="column.key === 'dns'"
+                  ><span class="font-mono">{{
+                    record.dns.join(', ') || '—'
+                  }}</span></template
+                >
+                <template v-else-if="column.key === 'mode'">{{
+                  enumLabel('networkMode', record.mode).text
+                }}</template>
+                <template v-else-if="column.key === 'status'"
+                  ><StatusTag kind="addressStatus" :value="record.status"
+                /></template>
                 <template v-else-if="column.key === 'bound'">
                   {{ record.quality.configuration_bound ? '是' : '否' }}
-                  <Tag v-if="record.quality.state_stale" class="m-0 ml-1" color="warning">可能已过期</Tag>
+                  <Tag
+                    v-if="record.quality.state_stale"
+                    class="m-0 ml-1"
+                    color="warning"
+                    >可能已过期</Tag
+                  >
                 </template>
-                <template v-else-if="column.key === 'observed'"><TimeText :value="record.observed_at" /></template>
+                <template v-else-if="column.key === 'observed'"
+                  ><TimeText :value="record.observed_at"
+                /></template>
               </template>
             </Table>
           </Card>
@@ -436,41 +651,83 @@ function resourcesText(x: Instance) {
         title="重命名实例"
         @ok="submitRename"
       >
-        <Input v-model:value="renameValue" :maxlength="128" placeholder="1–128 个字符" />
+        <Input
+          v-model:value="renameValue"
+          :maxlength="128"
+          placeholder="1–128 个字符"
+        />
       </Modal>
 
       <ConfirmAction
         v-model:open="powerOpen"
         :danger="powerKind !== 'start' && powerMode === 'force'"
-        :description="powerKind === 'start' ? '启动会重新进行准入检查。' : powerMode === 'force' ? '强制操作不删除磁盘，但可能丢失未保存的数据。' : ''"
+        :description="
+          powerKind === 'start'
+            ? '启动会重新进行准入检查。'
+            : powerMode === 'force'
+              ? '强制操作不删除磁盘，但可能丢失未保存的数据。'
+              : ''
+        "
         :on-confirm="submitPower"
-        :risk-text="powerKind !== 'start' && powerMode === 'force' ? '我知道强制操作可能丢失未保存数据' : ''"
+        :risk-text="
+          powerKind !== 'start' && powerMode === 'force'
+            ? '我知道强制操作可能丢失未保存数据'
+            : ''
+        "
         :title="`${POWER_NAMES[powerKind]}实例`"
       >
         <div v-if="powerKind !== 'start'" class="mb-3">
           <RadioGroup v-model:value="powerMode" button-style="solid">
-            <RadioButton value="graceful">正常{{ POWER_NAMES[powerKind] }}</RadioButton>
-            <RadioButton value="force">强制{{ POWER_NAMES[powerKind] }}</RadioButton>
+            <RadioButton value="graceful"
+              >正常{{ POWER_NAMES[powerKind] }}</RadioButton
+            >
+            <RadioButton value="force"
+              >强制{{ POWER_NAMES[powerKind] }}</RadioButton
+            >
           </RadioGroup>
         </div>
       </ConfirmAction>
 
-      <ResizeDialog v-model:open="resizeOpen" :api="instancesApi" :etag="inst.etag.value" :instance="i" @done="conflict" />
+      <ResizeDialog
+        v-model:open="resizeOpen"
+        :api="instancesApi"
+        :etag="inst.etag.value"
+        :instance="i"
+        @done="conflict"
+      />
 
       <ConfirmAction
         :key="deleteRecovery ? 'cleanup' : 'ordinary-delete'"
         v-model:open="deleteOpen"
         :confirm-name="i.name"
         danger
-        :description="deleteRecovery ? '此操作将取消实例已有操作，强制关闭并永久删除实例及磁盘，未保存的数据会丢失，无法恢复。节点权威确认原生实例已不存在时跳过关闭和删除；节点离线或请求失败不代表实例不存在，不会据此完成删除。历史计费和审计记录保留。提交后请等待任务确认完成。' : running ? '执行此操作将强制关闭实例，然后永久删除实例及磁盘数据，未保存的数据会丢失。历史计费和审计记录保留。' : '实例和磁盘数据将被永久删除，无法恢复。历史计费和审计记录保留。'"
+        :description="
+          deleteRecovery
+            ? '此操作将取消实例已有操作，强制关闭并永久删除实例及磁盘，未保存的数据会丢失，无法恢复。节点权威确认原生实例已不存在时跳过关闭和删除；节点离线或请求失败不代表实例不存在，不会据此完成删除。历史计费和审计记录保留。提交后请等待任务确认完成。'
+            : running
+              ? '执行此操作将强制关闭实例，然后永久删除实例及磁盘数据，未保存的数据会丢失。历史计费和审计记录保留。'
+              : '实例和磁盘数据将被永久删除，无法恢复。历史计费和审计记录保留。'
+        "
         :disabled="deleteAction.pending.value"
         :ok-text="deleteRecovery ? '强制清理删除' : '销毁实例'"
         :on-confirm="submitDelete"
-        :risk-text="deleteRecovery ? '我确认取消已有操作，并强制清理实例及全部磁盘数据，此操作不可恢复' : running ? '我确认强制关闭可能丢失未保存的数据，且实例及磁盘数据将被永久删除' : ''"
+        :risk-text="
+          deleteRecovery
+            ? '我确认取消已有操作，并强制清理实例及全部磁盘数据，此操作不可恢复'
+            : running
+              ? '我确认强制关闭可能丢失未保存的数据，且实例及磁盘数据将被永久删除'
+              : ''
+        "
         :title="deleteRecovery ? '强制清理删除实例' : '销毁实例'"
       />
 
-      <ConsoleDrawer ref="consoleRef" :api="consoleApi" :etag="inst.etag.value" :instance="i" :disabled="busy || !lifecycleReady" />
+      <ConsoleDrawer
+        ref="consoleRef"
+        :api="consoleApi"
+        :etag="inst.etag.value"
+        :instance="i"
+        :disabled="busy || !lifecycleReady"
+      />
     </template>
   </Page>
 </template>

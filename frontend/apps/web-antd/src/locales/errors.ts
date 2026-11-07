@@ -86,6 +86,8 @@ const MESSAGES: Record<string, string> = {
   storage_pool_capacity_exceeded:
     '存储池磁盘空间不足，请减小磁盘申请量或联系管理员调整存储',
   task_failed: '任务执行失败，请查看任务详情并修正原因；不会自动重试',
+  task_force_stopped: '任务编排已强制停止；已发出的外部操作不保证停止，请按任务提示核对',
+  task_stop_not_allowed: '系统执行任务仅管理员可强停',
   task_lease_lost: '任务处理已转交，请刷新',
   task_not_unknown: '只有结果未知的任务可以核对',
   unauthenticated: '登录已过期，请重新登录',

@@ -13,20 +13,28 @@ import (
 )
 
 // The HTTP transaction already holds the owner account and instance locks.
-// Dispatch locks the task row around the native request and operation journal,
-// so revocation cannot commit between an outbound CREATE/START and its journal.
+// Dispatch locks through durable intent and actual HTTP submission, not response
+// waiting. Unidentified intent blocks cleanup; late operation IDs remain journaled.
 func admitStuckDelete(a *platform.App, db *gorm.DB, r platform.Row) (platform.Row, error) {
 	var active []platform.Row
-	if err := locked(db).Table("tasks").Where("instance_id=? AND status IN ?", r["id"], []string{"queued", "running", "waiting", "unknown"}).Order("id").Find(&active).Error; err != nil {
+	if err := locked(db).Table("tasks").Where("instance_id=? AND (status IN ? OR (is_instance_mutation=1 AND status='cancelled' AND error_code='task_force_stopped'))", r["id"], []string{"queued", "running", "waiting", "unknown"}).Order("id").Find(&active).Error; err != nil {
 		return nil, err
 	}
 	for _, task := range active {
-		if platform.Text(task["task_type"]) == "instance.delete" && platform.Bool(object(task["parameters_redacted"])["cleanup_stuck"]) {
+		if platform.Text(task["status"]) != "cancelled" && platform.Text(task["task_type"]) == "instance.delete" && platform.Bool(object(task["parameters_redacted"])["cleanup_stuck"]) {
 			return platform.Row{"task_id": platform.Text(task["id"]), "instance_id": platform.Text(r["id"]), "status": task["status"]}, nil
 		}
 	}
 	now := a.Time()
 	for _, task := range active {
+		if platform.Text(task["status"]) == "cancelled" && platform.Text(task["error_code"]) == "task_force_stopped" {
+			// Transfer the mutation slot, not the stopped orchestration. The new
+			// cleanup retains this source's native journals and must prove quiescence.
+			if err := db.Table("tasks").Where("id=?", task["id"]).Updates(platform.Row{"is_instance_mutation": false, "revision": gorm.Expr("revision+1")}).Error; err != nil {
+				return nil, err
+			}
+			continue
+		}
 		if err := db.Table("tasks").Where("id=?", task["id"]).Updates(platform.Row{"status": "cancelled", "error_code": "superseded_by_cleanup", "finished_at": now, "lease_owner": nil, "lease_until": nil, "lease_generation": gorm.Expr("lease_generation+1"), "revision": gorm.Expr("revision+1")}).Error; err != nil {
 			return nil, err
 		}
@@ -58,8 +66,8 @@ func stuckDeleteQuiescent(ctx context.Context, a *platform.App, j platform.Job, 
 		op := platform.Text(step["operation_id"])
 		if op == "" {
 			key, status := platform.Text(step["step_key"]), platform.Text(step["status"])
-			mutation := key == "create.native" || key == cloudInitPrepareStep || strings.HasPrefix(key, "state.") || key == "resize.native" || key == "gpu.configure" || initializationStage(key)
-			terminal := status == "succeeded" || status == "failed" || (status == "cancelled" && platform.Text(step["error_code"]) != "superseded_by_cleanup")
+			mutation := key == "create.native" || key == "delete.native" || key == cloudInitPrepareStep || strings.HasPrefix(key, "state.") || key == "resize.native" || key == "gpu.configure" || initializationStage(key)
+			terminal := status == "succeeded" || status == "failed" || (status == "cancelled" && platform.Text(step["error_code"]) != "superseded_by_cleanup" && platform.Text(step["error_code"]) != "task_force_stopped")
 			if mutation && !terminal && !platform.Bool(object(step["result_redacted"])["native_dispatch_fenced"]) {
 				return unresolvedStuckSubmission()
 			}
@@ -167,6 +175,9 @@ func settleStuckOperation(ctx context.Context, a *platform.App, j platform.Job, 
 	}
 	if platform.Uint(m["status_code"]) == 0 {
 		return errors.New("native operation omitted status")
+	}
+	if ctx.Value(forceStopObservationKey{}) != nil {
+		return forceStopPending("native_operation_running")
 	}
 	ref, err := url.Parse(op)
 	if err != nil {

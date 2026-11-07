@@ -7891,6 +7891,24 @@
         }
       }
     },
+    "/tasks/{id}/force-stop": {
+      "post": {
+        "operationId":"post_tasks_id_force_stop", "tags":["tasks"],
+        "description":"Stop orchestration for any queued/running/waiting/unknown task initiated by the current member. Resource ownership alone is insufficient; system credit enforcement and administrator-initiated tasks return 403 task_stop_not_allowed. Revokes leases and execution contexts, including recovery source/wrapper chains. Does not promise physical cancellation. Proven predispatch instance.gpu cancellation restores only own releasing sources, releases only own unconfigured/unobserved reserved targets and ends only held target usage; active/configured targets and historical billing remain intact. Unknown status alone is not dispatch proof; ambiguous/dispatched work retains its safety barrier. Terminal tasks are returned unchanged.",
+        "parameters":[{"in":"path","name":"id","required":true,"schema":{"type":"string","pattern":"^[1-9][0-9]*$"}},{"in":"header","name":"X-CSRF-Token","required":true,"schema":{"type":"string"}},{"in":"header","name":"Idempotency-Key","required":true,"schema":{"type":"string","minLength":1,"maxLength":128}},{"in":"header","name":"If-Match","required":true,"schema":{"type":"string","pattern":"^\"rev-[0-9]+\"$"}}],
+        "requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","properties":{"confirm":{"type":"boolean","enum":[true]}},"required":["confirm"],"additionalProperties":false}}}},
+        "responses":{"200":{"description":"Stopped orchestration or unchanged terminal task. ETag identifies returned revision.","headers":{"ETag":{"schema":{"type":"string"}}},"content":{"application/json":{"schema":{"type":"object","properties":{"data":{"$ref":"#/components/schemas/Task"},"request_id":{"type":"string"}},"required":["data","request_id"],"additionalProperties":false}}}},"default":{"$ref":"#/components/responses/ApiError"}}
+      }
+    },
+    "/admin/tasks/{id}/force-stop": {
+      "post": {
+        "operationId":"post_admin_tasks_id_force_stop", "tags":["admin"],
+        "description":"Administrator may stop every task type and owner, including system tasks. Same durable cancellation and retained-external-state semantics as member force-stop; does not clear enforcement debt or fabricate physical cancellation. Requires explicit confirm:true.",
+        "parameters":[{"in":"path","name":"id","required":true,"schema":{"type":"string","pattern":"^[1-9][0-9]*$"}},{"in":"header","name":"X-CSRF-Token","required":true,"schema":{"type":"string"}},{"in":"header","name":"Idempotency-Key","required":true,"schema":{"type":"string","minLength":1,"maxLength":128}},{"in":"header","name":"If-Match","required":true,"schema":{"type":"string","pattern":"^\"rev-[0-9]+\"$"}}],
+        "requestBody":{"required":true,"content":{"application/json":{"schema":{"type":"object","properties":{"confirm":{"type":"boolean","enum":[true]}},"required":["confirm"],"additionalProperties":false}}}},
+        "responses":{"200":{"description":"Stopped orchestration or unchanged terminal task, with ETag.","headers":{"ETag":{"schema":{"type":"string"}}},"content":{"application/json":{"schema":{"type":"object","properties":{"data":{"$ref":"#/components/schemas/Task"},"request_id":{"type":"string"}},"required":["data","request_id"],"additionalProperties":false}}}},"default":{"$ref":"#/components/responses/ApiError"}}
+      }
+    },
     "/notifications": {
       "get": {
         "operationId": "get_notifications",
@@ -10122,7 +10140,7 @@
         "tags": [
           "admin"
         ],
-        "description": "Administrator required. ",
+        "description": "Administrator required. Unknown tasks use their safe reconciler. Force-stopped tasks use GET-only external reconciliation without replay or native mutations; original cancelled history remains intact. Historical instance.gpu barriers may clear only with proven predispatch safety: restore only own releasing sources, release only own unconfigured/unobserved reserved targets and end only held target usage. Preserve active/configured targets and historical billing. Unknown status alone is not dispatch proof; dispatched or ambiguous tasks remain locked.",
         "parameters": [
           {
             "in": "path",
@@ -12107,6 +12125,10 @@
         ],
         "additionalProperties": false
       },
+      "TaskStatus": {
+        "type": "string",
+        "enum": ["queued", "running", "waiting", "unknown", "succeeded", "failed", "cancelled"]
+      },
       "TaskStep": {
         "type": "object",
         "properties": {
@@ -12114,16 +12136,7 @@
             "type": "string"
           },
           "status": {
-            "type": "string",
-            "enum": [
-              "queued",
-              "running",
-              "waiting",
-              "unknown",
-              "succeeded",
-              "failed",
-              "cancelled"
-            ]
+            "$ref": "#/components/schemas/TaskStatus"
           },
           "error_code": {
             "type": [
@@ -12169,6 +12182,9 @@
       "Task": {
         "type": "object",
         "properties": {
+          "can_force_stop":{"type":"boolean","description":"Role and trusted initiating-actor capability; never infer authorization from type or owner alone."},
+          "force_stop_blocked_reason":{"type":"string"},
+          "force_stop":{"type":"object","properties":{"orchestration_stopped":{"type":"boolean"},"external_state":{"type":"string","enum":["not_dispatched","requires_reconciliation"]},"requires_reconciliation":{"type":"boolean"},"resources_retained":{"type":"boolean"},"reconciliation_completed":{"type":"boolean"}},"required":["orchestration_stopped","external_state","requires_reconciliation","resources_retained","reconciliation_completed"],"additionalProperties":false},
           "creation_cleanup": {
             "type": "object",
             "description": "Only retired never-delivered instance.create tasks. Original error and instance_id remain available; this safe summary does not expose instance configuration.",
@@ -12242,16 +12258,7 @@
             "type": "string"
           },
           "status": {
-            "type": "string",
-            "enum": [
-              "queued",
-              "running",
-              "waiting",
-              "unknown",
-              "succeeded",
-              "failed",
-              "cancelled"
-            ]
+            "$ref": "#/components/schemas/TaskStatus"
           },
           "phase": {
             "description": "Deletion progresses through delete.native, delete.verify_reclamation and delete.finalize. GPU evidence waits up to about 95 seconds for an explicitly complete host-attributed sample whose collection started after native absence confirmation. A verification failure remains unknown, not an assertion that native deletion failed.",
@@ -12483,6 +12490,13 @@
               {
                 "type": "null"
               }
+            ]
+          },
+          "active_task_status": {
+            "description": "Actual status of the same task selected by active_task_id, or null when no task is selected. A cancelled task may retain a safety barrier; it is not executing.",
+            "anyOf": [
+              { "$ref": "#/components/schemas/TaskStatus" },
+              { "type": "null" }
             ]
           },
           "credit_enforcement": {

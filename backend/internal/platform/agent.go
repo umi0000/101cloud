@@ -6,12 +6,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	agentclient "101cloud/hostagent/client"
@@ -89,21 +92,57 @@ func (a *App) Agent(ctx context.Context, nodeID uint64, method, path string, bod
 	return v, e
 }
 func (a *App) AgentConditional(ctx context.Context, nodeID uint64, method, path string, body any, etag string) (map[string]any, string, error) {
-	if dispatch, ok := ctx.Value(taskDispatchKey{}).(taskDispatch); ok && method != http.MethodGet && method != http.MethodHead {
+	dispatch, associated := ctx.Value(taskDispatchKey{}).(taskDispatch)
+	mutation := method != http.MethodGet && method != http.MethodHead
+	if execution, ok := ctx.Value(taskExecutionKey{}).(*taskExecution); ok && mutation && !associated {
+		dispatch = taskDispatch{job: execution.job, key: fmt.Sprintf("native.dispatch.%d", execution.dispatch.Add(1))}
+		associated = true
+		// Older handlers may omit WithTaskDispatch. Their mutations still need
+		// durable intent and the same execution lease as explicitly named steps.
+		if err := a.Step(ctx, dispatch.job, dispatch.key, "", "running"); err != nil {
+			return nil, "", Unknown(err)
+		}
+	}
+	if associated && mutation {
 		var result map[string]any
 		var resultETag string
 		var requestErr error
+		requestCtx, cancelRequest := context.WithCancel(ctx)
+		defer cancelRequest()
+		submitted, completed := make(chan struct{}), make(chan struct{})
+		var submission sync.Once
+		finishSubmission := func() { submission.Do(func() { close(submitted) }) }
+		requestCtx = httptrace.WithClientTrace(requestCtx, &httptrace.ClientTrace{WroteRequest: func(httptrace.WroteRequestInfo) { finishSubmission() }})
+		started := false
+		// Hold the durable fence through actual HTTP submission, not response
+		// waiting. Force-stop can then commit before cancelling any execution;
+		// a rejected/rolled-back request never interrupts the worker.
 		err := a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-			var live uint64
-			if err := tx.Raw("SELECT id FROM tasks WHERE id=? AND lease_generation=? AND status='running' AND lease_until>? FOR UPDATE", dispatch.job.ID, dispatch.job.LeaseGeneration, a.Time()).Scan(&live).Error; err != nil {
+			var task Row
+			if err := tx.Raw("SELECT id,instance_id,task_type,parameters_redacted FROM tasks WHERE id=? AND lease_generation=? AND status='running' AND lease_until>? FOR UPDATE", dispatch.job.ID, dispatch.job.LeaseGeneration, a.Time()).Scan(&task).Error; err != nil {
 				return err
 			}
-			if live != dispatch.job.ID || nodeID != dispatch.job.NodeID {
+			if Uint(task["id"]) != dispatch.job.ID || nodeID != dispatch.job.NodeID {
 				return errors.New("lost task lease before native dispatch")
 			}
-			// Commit this evidence independently while the task row stays locked.
-			// If the process/SQL connection dies after HTTP submission, takeover
-			// must not confuse a lost operation ID with an unsent request.
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if instanceID := Uint(task["instance_id"]); instanceID != 0 {
+				var locked uint64
+				if err := tx.Raw("SELECT id FROM instances WHERE id=? FOR UPDATE", instanceID).Scan(&locked).Error; err != nil {
+					return err
+				}
+				if locked != instanceID {
+					return errors.New("task instance identity is missing")
+				}
+				if !TaskCanResolveMutationBarrier(task) {
+					if err := TaskMutationBarrier(tx, instanceID); err != nil {
+						return err
+					}
+				}
+			}
+			// Independently commit intent before bytes can leave this process.
 			intent := a.DB.WithContext(ctx).Table("task_steps").Where("task_id=? AND step_key=? AND attempt=?", dispatch.job.ID, dispatch.key, dispatch.job.LeaseGeneration).Update("result_redacted", gorm.Expr("JSON_SET(COALESCE(result_redacted, JSON_OBJECT()), '$.native_dispatch_started', true)"))
 			if intent.Error != nil {
 				return intent.Error
@@ -111,38 +150,47 @@ func (a *App) AgentConditional(ctx context.Context, nodeID uint64, method, path 
 			if intent.RowsAffected != 1 {
 				return errors.New("native dispatch omitted durable step intent")
 			}
-			result, resultETag, requestErr = a.agentConditional(ctx, nodeID, method, path, body, etag)
-			if operation := Text(result["operation"]); operation != "" {
-				ref, err := url.Parse(operation)
-				if err != nil || ref.IsAbs() || !strings.HasPrefix(ref.Path, "/1.0/operations/") {
-					return errors.New("invalid native operation reference")
-				}
-				if target, err := url.ParseRequestURI(path); err == nil && ref.Query().Get("project") == "" {
-					q := ref.Query()
-					q.Set("project", target.Query().Get("project"))
-					ref.RawQuery = q.Encode()
-				}
-				res := tx.Table("task_steps").Where("task_id=? AND step_key=? AND attempt=?", dispatch.job.ID, dispatch.key, dispatch.job.LeaseGeneration).Updates(Row{"operation_id": ref.String(), "status": "waiting", "node_id": nodeID, "project_name": ref.Query().Get("project")})
-				if res.Error != nil {
-					return res.Error
-				}
-				if res.RowsAffected != 1 {
-					return errors.New("native dispatch omitted durable step intent")
-				}
-			}
+			started = true
+			go func() {
+				defer close(completed)
+				defer finishSubmission() // also releases failed/custom transports
+				result, resultETag, requestErr = a.agentConditional(requestCtx, nodeID, method, path, body, etag)
+			}()
+			<-submitted
 			return nil
 		})
 		if err != nil {
+			cancelRequest()
+			if started {
+				<-completed
+			}
 			return result, resultETag, Unknown(err)
+		}
+		<-completed
+		if operation := Text(result["operation"]); operation != "" {
+			ref, err := url.Parse(operation)
+			if err != nil || ref.IsAbs() || !strings.HasPrefix(ref.Path, "/1.0/operations/") {
+				return result, resultETag, Unknown(errors.New("invalid native operation reference"))
+			}
+			if target, err := url.ParseRequestURI(path); err == nil && ref.Query().Get("project") == "" {
+				q := ref.Query()
+				q.Set("project", target.Query().Get("project"))
+				ref.RawQuery = q.Encode()
+			}
+			journalCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer stop()
+			if err := a.recordTaskOperation(journalCtx, dispatch, nodeID, ref); err != nil {
+				return result, resultETag, Unknown(err)
+			}
 		}
 		return result, resultETag, requestErr
 	}
 	return a.agentConditional(ctx, nodeID, method, path, body, etag)
 }
 
-// WithTaskDispatch fences the actual HTTP mutation, not its preparatory reads.
-// Takeover locks the same task row and therefore observes the returned operation
-// identity before it can revoke the worker. A lost response remains ambiguous.
+// WithTaskDispatch selects a durable step for the actual HTTP submission.
+// Executions automatically fence unnamed mutations; late operation identities
+// append to the original journal without restoring revoked execution authority.
 func WithTaskDispatch(ctx context.Context, job Job, key string) context.Context {
 	return context.WithValue(ctx, taskDispatchKey{}, taskDispatch{job, key})
 }
