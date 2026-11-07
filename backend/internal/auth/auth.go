@@ -367,9 +367,11 @@ func bytesOf(v any) []byte {
 
 const dummyPasswordHash = "$argon2id$v=19$m=65536,t=3,p=2$c2VjdXJlLWR1bW15LXNhbHQ$72mVHDVMjQmAWD5VdCAbzMeblo5hj+XBFQVGl8uqrdg"
 
+const passwordRequirements = "Password must contain 8–128 Unicode characters, including ASCII uppercase and lowercase letters and a digit"
+
 func hashPassword(password string) (string, error) {
 	if !validPassword(password) {
-		return "", validation("Password must contain 12–128 characters")
+		return "", validation(passwordRequirements)
 	}
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
@@ -393,7 +395,30 @@ func verifyPassword(encoded, password string) bool {
 }
 func validPassword(password string) bool {
 	n := utf8.RuneCountInString(password)
-	return utf8.ValidString(password) && n >= 12 && n <= 128
+	if !utf8.ValidString(password) || n < 8 || n > 128 {
+		return false
+	}
+	var upper, lower, digit bool
+	for _, r := range password {
+		upper = upper || r >= 'A' && r <= 'Z'
+		lower = lower || r >= 'a' && r <= 'z'
+		digit = digit || r >= '0' && r <= '9'
+	}
+	return upper && lower && digit
+}
+
+func randomPassword() (string, error) {
+	// Rejection sampling keeps the 256-bit token distribution unbiased among
+	// compliant passwords. No attempt limit can randomly fail initialization.
+	for {
+		password, err := randomToken(32)
+		if err != nil {
+			return "", err
+		}
+		if validPassword(password) {
+			return password, nil
+		}
+	}
 }
 func validUsername(value string) bool {
 	n := utf8.RuneCountInString(value)
@@ -456,7 +481,7 @@ func EnsureAdministrator(ctx context.Context, a *platform.App) (*InitialAdminist
 		if err != nil {
 			return err
 		}
-		password, err := randomToken(32)
+		password, err := randomPassword()
 		if err != nil {
 			return err
 		}

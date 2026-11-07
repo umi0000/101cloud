@@ -139,7 +139,7 @@ func TestMySQLCredentialErrorsKeepSessionAndAdminResetNeedsNoReason(t *testing.T
 	}
 	me := do(http.MethodGet, "/me", "", nil)
 	expect(me, 200, "")
-	wrong := do(http.MethodPost, "/me/password", `{"current_password":"definitely-not-the-password","new_password":"a-brand-new-password"}`, map[string]string{"If-Match": me.Header().Get("ETag"), "Idempotency-Key": "wrong-current-password"})
+	wrong := do(http.MethodPost, "/me/password", `{"current_password":"definitely-not-the-password","new_password":"A-brand-new-password1"}`, map[string]string{"If-Match": me.Header().Get("ETag"), "Idempotency-Key": "wrong-current-password"})
 	expect(wrong, 401, "invalid_credentials")
 	if jar[sessionCookie(a)] != session {
 		t.Fatal("wrong current password cleared the session cookie")
@@ -157,8 +157,8 @@ func TestMySQLCredentialErrorsKeepSessionAndAdminResetNeedsNoReason(t *testing.T
 	}
 	resetPath := "/admin/users/" + identity.Data.User.ID + "/reset-password"
 	resetHeaders := map[string]string{"If-Match": me.Header().Get("ETag"), "Idempotency-Key": "admin-reset-without-reason"}
-	expect(do(http.MethodPost, resetPath, `{"new_password":"a-brand-new-password","reason":"legacy operation reason"}`, resetHeaders), 422, "validation_failed")
-	expect(do(http.MethodPost, resetPath, `{"new_password":"a-brand-new-password"}`, resetHeaders), 204, "")
+	expect(do(http.MethodPost, resetPath, `{"new_password":"A-brand-new-password1","reason":"legacy operation reason"}`, resetHeaders), 422, "validation_failed")
+	expect(do(http.MethodPost, resetPath, `{"new_password":"A-brand-new-password1"}`, resetHeaders), 204, "")
 	var audits []platform.Row
 	if e = db.Table("audit_logs").Where("event_type = ?", "auth.reset-password").Find(&audits).Error; e != nil {
 		t.Fatal(e)
@@ -175,5 +175,5 @@ func TestMySQLCredentialErrorsKeepSessionAndAdminResetNeedsNoReason(t *testing.T
 	}
 	expect(do(http.MethodGet, "/me", "", nil), 401, "unauthenticated")
 	expect(do(http.MethodGet, "/auth/csrf", "", nil), 200, "")
-	expect(do(http.MethodPost, "/auth/login", login(initial.Username, "a-brand-new-password"), nil), 200, "")
+	expect(do(http.MethodPost, "/auth/login", login(initial.Username, "A-brand-new-password1"), nil), 200, "")
 }

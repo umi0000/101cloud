@@ -60,7 +60,7 @@ func registerMe(a *platform.App, user *gin.RouterGroup) {
 			return nil, err
 		}
 		if !validPassword(input.NewPassword) {
-			return nil, validation("Password must contain 12–128 characters")
+			return nil, validation(passwordRequirements)
 		}
 		if err := loginLimit(c, a, "account:"+strconv.FormatUint(platform.Current(c).ID, 10)); err != nil {
 			return nil, err

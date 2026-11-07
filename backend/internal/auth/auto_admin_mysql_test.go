@@ -62,7 +62,7 @@ func TestMySQLAutomaticAdministratorCreatedOnlyOnce(t *testing.T) {
 	if e = db.Table("credit_accounts").Count(&wallets).Error; e != nil || wallets != 0 {
 		t.Fatalf("bootstrap must remain safely unconfigured before explicit allowance setup: wallets=%d error=%v", wallets, e)
 	}
-	passwordHash, e := hashPassword("changed-after-first-login")
+	passwordHash, e := hashPassword("Changed-after-first-login1")
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -80,7 +80,7 @@ func TestMySQLAutomaticAdministratorCreatedOnlyOnce(t *testing.T) {
 	if e = db.Table("users").Where("id=?", account["id"]).Take(&account).Error; e != nil {
 		t.Fatal(e)
 	}
-	if !verifyPassword(platform.Text(account["password_hash"]), "changed-after-first-login") {
+	if !verifyPassword(platform.Text(account["password_hash"]), "Changed-after-first-login1") {
 		t.Fatal("restart reset the existing password")
 	}
 }

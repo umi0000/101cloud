@@ -14,7 +14,7 @@ import { ApiError, newIdempotencyKey } from '#/api/request';
 import ErrorFeedback from '#/components/error-feedback.vue';
 import { describeError } from '#/locales/errors';
 import { useAuthStore } from '#/store/auth';
-import { passwordError } from '#/utils/password';
+import { PASSWORD_HINT, passwordError } from '#/utils/password';
 
 const auth = useAuthStore();
 const access = useAccessStore();
@@ -150,7 +150,7 @@ onBeforeUnmount(() => {
           <FormItem label="当前密码" html-for="member-current-password" required :help="currentError || undefined" :validate-status="currentError ? 'error' : undefined">
             <InputPassword id="member-current-password" v-model:value="currentPassword" name="current_password" autocomplete="current-password" :disabled="locked" :aria-invalid="!!currentError" />
           </FormItem>
-          <FormItem label="新密码" html-for="member-new-password" required :help="newError || '12–128 个字符'" :validate-status="newError ? 'error' : undefined">
+          <FormItem label="新密码" html-for="member-new-password" required :help="newError || PASSWORD_HINT" :validate-status="newError ? 'error' : undefined">
             <InputPassword id="member-new-password" v-model:value="newPassword" name="new_password" autocomplete="new-password" :disabled="locked" :aria-invalid="!!newError" />
           </FormItem>
           <FormItem label="确认新密码" html-for="member-confirm-password" required :help="confirmationError || undefined" :validate-status="confirmationError ? 'error' : undefined">

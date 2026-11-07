@@ -162,7 +162,7 @@ func (h *registrationHarness) count(table string) int64 {
 }
 
 func (h *registrationHarness) signup(name string) *httptest.ResponseRecorder {
-	body, _ := json.Marshal(map[string]string{"username": name, "password": "registration-password"})
+	body, _ := json.Marshal(map[string]string{"username": name, "password": "Registration-password1"})
 	return h.guest.call(http.MethodPost, "/auth/register", string(body), nil)
 }
 
@@ -251,16 +251,16 @@ func TestMySQLRegistrationCopiesDefaultsAndDailyGrantWithoutPrivilege(t *testing
 	h := newRegistrationHarness(t)
 	h.expect(h.settings(registrationSettingsBody(true, "101"), ""), http.StatusOK, "")
 	for _, field := range []string{`"role":"admin"`, `"status":"active"`, `"limits":{}`, `"credit_policy_version_id":"101"`} {
-		h.expect(h.guest.call(http.MethodPost, "/auth/register", `{"username":"injected","password":"registration-password",`+field+`}`, nil), http.StatusUnprocessableEntity, "validation_failed")
+		h.expect(h.guest.call(http.MethodPost, "/auth/register", `{"username":"injected","password":"Registration-password1",`+field+`}`, nil), http.StatusUnprocessableEntity, "validation_failed")
 	}
 	for _, body := range []string{
-		`{"username":"","password":"registration-password"}`,
+		`{"username":"","password":"Registration-password1"}`,
 		`{"username":"bad-password","password":"short"}`,
-		`{"username":"bad-email","password":"registration-password","email":"not-an-email"}`,
+		`{"username":"bad-email","password":"Registration-password1","email":"not-an-email"}`,
 	} {
 		h.expect(h.guest.call(http.MethodPost, "/auth/register", body, nil), http.StatusUnprocessableEntity, "validation_failed")
 	}
-	response := h.guest.call(http.MethodPost, "/auth/register", `{"username":"self-user","password":"registration-password","email":"self@example.test"}`, nil)
+	response := h.guest.call(http.MethodPost, "/auth/register", `{"username":"self-user","password":"Registration-password1","email":"self@example.test"}`, nil)
 	h.expect(response, http.StatusCreated, "")
 	if len(response.Result().Cookies()) != 0 || strings.Contains(response.Body.String(), "password") {
 		t.Fatalf("registration leaked credentials or logged in: %s", response.Body.String())
@@ -317,13 +317,13 @@ func TestMySQLRegistrationCopiesDefaultsAndDailyGrantWithoutPrivilege(t *testing
 	if platform.Uint(audit["actor_user_id"]) != userID || strings.Contains(platform.Text(audit["result_redacted"]), "password") {
 		t.Fatalf("unsafe registration audit: %#v", audit)
 	}
-	h.expect(h.guest.call(http.MethodPost, "/auth/register", `{"username":"email-conflict","password":"registration-password","email":"self@example.test"}`, nil), http.StatusConflict, "configuration_conflict")
+	h.expect(h.guest.call(http.MethodPost, "/auth/register", `{"username":"email-conflict","password":"Registration-password1","email":"self@example.test"}`, nil), http.StatusConflict, "configuration_conflict")
 	if h.count("users") != 2 || h.count("user_limits") != 2 || h.count("credit_accounts") != 1 {
 		t.Fatal("email uniqueness failure left partial rows")
 	}
 	// Registration does not authenticate the existing pre-login browser context.
 	h.expect(h.guest.call(http.MethodGet, "/me", "", nil), http.StatusUnauthorized, "unauthenticated")
-	h.expect(h.guest.call(http.MethodPost, "/auth/login", `{"username":"self-user","password":"registration-password"}`, nil), http.StatusOK, "")
+	h.expect(h.guest.call(http.MethodPost, "/auth/login", `{"username":"self-user","password":"Registration-password1"}`, nil), http.StatusOK, "")
 	changed := registrationSettingsBody(true, "101")
 	changed["limits"].(map[string]any)["max_vcpus"] = 19
 	h.expect(h.settings(changed, ""), http.StatusOK, "")
@@ -338,7 +338,7 @@ func TestMySQLRegistrationCopiesDefaultsAndDailyGrantWithoutPrivilege(t *testing
 	if err := h.db.Table("user_limits l").Select("l.max_vcpus").Joins("JOIN users u ON u.id=l.user_id").Where("u.username='later-user'").Take(&later).Error; err != nil || later.MaxVCPUs != 19 {
 		t.Fatalf("new registration missed changed defaults: %#v %v", later, err)
 	}
-	h.expect(h.admin.call(http.MethodPost, "/admin/users", `{"username":"admin-created","initial_password":"registration-password","role":"user","credit_policy_version_id":"101"}`, map[string]string{"Idempotency-Key": "admin-create-unchanged"}), http.StatusCreated, "")
+	h.expect(h.admin.call(http.MethodPost, "/admin/users", `{"username":"admin-created","initial_password":"Registration-password1","role":"user","credit_policy_version_id":"101"}`, map[string]string{"Idempotency-Key": "admin-create-unchanged"}), http.StatusCreated, "")
 	var adminLimits platform.Row
 	if err := h.db.Table("user_limits l").Select("l.*").Joins("JOIN users u ON u.id=l.user_id").Where("u.username='admin-created'").Take(&adminLimits).Error; err != nil {
 		t.Fatal(err)
@@ -528,7 +528,7 @@ func TestMySQLRegistrationCSRFAndPersistentRateLimits(t *testing.T) {
 	if remaining := h.a.Time().Truncate(15 * time.Minute).Add(15 * time.Minute).Sub(h.a.Time()); remaining < 20*time.Second {
 		t.Skip("fixed rate window is about to roll over")
 	}
-	body := `{"username":"limited-user","password":"registration-password"}`
+	body := `{"username":"limited-user","password":"Registration-password1"}`
 	for _, headers := range []map[string]string{
 		{"X-CSRF-Token": ""},
 		{"Origin": "https://evil.example"},

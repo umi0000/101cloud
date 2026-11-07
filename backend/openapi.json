@@ -4747,8 +4747,7 @@
                     ]
                   },
                   "initial_password": {
-                    "type": "string",
-                    "writeOnly": true
+                    "$ref": "#/components/schemas/AccountPasswordInput"
                   },
                   "role": {
                     "type": "string",
@@ -10032,8 +10031,7 @@
                 "type": "object",
                 "properties": {
                   "new_password": {
-                    "type": "string",
-                    "writeOnly": true
+                    "$ref": "#/components/schemas/AccountPasswordInput"
                   }
                 },
                 "required": [
@@ -11208,8 +11206,7 @@
                     "writeOnly": true
                   },
                   "new_password": {
-                    "type": "string",
-                    "writeOnly": true
+                    "$ref": "#/components/schemas/AccountPasswordInput"
                   }
                 },
                 "required": [
@@ -11633,6 +11630,14 @@
         ],
         "additionalProperties": false
       },
+      "AccountPasswordInput": {
+        "type": "string",
+        "minLength": 8,
+        "maxLength": 128,
+        "pattern": "^(?=[\\s\\S]*[A-Z])(?=[\\s\\S]*[a-z])(?=[\\s\\S]*[0-9])[\\s\\S]*$",
+        "description": "8–128 Unicode code points, including ASCII uppercase A–Z, lowercase a–z and digits 0–9. Other characters are allowed but do not replace these classes. Whitespace is preserved. Applies only when setting an account password, not login/current-password verification or instance root passwords.",
+        "writeOnly": true
+      },
       "RegistrationInput": {
         "type": "object",
         "properties": {
@@ -11642,10 +11647,7 @@
             "maxLength": 64
           },
           "password": {
-            "type": "string",
-            "minLength": 12,
-            "maxLength": 128,
-            "writeOnly": true
+            "$ref": "#/components/schemas/AccountPasswordInput"
           },
           "email": {
             "type": [

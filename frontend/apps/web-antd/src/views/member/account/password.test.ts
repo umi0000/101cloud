@@ -29,7 +29,7 @@ import Password from './password.vue';
 let app: App; let root: HTMLElement;
 async function flush() { for (let n = 0; n < 16; n++) await Promise.resolve(); await nextTick(); }
 async function mount() { root = document.createElement('div'); document.body.append(root); app = createApp(Password); app.mount(root); await flush(); }
-async function fill(current = 'old-password', next = 'new-password-123', confirm = next) {
+async function fill(current = 'old-password', next = 'New-password-123', confirm = next) {
   for (const [id, value] of [['member-current-password', current], ['member-new-password', next], ['member-confirm-password', confirm]]) {
     const input = root.querySelector<HTMLInputElement>(`#${id}`)!; input.value = value!; input.dispatchEvent(new Event('input', { bubbles: true }));
   }
@@ -47,21 +47,27 @@ beforeEach(() => {
 afterEach(() => { app?.unmount(); root?.remove(); });
 
 describe('member password change', () => {
-  it('does not submit invalid length or mismatched confirmation, and counts Unicode characters', async () => {
-    await mount(); await fill('old', 'short'); await submit(); expect(runtime.change).not.toHaveBeenCalled();
-    await fill('old', 'long-password', 'different'); await submit(); expect(runtime.change).not.toHaveBeenCalled();
-    await fill('old', '界'.repeat(129)); await submit(); expect(runtime.change).not.toHaveBeenCalled();
-    const next = '🔐'.repeat(12); await fill(' old with spaces ', next); await submit();
+  it('rejects weak passwords and counts codepoints without trimming current or new passwords', async () => {
+    await mount();
+    for (const next of ['short', 'long-password', 'abcdefgh', 'ABCDEFG1', 'abcdefg1', 'Abcdefgh', 'Ａbcdefg1', 'Abcdefg１', 'Ab1' + '界'.repeat(126)]) {
+      await fill('old', next); await submit(); expect(runtime.change).not.toHaveBeenCalled();
+    }
+    await fill('old', 'Abcdefg1', 'different'); await submit(); expect(runtime.change).not.toHaveBeenCalled();
+    const next = ' Ab1🔐🔐🔐 '; await fill(' old with spaces ', next); await submit();
     expect(runtime.change.mock.calls[0]?.[0]).toEqual({ current_password: ' old with spaces ', new_password: next });
     expect(runtime.change.mock.calls[0]?.[1]).toMatchObject({ ifMatch: '"4"' });
     expect(runtime.auth.clear).toHaveBeenCalledOnce(); expect(runtime.replace).toHaveBeenCalledWith('/auth/login');
+  });
+  it('accepts an eight-character mixed password with a legacy short current password', async () => {
+    await mount(); await fill('old', 'Abcdefg1'); await submit();
+    expect(runtime.change.mock.calls[0]?.[0]).toEqual({ current_password: 'old', new_password: 'Abcdefg1' });
   });
   it('keeps the user logged in after invalid current credentials and clears only the rejected current input', async () => {
     runtime.change.mockRejectedValue(error(401, 'invalid_credentials'));
     await mount(); await fill(); await submit();
     expect(runtime.auth.clear).not.toHaveBeenCalled(); expect(runtime.auth.logout).not.toHaveBeenCalled(); expect(runtime.replace).not.toHaveBeenCalled();
     expect(root.querySelector<HTMLInputElement>('#member-current-password')?.value).toBe('');
-    expect(root.querySelector<HTMLInputElement>('#member-new-password')?.value).toBe('new-password-123');
+    expect(root.querySelector<HTMLInputElement>('#member-new-password')?.value).toBe('New-password-123');
     expect(root.querySelector<HTMLInputElement>('#member-current-password')?.getAttribute('aria-invalid')).toBe('true');
   });
   it('blocks duplicate submission while a request is in flight', async () => {

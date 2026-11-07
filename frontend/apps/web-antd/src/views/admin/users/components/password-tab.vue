@@ -10,7 +10,7 @@ import ConfirmAction from '#/components/confirm-action.vue';
 import { useAction } from '#/composables/api';
 import { useAuthStore } from '#/store';
 
-import { PASSWORD_MAX, passwordError, randomPassword } from '#/utils/password';
+import { PASSWORD_HINT, passwordError, randomPassword } from '#/utils/password';
 import PasswordReveal from './password-reveal.vue';
 
 const props = defineProps<{ etag: null | string; user: User }>();
@@ -30,6 +30,7 @@ const revealed = ref('');
 
 async function reset() {
   const newPassword = password.value;
+  if (passwordError(newPassword)) return false;
   const r = await action.run(
     (key) => usersApi.resetPassword(props.user.id, { new_password: newPassword }, { ifMatch: props.etag, key }),
     { onConflict: () => emit('changed'), success: '密码已重置，该用户的所有会话已撤销' },
@@ -65,13 +66,13 @@ async function afterReveal() {
       />
       <Form layout="vertical">
         <FormItem
-          :help="error ?? '12–128 个字符'"
+          :help="error ?? PASSWORD_HINT"
           label="新密码"
           required
           :validate-status="error ? 'error' : undefined"
         >
           <Space.Compact class="w-full">
-            <Input v-model:value="password" class="font-mono" :maxlength="PASSWORD_MAX" />
+            <Input v-model:value="password" class="font-mono" autocomplete="new-password" />
             <Button @click="password = randomPassword()">生成随机密码</Button>
           </Space.Compact>
         </FormItem>

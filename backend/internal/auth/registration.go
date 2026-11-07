@@ -137,7 +137,7 @@ func selfRegister(c *gin.Context, a *platform.App) (any, error) {
 		return nil, validation("Username must contain 1–64 characters")
 	}
 	if !validPassword(input.Password) {
-		return nil, validation("Password must contain 12–128 characters")
+		return nil, validation(passwordRequirements)
 	}
 	if input.Email != nil && !validEmail(*input.Email) {
 		return nil, validation("Invalid email address")

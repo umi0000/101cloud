@@ -38,7 +38,7 @@ func TestMySQLAdminUserCreationRequiresExplicitPublishedAllowance(t *testing.T) 
 	}, platform.Admin(), a.Mutations())
 	registerAdmin(a, admin)
 	call := func(policy any, key string) *httptest.ResponseRecorder {
-		body := map[string]any{"username": "explicit-user", "role": "user", "initial_password": "explicit-user-password"}
+		body := map[string]any{"username": "explicit-user", "role": "user", "initial_password": "Explicit-user-password1"}
 		if policy != nil {
 			body["credit_policy_version_id"] = policy
 		}

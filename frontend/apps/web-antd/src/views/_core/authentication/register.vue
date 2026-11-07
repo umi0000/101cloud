@@ -10,7 +10,7 @@ import { authApi } from '#/api/backend';
 import { ApiError } from '#/api/request';
 import ErrorFeedback from '#/components/error-feedback.vue';
 import { describeError } from '#/locales/errors';
-import { passwordError } from '#/utils/password';
+import { PASSWORD_HINT, passwordError } from '#/utils/password';
 
 const router = useRouter();
 const enabled = ref(false);
@@ -110,7 +110,7 @@ onBeforeUnmount(() => {
       <FormItem label="邮箱（可选）" html-for="register-email" :help="errors.email" :validate-status="errors.email ? 'error' : undefined">
         <Input id="register-email" v-model:value="form.email" autocomplete="email" :disabled="pending" size="large" />
       </FormItem>
-      <FormItem label="密码" html-for="register-password" required :help="(attempted || form.password ? errors.password : null) ?? '12–128 个 Unicode 字符'" :validate-status="(attempted || form.password) && errors.password ? 'error' : undefined">
+      <FormItem label="密码" html-for="register-password" required :help="(attempted || form.password ? errors.password : null) ?? PASSWORD_HINT" :validate-status="(attempted || form.password) && errors.password ? 'error' : undefined">
         <InputPassword id="register-password" v-model:value="form.password" autocomplete="new-password" :disabled="pending" size="large" />
       </FormItem>
       <FormItem label="确认密码" html-for="register-confirm" required :help="attempted || form.confirm ? errors.confirm : undefined" :validate-status="(attempted || form.confirm) && errors.confirm ? 'error' : undefined">

@@ -16,7 +16,7 @@ import (
 )
 
 func TestPasswordHashVerification(t *testing.T) {
-	password := "correct horse battery staple"
+	password := "Correct horse battery staple 1"
 	encoded, err := hashPassword(password)
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
@@ -45,14 +45,23 @@ func TestPasswordBounds(t *testing.T) {
 		valid          bool
 	}{
 		{"empty", "", false},
-		{"too short", strings.Repeat("a", 11), false},
-		{"minimum", strings.Repeat("a", 12), true},
-		{"maximum", strings.Repeat("a", 128), true},
-		{"too long", strings.Repeat("a", 129), false},
-		{"unicode minimum", strings.Repeat("密", 12), true},
-		{"unicode maximum", strings.Repeat("密", 128), true},
-		{"unicode too short", strings.Repeat("密", 11), false},
-		{"invalid UTF8", strings.Repeat("a", 12) + string([]byte{0xff}), false},
+		{"too short", "Aa12345", false},
+		{"minimum", "Aa123456", true},
+		{"maximum", "Aa1" + strings.Repeat("x", 125), true},
+		{"too long", "Aa1" + strings.Repeat("x", 126), false},
+		{"no uppercase", "abcdefgh1", false},
+		{"no lowercase", "ABCDEFGH1", false},
+		{"no digit", "Abcdefgh", false},
+		{"unicode minimum", "Aa1" + strings.Repeat("密", 5), true},
+		{"unicode maximum", "Aa1" + strings.Repeat("密", 125), true},
+		{"unicode too long", "Aa1" + strings.Repeat("密", 126), false},
+		{"unicode too short", "Aa1" + strings.Repeat("密", 4), false},
+		{"non ASCII uppercase", "Äbcdefg1", false},
+		{"non ASCII lowercase", "A中文密码１２３1", false},
+		{"non ASCII digit", "Abcdefg１", false},
+		{"symbols allowed", "Aa1!@#$%", true},
+		{"spaces counted without trimming", " Aa1234 ", true},
+		{"invalid UTF8", "Aa123456" + string([]byte{0xff}), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := validPassword(tc.password); got != tc.valid {
@@ -64,6 +73,18 @@ func TestPasswordBounds(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRandomPasswordAlwaysMeetsPolicy(t *testing.T) {
+	for range 256 {
+		password, err := randomPassword()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(password) != 43 || !validPassword(password) {
+			t.Fatal("bootstrap generated a noncompliant password")
+		}
 	}
 }
 

@@ -20,7 +20,7 @@ import { isEffective } from '../finance/components/credit-policy';
 
 import PasswordReveal from './components/password-reveal.vue';
 import RegistrationSettings from './components/registration-settings.vue';
-import { PASSWORD_MAX, passwordError, randomPassword } from '#/utils/password';
+import { PASSWORD_HINT, passwordError, randomPassword } from '#/utils/password';
 
 const router = useRouter();
 const cache = useUserCache();
@@ -222,13 +222,13 @@ onMounted(() => list.load());
           <Input v-model:value="form.email" :maxlength="254" />
         </FormItem>
         <FormItem
-          :help="form.initial_password ? (errors.password ?? undefined) : '12–128 个字符'"
+          :help="errors.password ?? PASSWORD_HINT"
           label="初始密码"
           required
           :validate-status="form.initial_password && errors.password ? 'error' : undefined"
         >
           <Space.Compact class="w-full">
-            <Input v-model:value="form.initial_password" class="font-mono" :maxlength="PASSWORD_MAX" />
+            <Input v-model:value="form.initial_password" class="font-mono" autocomplete="new-password" />
             <Button @click="form.initial_password = randomPassword()">生成随机密码</Button>
           </Space.Compact>
         </FormItem>
