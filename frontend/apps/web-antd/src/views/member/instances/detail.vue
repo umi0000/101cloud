@@ -665,13 +665,6 @@ async function submit(kind: Intent['kind']) {
         ></Alert
       >
       <Alert
-        v-if="instance.capabilities.force_delete === true"
-        class="mb-3"
-        type="warning"
-        show-icon
-        message="操作卡住、结果待核对或尚未就绪时，可使用强制清理删除取消旧操作并永久删除实例及磁盘。此恢复操作不可撤销，受理后仍须等待任务确认。"
-      />
-      <Alert
         v-if="deleteAccepted"
         class="mb-3"
         type="info"

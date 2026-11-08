@@ -632,8 +632,7 @@ async function sendIntent() {
     notice.value = 'GPU 策略已保存；是否执行以当前生效策略和平台安全规则为准。';
   } else {
     acceptedTask.value = result.response.data.task_id;
-    notice.value =
-      'GPU 操作已受理，不表示挂载、换卡或释放已完成；未知结果不会自动重放。';
+    notice.value = '';
     trackAccepted(
       result.response.data,
       `GPU ${request.kind === 'attach' ? '挂载' : request.kind === 'detach' ? '卸载' : '换卡'}`,
@@ -951,29 +950,22 @@ onBeforeUnmount(() => {
     <Alert v-if="notice" :message="notice" type="info" show-icon />
     <ErrorFeedback v-if="actionError" :feedback="actionError" />
     <Alert
-      v-if="intent || acceptedTask"
+      v-if="intent && !acceptedTask"
       type="warning"
       show-icon
       message="操作结果尚未最终确认"
     >
       <template #description>
-        <p v-if="acceptedTask" class="mb-0 break-all">
-          任务
-          {{ acceptedTask }}
-          已受理，等待任务及独立观测；请在任务页查看详情。未知不等于释放成功，不会自动重放。
+        <p>
+          原请求内容、If-Match
+          与幂等键已锁定，关闭弹窗或刷新不会改写。请核对后手动重试，或联系管理员；不要重复发起新操作。
         </p>
-        <template v-else
-          ><p>
-            原请求内容、If-Match
-            与幂等键已锁定，关闭弹窗或刷新不会改写。请核对后手动重试，或联系管理员；不要重复发起新操作。
-          </p>
-          <Button
-            :disabled="!uncertain || action.pending.value || !ownsInstance"
-            :loading="action.pending.value"
-            size="small"
-            @click="sendIntent"
-            >按原请求重试</Button
-          ></template
+        <Button
+          :disabled="!uncertain || action.pending.value || !ownsInstance"
+          :loading="action.pending.value"
+          size="small"
+          @click="sendIntent"
+          >按原请求重试</Button
         >
       </template>
     </Alert>
