@@ -410,11 +410,13 @@ NVML增量查询没有新SM记录不等于驱动失败。某实例在该卡上�
 
 `host_quality` 保留宿主进程扫描、上下文归属、FD设备引用、实例/设备库存、取消、新鲜度、MIG及匿名活动不确定性检查；它不放宽这些检查。与实例行一样，仅缺失可选利用率可使其 `complete=false` 而 `attribution_complete=true`。顶层原 `quality` 仍合并所有实例行，Stopped实例的 `instance_attribution_unknown` 不应被解释为宿主扫描失败；项目过滤只裁剪实例行，不重算这两个质量对象，也不改变 `collection_started_at`，历史samples使用同一字段。
 
-原生删除已确认完成后的资源回收，应读取完整实例列表，核对目标身份确实缺席；必须同时要求快照新鲜、`collection_complete=true`、`host_quality.attribution_complete` 显式为true，且 `collection_started_at` 严格晚于确认完成时间，避免发布于删除之后但实际采集始于删除之前的旧证据。字段缺失/未知、不完整或过期均不能授权释放。该删除后核对与仍存在实例的空闲策略不同；宿主归属完整本身不证明目标卡空闲，也不是跳过原生操作确认的授权。
+原生删除后的资源回收必须先完成目标UUID/业务标记核验、持久化删除意图及原生缺席确认，再读取完整 `project=*` 实例列表，核对目标UUID及项目/名称确实缺席、所有行身份完整。快照必须 `stale=false`、不超过30秒、`collection_complete=true`，且 `collection_started_at` **严格晚于**原生删除确认时间；不能用发布于删除之后但实际采集始于删除之前的缓存。原有 `host_quality.attribution_complete` 显式true路径保留。另一个窄路径只允许宿主显式full=false/context=true、原因包含 `gpu_shared_control_references` 且其余仅为可选指标原因（`gpu_utilization_no_samples`、`gpu_utilization_unknown`、`gpu_metric_unavailable`、`gpu_utilization_stale`、`gpu_utilization_identity_unconfirmed`）；`anonymous.unattributed_contexts`、`unresolved_gpu_references`、`unattributed_activity_samples` 必须三个均显式数值0。完整实例列表还须包含至少一个非目标稳定共享持有者，其行明确context=true/full=false并有共享引用原因，不能含未知引用或结构性失败原因。缺字段、类型不符、未知原因、未知/孤儿上下文、近期未归属活动、引用失败或目标仍出现均不授权回收。不要以顶层汇总quality、GPU总显存为0或仅context=true代替上述证据；无关Stopped行可保持原有未知状态。该核对不是“整张物理卡空闲”，不跳过原生删除确认，也不把普通删除改走cleanup_stuck。
+
+当前扫描边界必须保留：进程身份扫描覆盖有界宿主proc，但FD设备引用扫描仅对可归属于本次实例库存的进程执行；没有当前实例持有者的宿主进程会跳过FD扫描。三个匿名计数0只表示没有**已观察到**的未归属上下文、活动或未解析引用，不能证明不存在孤儿FD-only引用或所有内核资源已释放。已知其他实例的共享引用可以与目标删除分离；NVML仍报告的目标/孤儿上下文、残留近期活动、已扫描的未知引用及身份变化仍全局阻止回收。既有full=true和新增窄路径都不新增全宿主FD认证，不扩大扫描，也不特判驱动或Agent自身。
 
 自动释放/空闲换卡的策略由后端决定，阈值、窗口和用户开关不在Agent写死。后端必须检查frame新鲜度、collection_complete以及**目标实例/目标卡**的attribution_complete和状态，而不是只看全节点汇总quality。连续候选也不能保证捕获所有采样间的短任务：实际动作前需串行化、核对当前配置/占用，动作后复核；旧卡残留就继续保留原分配名额，必要时走获准的停机回收。现有GPU配置API并未因该指标接口而变成原子“安全释放”事务。
 
-纯新增挂卡与移除/换绑门禁不同：后端只有确认原生实际GPU集合是请求集合子集、身份/状态/库存及采样仍新鲜完整时，才可用显式context_attribution_complete替代目标的完整引用标志；旧Agent缺该字段不能盲目放宽。调用GPU配置接口必须附带add_only:true：Agent在锁和ETag内重新核对最新配置，只追加新设备，保留旧设备名和所有属性，拒绝隐式移除或未知物理映射。add_only默认false、仅接受JSON布尔值；运行实例仍需allow_live:true，profile/非托管设备冲突规则不变。移除、重绑、空闲候选及资源回收继续要求原有attribution_complete完整证据。
+纯新增挂卡与移除/换绑门禁不同：后端只有确认原生实际GPU集合是请求集合子集、身份/状态/库存及采样仍新鲜完整时，才可用显式context_attribution_complete替代目标的完整引用标志；旧Agent缺该字段不能盲目放宽。调用GPU配置接口必须附带add_only:true：Agent在锁和ETag内重新核对最新配置，只追加新设备，保留旧设备名和所有属性，拒绝隐式移除或未知物理映射。add_only默认false、仅接受JSON布尔值；运行实例仍需allow_live:true，profile/非托管设备冲突规则不变。仍存在实例的移除、重绑及空闲候选继续要求原有attribution_complete完整证据；已删除目标的回收仅适用上文独立的原生确认、时序、完整库存及已知其他持有者规则。
 
 忙碌任务不做无感换卡。热插拔只改变设备入口，CUDA上下文、模型显存不会迁移；新程序或重新初始化后的程序才可使用新卡，已有应用还可能缓存设备信息。指标不用于按利用率收费，计费仍按配置/使用权持有时间。
 

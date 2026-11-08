@@ -3,8 +3,13 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -281,6 +286,114 @@ func TestMetricsCollectionStartPrecedesInputAndGPUCollection(t *testing.T) {
 		}
 		if len(frame.Instances) != wantInstances {
 			t.Fatalf("project filtering changed: %s", w.Body)
+		}
+	}
+}
+
+func TestMetricsAllProjectsPreservesSampledHolderAfterTargetDeletion(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux host process attribution")
+	}
+	root := t.TempDir()
+	for _, item := range []struct {
+		pid   int
+		group string
+	}{{101, "/instances/target"}, {201, "/instances/holder"}} {
+		base := filepath.Join(root, fmt.Sprint(item.pid))
+		if err := os.MkdirAll(filepath.Join(base, "fd"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		fields := append([]string{"S"}, strings.Fields(strings.Repeat("0 ", 18))...)
+		fields = append(fields, fmt.Sprint(item.pid))
+		if err := os.WriteFile(filepath.Join(base, "stat"), []byte(fmt.Sprintf("%d (fixture) %s\n", item.pid, strings.Join(fields, " "))), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(base, "cgroup"), []byte("0::"+item.group+"\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("/dev/null", filepath.Join(base, "fd", "4")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	memory := uint64(70)
+	contexts := []gpu.Process{{PID: 101, UsedMemoryBytes: &memory}, {PID: 201, UsedMemoryBytes: &memory}}
+	engine := monitor.NewEngine(monitor.Options{
+		ProcRoot:  root,
+		Now:       func() time.Time { return now },
+		Inventory: []monitor.GPUDevice{{UUID: "GPU-a", DevicePaths: []string{"/dev/null"}}},
+		Reader: metricsFixtureReader(func(context.Context, uint64) (gpu.Sample, error) {
+			return gpu.Sample{CollectedAt: now, Devices: []gpu.Device{{UUID: "GPU-a", Contexts: contexts, ComputeSupported: true, GraphicsSupported: true, AttributionComplete: true, UtilizationSupported: true}}}, nil
+		}),
+	})
+	inputs := []monitor.Instance{
+		{Project: "target-project", Name: "same", UUID: "target-id", Type: "container", State: "Running", InitPID: 101, ConfiguredGPUs: []string{"GPU-a"}},
+		{Project: "other-project", Name: "same", UUID: "holder-id", Type: "container", State: "Running", InitPID: 201, ConfiguredGPUs: []string{"GPU-a"}},
+	}
+	before := engine.Sample(context.Background(), inputs)
+	if len(before.Instances) != 2 || before.Instances[0].UUID != "target-id" || before.Instances[0].GPUState != "in_use" {
+		t.Fatalf("actual pre-delete sample missed target: %+v", before)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "101")); err != nil {
+		t.Fatal(err)
+	}
+	contexts = contexts[1:]
+	confirmedAt := now
+	now = now.Add(time.Microsecond)
+	collectionStartedAt := now
+	after := engine.Sample(context.Background(), inputs[1:])
+	if len(after.Instances) != 1 || after.Anonymous != (monitor.AnonymousCounts{}) || !after.HostQuality.ContextAttributionComplete {
+		t.Fatalf("actual post-delete sample lost ownership: %+v", after)
+	}
+	s, err := New("/nonexistent/incus.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames := []metricsFrame{
+		{Snapshot: before, AgentBootID: metricsTestBoot, SchemaVersion: 1, SampleSequence: 1, CollectionStartedAt: before.CollectedAt, CollectionComplete: true, CollectionErrors: []string{}},
+		{Snapshot: after, AgentBootID: metricsTestBoot, SchemaVersion: 1, SampleSequence: 2, CollectionStartedAt: collectionStartedAt, CollectionComplete: true, CollectionErrors: []string{}},
+	}
+	s.metrics = &metricsSampler{bootID: metricsTestBoot, interval: time.Second, timeLimit: time.Second, history: frames, count: 2, sequence: 2}
+	for _, path := range []string{
+		"/agent/v1/instances/metrics?project=*",
+		"/agent/v1/instances/metrics/samples?project=*&agent_boot_id=" + metricsTestBoot + "&after_sequence=1",
+		"/agent/v1/instances/metrics?project=target-project",
+	} {
+		w := httptest.NewRecorder()
+		s.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
+		var payload struct {
+			metricsFrame
+			Samples []metricsFrame `json:"samples"`
+			Stale   bool           `json:"stale"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if w.Code != http.StatusOK || payload.Stale {
+			t.Fatalf("fresh post-delete frame not served: %s: %d %s", path, w.Code, w.Body)
+		}
+		frame := payload.metricsFrame
+		if payload.Samples != nil {
+			if len(payload.Samples) != 1 {
+				t.Fatalf("history cursor returned pre-delete evidence: %s", w.Body)
+			}
+			frame = payload.Samples[0]
+		}
+		if frame.SampleSequence != 2 || !frame.CollectionStartedAt.Equal(collectionStartedAt) || !frame.CollectionStartedAt.After(confirmedAt) || !frame.CollectionComplete || !frame.HostQuality.ContextAttributionComplete || frame.Anonymous != (monitor.AnonymousCounts{}) {
+			t.Fatalf("projection changed collection/ownership evidence: %s", w.Body)
+		}
+		if strings.Contains(path, "project=target-project") {
+			if len(frame.Instances) != 0 {
+				t.Fatalf("target-project projection leaked another project's same-name holder: %s", w.Body)
+			}
+			continue
+		}
+		if len(frame.Instances) != 1 {
+			t.Fatalf("all-project projection lost known remaining holder: %s", w.Body)
+		}
+		holder := frame.Instances[0]
+		if holder.Project != "other-project" || holder.Name != "same" || holder.UUID != "holder-id" || holder.GPUState != "in_use" || !holder.Quality.ContextAttributionComplete || len(holder.GPUs) != 1 || holder.GPUs[0].UUID != "GPU-a" || holder.GPUs[0].ContextCount == nil || *holder.GPUs[0].ContextCount != 1 || holder.GPUs[0].UsedMemoryBytes == nil || *holder.GPUs[0].UsedMemoryBytes != memory {
+			t.Fatalf("all-project projection corrupted live sampled holder: %s", w.Body)
 		}
 	}
 }

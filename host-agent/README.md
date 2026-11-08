@@ -132,9 +132,13 @@ CPU用累计计数差分和独立观测时间窗，首次/重启/缺测不构造
 
 每卡的可选指标原因（`gpu_utilization_no_samples` / `gpu_utilization_unknown` / `gpu_metric_unavailable` / `gpu_utilization_stale` / `gpu_utilization_identity_unconfirmed`）只进入该卡及所属实例的汇总，不把其他卡或实例的SM警告作为公共基础质量。顶层 `quality` 仍汇总全部行；`host_quality` 仍保留采集时可见的全节点设备指标警告和结构性不确定性，但不反向灌入实例。真正的未知上下文/活动、引用扫描失败、库存及整次采样过期等仍全局fail-closed。实例在某卡上经验证没有context时，若查询明确为空，或同卡另有已知持有者且利用率API可用，使用现有 `gpu_utilization_no_samples`，SM保持null、进程/引用/显存保持真实0；不支持/设备错误仍是警告，活跃持有者缺样本仍unknown。A持有共享控制引用时依旧full=false，不能移除或换绑；B在同一卡上可独立具有full=true的空闲证据，不能只凭指标文案推断换绑失败原因。
 
-后端只有在新鲜完整采集、目标身份/运行态与原生物理配置均确认，且原生实际GPU集合是请求集合的子集时，才可把显式context证据用于纯新增。旧Agent缺字段时仍须完整归属为true；移除、换绑、空闲及删除后回收永远不能用这个字段代替原有完整归属条件。
+后端只有在新鲜完整采集、目标身份/运行态与原生物理配置均确认，且原生实际GPU集合是请求集合的子集时，才可把显式context证据用于纯新增。旧Agent缺字段时仍须完整归属为true；仍存在实例的移除、换绑及空闲判定不放宽。普通删除后的回收另有严格的目标缺席核对：原生身份及删除完成已确认后，重新采集完整 `project=*` 列表；原有 `host_quality.attribution_complete=true` 路径保留。仅当宿主显式full=false/context=true、原因仅为 `gpu_shared_control_references` 及受认可的可选指标原因、三个匿名计数均显式数值0，且至少一个非目标实例行明确证明稳定共享引用持有者时，后端才可将其他实例的已知共享引用与目标删除分离。不能仅凭context=true、GPU总显存为0或裁剪后的目标项目列表释放。
 
 本地无GPU硬件回归：在Linux的 `host-agent` 目录运行 `go test ./internal/monitor -run 'TestVerifiedGPUContextsSurviveSharedControlReferences|TestSharedControlFailuresStayGlobalUnknown' -v`。fixtureReader向实际 `Engine.Sample` 注入NVML样本，临时proc树模拟Incus/systemd/嵌套Docker，`/dev/null`、`/dev/zero`、`/dev/random` 仅提供可stat的rdev，不打开GPU。日志仅输出安全布尔值/计数JSON（持有者context=true、full=false，无关实例两者true、匿名引用0），不需Incus、NVML、root或运行中的任务；root会跳过权限拒绝分支。非Linux默认跳过这些进程归属测试，交叉编译不代表已在Linux或真实GPU验收。
+
+删除场景回归入口：`go test ./internal/monitor -run 'TestSampleAfterTargetDeletionPreservesOtherProjectSharedGPUHolder|TestSampleAfterTargetDeletionRejectsUnknownOrResidualEvidence' -v`，以及 `go test ./internal/node -run TestMetricsAllProjectsPreservesSampledHolderAfterTargetDeletion -v`。监控夹具通过实际 `Engine.Sample`、稳定proc/cgroup和字符设备rdev，先观察同卡跨项目的两个活跃实例，再删除目标进程及采集输入；断言新快照目标缺席、另一个共享持有者full=false/context=true且进程/显存/SM保留、三个匿名计数显式数值0，旧快照仍含目标。负例覆盖未知/孤儿NVML上下文、目标近期活动、引用失败、未知rdev、PID/cgroup/init身份变化及目标仍出现。节点HTTP回归使用实际Sample的物理卡持有者，核对latest/history的 `project=*` 保留其他项目同名实例和采集时序，不伪造共享质量字段。本地macOS通过一次性Go overlay启用相同rdev算法及Linux式proc夹具，monitor/node整包race通过；原平台边界不变，常规Agent全包race及vet也通过。未运行真实Linux内核、NVML或CUDA硬件。
+
+证据范围：当前FD扫描仅检查归属于本次实例库存的进程；未归属宿主进程的FD不会进行设备引用扫描。因此匿名计数0表示没有**已观察到**的匿名上下文/活动或未解析设备引用，不是全宿主孤儿FD不存在、物理卡空闲或内核资源全部释放的证明。删除后的窄路径只分离明确由其他稳定实例持有的共享引用；未知/孤儿NVML上下文、近期活动、已扫描未知引用和扫描/身份失败仍阻止回收，不能借此假定未扫描的FD已获认证。测试是本地合成输入，不是实际Linux内核、NVML或CUDA硬件验收。
 
 本轮逐卡/逐实例回归入口（尚未在此条目声明运行结果）：`go test ./internal/monitor -run 'TestGPUUtilizationNoSamplesClassification|TestEmptyOwnerUtilizationRequiresWorkingSamplingCapability|TestPerOwnerMetricQualityDoesNotLeakAcrossCardsOrInstances|TestVerifiedGPUContextsSurviveSharedControlReferences|TestSharedControlFailuresStayGlobalUnknown|TestUnsupportedUtilizationRetainsMemoryEvidence' -v`。核心夹具为A嵌套任务29% SM/678MiB/1进程且持有共享控制引用，B挂同卡但进程/引用/显存0且SMnull，C挂另一张卡并分别模拟正常无样本、unsupported、陈旧样本、未确认身份；A活跃卡不能出现C的指标警告，B只保留no_samples，C自身警告仍在其卡和实例汇总。另覆盖A同时配置两卡时实例可汇总另一卡的警告但活跃卡不继承，以及C未知context/上下文库存不全/引用扫描失败仍使所有实例完整归属false。非Linux运行须在一次性临时Go overlay中启用Linux式proc夹具与宿主Stat_t.rdev实现，并移除测试的Linux跳过；这种合成输入不是Linux内核或真实NVML验收，不应改动正式源码的平台边界。
 
@@ -142,7 +146,7 @@ CPU用累计计数差分和独立观测时间窗，首次/重启/缺测不构造
 
 2026-11-07 本地修复验收（未部署）：在macOS常规Agent race回归及vet通过，节点API实际调用夹具验证add_only保留设备名/属性、请求重排不卸卡、原生额外卡及ETag竞争拒绝。Linux进程归属用临时Go overlay启用相同Stat_t.rdev算法及Linux式proc/cgroup夹具，修复前A共享引用使无关B归属false，修复后A context=true/full=false、B context/full=true、A进程1/显存678MiB保留、匿名未知引用0；监控夹具race回归通过。仅为本地合成/proc及NVML输入，非Linux内核运行、真实NVML或嵌套Docker CUDA硬件验收；未连接服务器、不停止业务任务。Linux/amd64产物已交叉构建。
 
-顶层 `collection_started_at` 为实例/设备输入采集开始前记录的时间，UTC、微秒精度，覆盖后续GPU采样；它不是CPU窗口起点，也不能用 `collected_at` 减耗时替代。当前快照和历史samples都保留该字段，项目过滤不改变这两个宿主字段。原生删除已确认完成后的资源回收须使用 `collection_started_at` 严格晚于完成时间的新鲜、`collection_complete=true`、完整实例列表快照，并要求 `host_quality.attribution_complete` 显式为true、按目标身份核对实例确实缺席；字段缺失/未知不能授权释放，不能仅凭汇总质量或不存在某行释放。
+顶层 `collection_started_at` 为实例/设备输入采集开始前记录的时间，UTC、微秒精度，覆盖后续GPU采样；它不是CPU窗口起点，也不能用 `collected_at` 减耗时替代。当前快照和历史samples都保留该字段，项目过滤不改变这两个宿主字段。原生删除已确认完成后的资源回收须使用 `collection_started_at` 严格晚于完成时间的新鲜、`collection_complete=true`、完整实例列表快照，并按目标身份核对实例确实缺席；默认要求 `host_quality.attribution_complete` 显式为true，其他实例已知共享引用只适用上文的窄路径，不能仅凭context字段、汇总质量或不存在某行释放。
 
 `in_use / idle_candidate / unknown / not_attached` 是观察状态，不会自动释放或换卡。后端策略需用户开启、连续有效窗口及操作前后核对；`idle_candidate`不是原子安全释放授权，CUDA上下文不会迁移。SM利用率是进程样本聚合的近似值，不是算力份额或计费依据。Stopped实例可能因缺少原进程身份而unknown，不强行填0。必须在宿主PID/cgroup/device视图中运行；非root仅有Incus权限不保证有完整进程观测权限。
 

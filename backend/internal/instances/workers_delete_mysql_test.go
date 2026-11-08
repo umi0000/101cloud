@@ -23,6 +23,121 @@ func deletionFrame(started time.Time) platform.Row {
 	}
 }
 
+func sharedDeletionFrame(started time.Time) platform.Row {
+	frame := deletionFrame(started)
+	q := platform.Row{"attribution_complete": false, "context_attribution_complete": true, "reasons": []string{"gpu_shared_control_references", "gpu_utilization_no_samples"}}
+	frame["host_quality"] = q
+	frame["anonymous"] = platform.Row{"unattributed_contexts": 0, "unresolved_gpu_references": 0, "unattributed_activity_samples": 0}
+	object(rows(frame["instances"])[0])["quality"] = platform.Row{"attribution_complete": false, "context_attribution_complete": false, "reasons": []string{"instance_not_running"}}
+	frame["instances"] = append([]any{platform.Row{
+		"uuid": "active-owner-uuid", "name": "test-pending", "project": "cuda-project", "state": "Running", "quality": q,
+		"gpus": []any{platform.Row{"uuid": "GPU-shared-delete", "configured": true, "observed": true, "process_count": 1, "used_memory_bytes": 805306368, "referencing_process_count": nil, "quality": q}},
+	}}, rows(frame["instances"])...)
+	return frame
+}
+
+func sharedDeletionUnsafeFrames() []deletionFrameCase {
+	host := func(f platform.Row) platform.Row { return object(f["host_quality"]) }
+	holder := func(f platform.Row) platform.Row { return object(rows(f["instances"])[0]) }
+	cases := []deletionFrameCase{
+		{"shared_missing_host_full", "incomplete_host_attribution", func(f platform.Row, _ time.Time) { delete(host(f), "attribution_complete") }},
+		{"shared_missing_host_context", "incomplete_host_attribution", func(f platform.Row, _ time.Time) { delete(host(f), "context_attribution_complete") }},
+		{"shared_string_host_context", "incomplete_host_attribution", func(f platform.Row, _ time.Time) { host(f)["context_attribution_complete"] = "true" }},
+		{"shared_false_host_context", "incomplete_host_attribution", func(f platform.Row, _ time.Time) { host(f)["context_attribution_complete"] = false }},
+		{"shared_missing_host_reasons", "incomplete_host_attribution", func(f platform.Row, _ time.Time) { delete(host(f), "reasons") }},
+		{"shared_unknown_host_reason", "incomplete_host_attribution", func(f platform.Row, _ time.Time) {
+			host(f)["reasons"] = []string{"gpu_shared_control_references", "future_reason"}
+		}},
+		{"shared_unresolved_reference", "incomplete_host_attribution", func(f platform.Row, _ time.Time) {
+			host(f)["reasons"] = []string{"gpu_shared_control_references", "gpu_references_unresolved"}
+		}},
+		{"shared_failed_reference_scan", "incomplete_host_attribution", func(f platform.Row, _ time.Time) {
+			host(f)["reasons"] = []string{"gpu_shared_control_references", "gpu_reference_scan_incomplete"}
+		}},
+		{"shared_metric_only", "incomplete_host_attribution", func(f platform.Row, _ time.Time) { host(f)["reasons"] = []string{"gpu_utilization_no_samples"} }},
+		{"shared_string_reasons", "incomplete_host_attribution", func(f platform.Row, _ time.Time) { host(f)["reasons"] = `["gpu_shared_control_references"]` }},
+		{"shared_nonstring_reason", "incomplete_host_attribution", func(f platform.Row, _ time.Time) { host(f)["reasons"] = []any{"gpu_shared_control_references", true} }},
+		{"shared_missing_anonymous", "unverified_anonymous_gpu_evidence", func(f platform.Row, _ time.Time) { delete(f, "anonymous") }},
+		{"shared_no_holders", "missing_shared_gpu_holder", func(f platform.Row, _ time.Time) { f["instances"] = []any{} }},
+		{"shared_only_stopped_unknown", "missing_shared_gpu_holder", func(f platform.Row, _ time.Time) { f["instances"] = rows(f["instances"])[1:] }},
+		{"shared_holder_missing_quality", "unverified_shared_gpu_holder", func(f platform.Row, _ time.Time) { delete(holder(f), "quality") }},
+		{"shared_holder_context_missing", "unverified_shared_gpu_holder", func(f platform.Row, _ time.Time) {
+			holder(f)["quality"] = platform.Row{"attribution_complete": false, "reasons": []string{"gpu_shared_control_references"}}
+		}},
+		{"shared_holder_context_string", "unverified_shared_gpu_holder", func(f platform.Row, _ time.Time) {
+			holder(f)["quality"] = platform.Row{"attribution_complete": false, "context_attribution_complete": "true", "reasons": []string{"gpu_shared_control_references"}}
+		}},
+		{"shared_holder_unknown_references", "unverified_shared_gpu_holder", func(f platform.Row, _ time.Time) {
+			holder(f)["quality"] = platform.Row{"attribution_complete": false, "context_attribution_complete": true, "reasons": []string{"gpu_shared_control_references", "gpu_reference_scan_incomplete"}}
+		}},
+		{"shared_holder_no_shared_reason", "unverified_shared_gpu_holder", func(f platform.Row, _ time.Time) {
+			holder(f)["quality"] = platform.Row{"attribution_complete": false, "context_attribution_complete": true, "reasons": []string{"gpu_utilization_no_samples"}}
+		}},
+		{"shared_holder_inconsistent_full", "unverified_shared_gpu_holder", func(f platform.Row, _ time.Time) {
+			holder(f)["quality"] = platform.Row{"attribution_complete": true, "context_attribution_complete": true, "reasons": []string{"gpu_shared_control_references"}}
+		}},
+		{"shared_holder_missing_identity", "incomplete_instance_identity", func(f platform.Row, _ time.Time) { delete(holder(f), "uuid") }},
+		{"shared_target_survives", "target_still_observed", func(f platform.Row, _ time.Time) { holder(f)["uuid"] = "target-uuid" }},
+		{"shared_target_name_project_survives", "target_still_observed", func(f platform.Row, _ time.Time) { holder(f)["project"] = "default" }},
+		{"shared_predelete_frame", "collection_predates_deletion", func(f platform.Row, barrier time.Time) { f["collection_started_at"] = barrier.Format(time.RFC3339Nano) }},
+		{"shared_stale_frame", "stale_collection", func(f platform.Row, _ time.Time) { f["stale"] = true }},
+		{"shared_holder_stopped", "unverified_shared_gpu_holder", func(f platform.Row, _ time.Time) { holder(f)["state"] = "Stopped" }},
+		{"shared_holder_unknown_state", "unverified_shared_gpu_holder", func(f platform.Row, _ time.Time) { holder(f)["state"] = "unknown" }},
+		{"shared_holder_missing_state", "unverified_shared_gpu_holder", func(f platform.Row, _ time.Time) { delete(holder(f), "state") }},
+		{"shared_duplicate_uuid", "ambiguous_instance_inventory", func(f platform.Row, _ time.Time) { object(rows(f["instances"])[1])["uuid"] = holder(f)["uuid"] }},
+		{"shared_duplicate_name_project", "ambiguous_instance_inventory", func(f platform.Row, _ time.Time) {
+			row := object(rows(f["instances"])[1])
+			row["name"], row["project"] = holder(f)["name"], holder(f)["project"]
+		}},
+		{"shared_stopped_missing_quality", "unverified_shared_gpu_holder", func(f platform.Row, _ time.Time) { delete(object(rows(f["instances"])[1]), "quality") }},
+		{"shared_stopped_missing_reasons", "unverified_shared_gpu_holder", func(f platform.Row, _ time.Time) {
+			delete(object(object(rows(f["instances"])[1])["quality"]), "reasons")
+		}},
+		{"shared_stopped_malformed_reasons", "unverified_shared_gpu_holder", func(f platform.Row, _ time.Time) {
+			object(object(rows(f["instances"])[1])["quality"])["reasons"] = "instance_not_running"
+		}},
+		{"shared_stopped_unknown_references", "unverified_shared_gpu_holder", func(f platform.Row, _ time.Time) {
+			object(object(rows(f["instances"])[1])["quality"])["reasons"] = []string{"instance_not_running", "gpu_references_unresolved"}
+		}},
+		{"shared_stopped_failed_process_scan", "unverified_shared_gpu_holder", func(f platform.Row, _ time.Time) {
+			object(object(rows(f["instances"])[1])["quality"])["reasons"] = []string{"instance_not_running", "process_scan_incomplete"}
+		}},
+		{"shared_stopped_unknown_reason", "unverified_shared_gpu_holder", func(f platform.Row, _ time.Time) {
+			object(object(rows(f["instances"])[1])["quality"])["reasons"] = []string{"instance_not_running", "future_reason"}
+		}},
+		{"shared_running_unknown_references", "unverified_shared_gpu_holder", func(f platform.Row, _ time.Time) {
+			other := object(rows(f["instances"])[1])
+			other["state"] = "Running"
+			other["quality"] = platform.Row{"attribution_complete": true, "reasons": []string{"gpu_references_unresolved"}}
+		}},
+		{"shared_running_missing_reasons", "unverified_shared_gpu_holder", func(f platform.Row, _ time.Time) {
+			other := object(rows(f["instances"])[1])
+			other["state"] = "Running"
+			other["quality"] = platform.Row{"attribution_complete": true}
+		}},
+	}
+	for _, counter := range []string{"unattributed_contexts", "unresolved_gpu_references", "unattributed_activity_samples"} {
+		cases = append(cases, deletionFrameCase{"shared_missing_" + counter, "unverified_anonymous_gpu_evidence", func(f platform.Row, _ time.Time) { delete(object(f["anonymous"]), counter) }})
+		for _, invalid := range []any{nil, "0", false, -1, 1, 0.5, json.Number("1e-999")} {
+			cases = append(cases, deletionFrameCase{"shared_" + counter + "_" + jsonText(invalid), "unverified_anonymous_gpu_evidence", func(f platform.Row, _ time.Time) { object(f["anonymous"])[counter] = invalid }})
+		}
+	}
+	// The common unsafe-evidence tests start from the legacy healthy frame;
+	// replace it with the shared-owner protocol fixture before each mutation.
+	for i, tc := range cases {
+		change := tc.change
+		cases[i].change = func(f platform.Row, barrier time.Time) {
+			shared := sharedDeletionFrame(barrier.Add(time.Millisecond))
+			shared["collection_started_at"], shared["collected_at"] = f["collection_started_at"], f["collected_at"]
+			for key, value := range shared {
+				f[key] = value
+			}
+			change(f, barrier)
+		}
+	}
+	return cases
+}
+
 type deletionFrameCase struct {
 	name   string
 	reason string
@@ -90,6 +205,48 @@ func TestDeletedGPUFrameRequiresPostDeletionHostEvidence(t *testing.T) {
 	}
 }
 
+func TestDeletedGPUFrameAllowsOnlyAttributedSurvivingSharedOwners(t *testing.T) {
+	barrier := time.Now().Add(-time.Second)
+	target := platform.Row{"incus_uuid": "target-uuid", "incus_name": "test-pending", "project_name": "default"}
+	for _, tc := range sharedDeletionUnsafeFrames() {
+		t.Run(tc.name, func(t *testing.T) {
+			frame := deletionFrame(barrier.Add(time.Millisecond))
+			tc.change(frame, barrier)
+			if reason := workerDeletedGPUFrame(frame, target, barrier, time.Now()); reason != tc.reason {
+				t.Fatalf("reason=%q want=%q", reason, tc.reason)
+			}
+		})
+	}
+	for _, metric := range []string{"gpu_metric_unavailable", "gpu_utilization_unknown", "gpu_utilization_no_samples", "gpu_utilization_stale", "gpu_utilization_identity_unconfirmed"} {
+		t.Run(metric, func(t *testing.T) {
+			frame := sharedDeletionFrame(barrier.Add(time.Millisecond))
+			object(frame["host_quality"])["reasons"] = []string{"gpu_shared_control_references", metric}
+			// Exercise the production Agent decoder's json.Number representation.
+			var decoded platform.Row
+			decoder := json.NewDecoder(strings.NewReader(jsonText(frame)))
+			decoder.UseNumber()
+			if err := decoder.Decode(&decoded); err != nil {
+				t.Fatal(err)
+			}
+			if reason := workerDeletedGPUFrame(decoded, target, barrier, time.Now()); reason != "" {
+				t.Fatalf("known surviving owner rejected: %s", reason)
+			}
+		})
+	}
+	for _, state := range []string{"Running", "running", "Frozen", "frozen"} {
+		frame := sharedDeletionFrame(barrier.Add(time.Millisecond))
+		object(rows(frame["instances"])[0])["state"] = state
+		if reason := workerDeletedGPUFrame(frame, target, barrier, time.Now()); reason != "" {
+			t.Fatalf("known %s holder rejected: %s", state, reason)
+		}
+	}
+	for _, value := range []any{json.Number("0"), json.Number("0.0"), json.Number("0e2"), float64(0), 0} {
+		if !workerDeletedNumericZero(value) {
+			t.Fatalf("numeric zero rejected: %T %v", value, value)
+		}
+	}
+}
+
 func deletionDB(t *testing.T, handler http.Handler, intent, operation string) (*gorm.DB, *platform.App, platform.Job) {
 	t.Helper()
 	db, a, job, _, _ := creationCleanupDB(t, handler)
@@ -154,10 +311,10 @@ func assertDeletionReservations(t *testing.T, db *gorm.DB, released bool) {
 		}
 	}
 	if released {
-		if platform.Text(instance["observed_state"]) != "deleted" || platform.Text(instance["provisioning_state"]) != "deleted" || instance["deleted_at"] == nil || platform.Text(ip["status"]) != "available" || ip["instance_id"] != nil || platform.Text(gpu["status"]) != "released" || !platform.Bool(gpu["release_verified"]) || gpu["active_slot"] != nil || platform.Text(bucket["reserved_pt"]) != "0.000000" || activeUsage != 0 || heldCredit != 0 || ledger != 2 || quotaInstances != 0 || charges != 0 {
+		if platform.Text(instance["observed_state"]) != "deleted" || platform.Text(instance["provisioning_state"]) != "deleted" || instance["deleted_at"] == nil || platform.Text(ip["status"]) != "available" || ip["instance_id"] != nil || platform.Text(gpu["status"]) != "released" || platform.Bool(gpu["configured"]) || platform.Bool(gpu["observed"]) || !platform.Bool(gpu["release_verified"]) || gpu["released_at"] == nil || gpu["last_verified_at"] == nil || gpu["active_slot"] != nil || platform.Text(bucket["reserved_pt"]) != "0.000000" || activeUsage != 0 || heldCredit != 0 || ledger != 2 || quotaInstances != 0 || charges != 0 {
 			t.Fatalf("release incomplete: instance=%+v ip=%+v gpu=%+v bucket=%+v usage=%d credit=%d ledger=%d quota=%d charges=%d", instance, ip, gpu, bucket, activeUsage, heldCredit, ledger, quotaInstances, charges)
 		}
-	} else if instance["deleted_at"] != nil || platform.Text(ip["status"]) != "bound" || platform.Uint(ip["instance_id"]) != 15 || platform.Text(gpu["status"]) != "active" || platform.Bool(gpu["release_verified"]) || platform.Uint(gpu["active_slot"]) != 1 || platform.Text(bucket["reserved_pt"]) != "2.000000" || activeUsage != 2 || heldCredit != 2 || ledger != 0 || quotaInstances != 1 || charges != 0 {
+	} else if instance["deleted_at"] != nil || platform.Text(ip["status"]) != "bound" || platform.Uint(ip["instance_id"]) != 15 || platform.Text(gpu["status"]) != "active" || !platform.Bool(gpu["configured"]) || !platform.Bool(gpu["observed"]) || platform.Bool(gpu["release_verified"]) || platform.Uint(gpu["active_slot"]) != 1 || platform.Text(bucket["reserved_pt"]) != "2.000000" || activeUsage != 2 || heldCredit != 2 || ledger != 0 || quotaInstances != 1 || charges != 0 {
 		t.Fatalf("unsafe partial release: instance=%+v ip=%+v gpu=%+v bucket=%+v usage=%d credit=%d ledger=%d quota=%d charges=%d", instance, ip, gpu, bucket, activeUsage, heldCredit, ledger, quotaInstances, charges)
 	}
 }
@@ -274,6 +431,7 @@ func TestMySQLDeleteUnverifiedEvidenceRetainsEveryReservation(t *testing.T) {
 		f["collection_started_at"] = barrier.Add(time.Millisecond).Format(time.RFC3339Nano)
 		f["collected_at"] = barrier.Add(2 * time.Millisecond).Format(time.RFC3339Nano)
 	}})
+	cases = append(cases, sharedDeletionUnsafeFrames()...)
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var mutations, metrics atomic.Int64

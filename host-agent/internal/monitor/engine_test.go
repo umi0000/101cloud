@@ -354,6 +354,195 @@ func TestVerifiedGPUContextsSurviveSharedControlReferences(t *testing.T) {
 	}
 }
 
+// Both projects use the same physical GPU and instance name. The first
+// instance's nested process retains its real physical and shared-control FDs.
+func fixtureDeletingSharedGPU(t *testing.T) (*Engine, *fixtureReader, []Instance, string, *time.Time) {
+	t.Helper()
+	engine, reader, inputs, root := fixtureSharedControlEngine(t)
+	now := reader.sample.CollectedAt
+	engine.now = func() time.Time { return now }
+	inputs[0].Project, inputs[0].Name, inputs[0].UUID = "other-project", "same", "holder-id"
+	inputs[0].ConfiguredGPUs = []string{"GPU-a"}
+	inputs[1].Project, inputs[1].Name, inputs[1].UUID = "target-project", "same", "target-id"
+	inputs[1].ConfiguredGPUs = []string{"GPU-a"}
+	fixtureProcess(t, root, 202, "/instances/10/system.slice/workload.service", 22)
+	for index, leaf := range []string{"nvidia0", "nvidiactl", "nvidia-uvm"} {
+		if err := os.Symlink(filepath.Join(root, "devices", leaf), filepath.Join(root, "202", "fd", strconv.Itoa(index+4))); err != nil {
+			t.Fatal(err)
+		}
+	}
+	memory := uint64(90)
+	reader.sample.Devices[0].Contexts = append(reader.sample.Devices[0].Contexts, gpu.Process{PID: 202, UsedMemoryBytes: &memory})
+	reader.sample.Devices[0].Utilization = append(reader.sample.Devices[0].Utilization, gpu.UtilizationSample{PID: 202, TimestampMicros: uint64(now.UnixMicro()), SMPercent: 19})
+	reader.sample.Devices[1].UtilizationNoSamples = true
+	return engine, reader, inputs, root, &now
+}
+
+func sampleDeletingSharedGPU(engine *Engine, reader *fixtureReader, inputs []Instance, now time.Time) Snapshot {
+	reader.sample.CollectedAt = now
+	for i := range reader.sample.Devices {
+		for j := range reader.sample.Devices[i].Utilization {
+			reader.sample.Devices[i].Utilization[j].TimestampMicros = uint64(now.UnixMicro())
+		}
+	}
+	return engine.Sample(context.Background(), inputs)
+}
+
+func TestSampleAfterTargetDeletionPreservesOtherProjectSharedGPUHolder(t *testing.T) {
+	requireLinux(t)
+	engine, reader, inputs, root, now := fixtureDeletingSharedGPU(t)
+	sampleDeletingSharedGPU(engine, reader, inputs, *now) // Establish both process identities.
+	*now = now.Add(time.Second)
+	before := sampleDeletingSharedGPU(engine, reader, inputs, *now)
+	if len(before.Instances) != 2 || before.Instances[1].UUID != "target-id" || before.Instances[1].GPUState != "in_use" || before.Instances[1].GPUs[0].ContextCount == nil || *before.Instances[1].GPUs[0].ContextCount != 1 {
+		t.Fatalf("pre-delete collection did not observe the live target: %+v", before)
+	}
+	cached, err := json.Marshal(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pid := range []string{"201", "202"} {
+		if err := os.RemoveAll(filepath.Join(root, pid)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reader.sample.Devices[0].Contexts = reader.sample.Devices[0].Contexts[:1]
+	reader.sample.Devices[0].Utilization = reader.sample.Devices[0].Utilization[:1]
+	*now = now.Add(time.Second)
+	after := sampleDeletingSharedGPU(engine, reader, inputs[:1], *now)
+	if !after.CollectedAt.After(before.CollectedAt) || len(after.Instances) != 1 {
+		t.Fatalf("post-delete collection reused the previous inventory: %+v", after)
+	}
+	for _, row := range after.Instances {
+		if row.UUID == "target-id" || (row.Project == "target-project" && row.Name == "same") {
+			t.Fatalf("target remains in fresh full inventory: %+v", row)
+		}
+	}
+	holder := after.Instances[0]
+	if holder.Project != "other-project" || holder.Name != "same" || holder.UUID != "holder-id" || holder.GPUState != "in_use" || len(holder.GPUs) != 1 {
+		t.Fatalf("same-name other-project holder disappeared: %+v", holder)
+	}
+	card := holder.GPUs[0]
+	if card.UUID != "GPU-a" || card.ContextCount == nil || *card.ContextCount != 1 || card.UsedMemoryBytes == nil || *card.UsedMemoryBytes != 70 || card.SMUtilizationPercent == nil || *card.SMUtilizationPercent != 37 || card.ReferencingProcessCount != nil {
+		t.Fatalf("deleting target altered the other owner's live GPU evidence: %+v", card)
+	}
+	for _, q := range []Quality{after.HostQuality, holder.Quality, card.Quality} {
+		shared := false
+		for _, reason := range q.Reasons {
+			switch reason {
+			case "gpu_shared_control_references":
+				shared = true
+			case "gpu_utilization_no_samples":
+			default:
+				t.Fatalf("unexpected structural/unknown evidence in shared-owner collection: %+v", q)
+			}
+		}
+		if q.Complete || q.AttributionComplete || !q.ContextAttributionComplete || !shared {
+			t.Fatalf("known remaining shared owner lost explicit context/full separation: %+v", q)
+		}
+	}
+	if after.Anonymous != (AnonymousCounts{}) {
+		t.Fatalf("known other holder invented anonymous residual evidence: %+v", after.Anonymous)
+	}
+	payload, err := json.Marshal(after)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire struct {
+		Anonymous map[string]json.RawMessage `json:"anonymous"`
+	}
+	if err := json.Unmarshal(payload, &wire); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"unattributed_contexts", "unresolved_gpu_references", "unattributed_activity_samples"} {
+		if string(wire.Anonymous[key]) != "0" {
+			t.Fatalf("anonymous %s was omitted or not an explicit numeric zero: %s", key, payload)
+		}
+	}
+	retained, err := json.Marshal(before)
+	if err != nil || string(retained) != string(cached) {
+		t.Fatalf("new sampling mutated pre-delete cached target evidence: %s %v", retained, err)
+	}
+}
+
+func TestSampleAfterTargetDeletionRejectsUnknownOrResidualEvidence(t *testing.T) {
+	requireLinux(t)
+	for _, mode := range []string{"unknown_context", "orphan_target_context", "recent_target_activity", "reference_failure", "unmapped_reference", "holder_pid_reuse", "holder_cgroup_move", "holder_init_reuse", "target_still_observed"} {
+		t.Run(mode, func(t *testing.T) {
+			engine, reader, inputs, root, now := fixtureDeletingSharedGPU(t)
+			sampleDeletingSharedGPU(engine, reader, inputs, *now)
+			*now = now.Add(time.Second)
+			sampleDeletingSharedGPU(engine, reader, inputs, *now)
+			postInputs := inputs[:1]
+			reader.sample.Devices[0].Contexts = reader.sample.Devices[0].Contexts[:1]
+			reader.sample.Devices[0].Utilization = reader.sample.Devices[0].Utilization[:1]
+			wantReason := ""
+			switch mode {
+			case "unknown_context", "orphan_target_context":
+				pid := uint32(999)
+				if mode == "orphan_target_context" {
+					pid = 202 // Stable cgroup/process, but no instance in the new inventory.
+				}
+				reader.sample.Devices[0].Contexts = append(reader.sample.Devices[0].Contexts, gpu.Process{PID: pid})
+				wantReason = "unattributed_gpu_contexts"
+			case "recent_target_activity":
+				reader.sample.Devices[0].Utilization = append(reader.sample.Devices[0].Utilization, gpu.UtilizationSample{PID: 202, SMPercent: 19})
+				wantReason = "unattributed_gpu_activity"
+			case "reference_failure":
+				if err := os.RemoveAll(filepath.Join(root, "102", "fd")); err != nil {
+					t.Fatal(err)
+				}
+				wantReason = "gpu_reference_scan_incomplete"
+			case "unmapped_reference":
+				info, err := os.Stat("/dev/random")
+				if err != nil {
+					t.Fatal(err)
+				}
+				number, ok := deviceNumber(info)
+				if !ok {
+					t.Fatal("missing fixture device identity")
+				}
+				delete(engine.controlDevices, number)
+				wantReason = "gpu_references_unresolved"
+			case "holder_pid_reuse":
+				reader.hook = func() { fixtureProcess(t, root, 102, "/instances/1/system.slice/docker.service/docker/nested", 99) }
+				wantReason = "process_scan_incomplete"
+			case "holder_cgroup_move":
+				reader.hook = func() { fixtureProcess(t, root, 102, "/host/moved", 12) }
+				wantReason = "process_scan_incomplete"
+			case "holder_init_reuse":
+				reader.hook = func() { fixtureProcess(t, root, 101, "/instances/1/init.scope", 99) }
+				wantReason = "instance_identity_changed"
+			case "target_still_observed":
+				postInputs = inputs
+				reader.sample.Devices[0].Contexts = append(reader.sample.Devices[0].Contexts, gpu.Process{PID: 202})
+			}
+			*now = now.Add(time.Second)
+			after := sampleDeletingSharedGPU(engine, reader, postInputs, *now)
+			if mode == "target_still_observed" {
+				if len(after.Instances) != 2 || after.Instances[1].UUID != "target-id" || after.Instances[1].Project != "target-project" || after.Instances[1].Name != "same" || after.Instances[1].GPUState != "in_use" || !after.HostQuality.ContextAttributionComplete {
+					t.Fatalf("complete attribution concealed the still-observed target: %+v", after)
+				}
+				return
+			}
+			for _, q := range []Quality{after.HostQuality, after.Instances[0].Quality} {
+				if q.AttributionComplete || q.ContextAttributionComplete || !strings.Contains(","+strings.Join(q.Reasons, ",")+",", ","+wantReason+",") {
+					t.Fatalf("post-delete %s admitted a shared-owner exception: %+v", mode, after)
+				}
+			}
+			if (mode == "unknown_context" || mode == "orphan_target_context") && after.Anonymous.UnattributedContexts != 1 {
+				t.Fatalf("unknown/orphan NVML context disappeared: %+v", after.Anonymous)
+			}
+			if mode == "recent_target_activity" && after.Anonymous.UnattributedActivitySamples != 1 {
+				t.Fatalf("exited target's recent activity disappeared: %+v", after.Anonymous)
+			}
+			if mode == "unmapped_reference" && after.Anonymous.UnresolvedGPUReferences == 0 {
+				t.Fatalf("observed unknown owned reference disappeared: %+v", after.Anonymous)
+			}
+		})
+	}
+}
+
 func TestSharedControlFailuresStayGlobalUnknown(t *testing.T) {
 	requireLinux(t)
 	for _, mode := range []string{"unknown_rdev", "ambiguous_rdev", "fd_read", "fd_permission", "process_limit", "fd_limit", "pid_reuse", "cgroup_move", "init_reuse", "ambiguous_cgroup"} {

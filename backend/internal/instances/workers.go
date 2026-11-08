@@ -1540,9 +1540,10 @@ func workerGPUReclamationError(reason string) error {
 	})
 }
 
-// Host attribution covers process/context/reference and device inventory integrity.
-// Per-instance quality may be unknown for unrelated stopped instances; neither it
-// nor host-wide GPU idleness is the reclamation condition for this deleted target.
+// Host attribution covers observed process/context/reference and inventory
+// integrity, not physical-card idleness or all host FDs. Owned shared-control
+// uncertainty may belong solely to surviving instances, never to this absent
+// target. Unrelated stopped-instance quality is not host attribution evidence.
 func workerDeletedGPUFrame(frame map[string]any, r platform.Row, confirmedAt, now time.Time) string {
 	started, startErr := time.Parse(time.RFC3339Nano, platform.Text(frame["collection_started_at"]))
 	collected, collectedErr := time.Parse(time.RFC3339Nano, platform.Text(frame["collected_at"]))
@@ -1558,8 +1559,19 @@ func workerDeletedGPUFrame(frame map[string]any, r platform.Row, confirmedAt, no
 	if frame["collection_complete"] != true {
 		return "incomplete_inventory"
 	}
-	if object(frame["host_quality"])["attribution_complete"] != true {
-		return "incomplete_host_attribution"
+	host := object(frame["host_quality"])
+	sharedOnly := host["attribution_complete"] != true
+	if sharedOnly {
+		if _, valid := frame["host_quality"].(map[string]any); !valid {
+			return "incomplete_host_attribution"
+		}
+		if host["attribution_complete"] != false || !workerDeletedSharedQuality(host) {
+			return "incomplete_host_attribution"
+		}
+		anonymous, ok := frame["anonymous"].(map[string]any)
+		if !ok || !workerDeletedNumericZero(anonymous["unattributed_contexts"]) || !workerDeletedNumericZero(anonymous["unresolved_gpu_references"]) || !workerDeletedNumericZero(anonymous["unattributed_activity_samples"]) {
+			return "unverified_anonymous_gpu_evidence"
+		}
 	}
 	items, ok := frame["instances"].([]any)
 	if !ok {
@@ -1569,8 +1581,19 @@ func workerDeletedGPUFrame(frame map[string]any, r platform.Row, confirmedAt, no
 	if uuid == "" || name == "" || project == "" {
 		return "missing_target_identity"
 	}
+	holders := 0
+	type instanceName struct{ name, project string }
+	var seenUUIDs map[string]bool
+	var seenNames map[instanceName]bool
+	if sharedOnly {
+		seenUUIDs = make(map[string]bool, len(items))
+		seenNames = make(map[instanceName]bool, len(items))
+	}
 	for _, item := range items {
-		m := object(item)
+		m, valid := item.(map[string]any)
+		if !valid {
+			return "incomplete_instance_identity"
+		}
 		itemUUID, uuidOK := m["uuid"].(string)
 		itemName, nameOK := m["name"].(string)
 		itemProject, projectOK := m["project"].(string)
@@ -1580,8 +1603,105 @@ func workerDeletedGPUFrame(frame map[string]any, r platform.Row, confirmedAt, no
 		if itemUUID == uuid || (itemName == name && itemProject == project) {
 			return "target_still_observed"
 		}
+		if sharedOnly {
+			identity := instanceName{itemName, itemProject}
+			if seenUUIDs[itemUUID] || seenNames[identity] {
+				return "ambiguous_instance_inventory"
+			}
+			seenUUIDs[itemUUID], seenNames[identity] = true, true
+			q, _ := m["quality"].(map[string]any)
+			if q["attribution_complete"] == false && workerDeletedSharedQuality(q) {
+				state, explicit := m["state"].(string)
+				if !explicit || (!strings.EqualFold(state, "running") && !strings.EqualFold(state, "frozen")) {
+					return "unverified_shared_gpu_holder"
+				}
+				holders++
+			} else {
+				// Unrelated stopped rows may lack runtime PID evidence. Every
+				// other row still needs consistent full-attribution evidence;
+				// neither may hide an unknown reference or malformed reason.
+				if !workerDeletedNonHolderQuality(q, strings.EqualFold(platform.Text(m["state"]), "stopped")) {
+					return "unverified_shared_gpu_holder"
+				}
+			}
+		}
+	}
+	if sharedOnly && holders == 0 {
+		return "missing_shared_gpu_holder"
 	}
 	return ""
+}
+
+// An unrelated stopped instance may lack a runtime PID, but no non-holder row
+// may hide unknown GPU/reference evidence on the shared-owner-only path.
+func workerDeletedNonHolderQuality(q map[string]any, stopped bool) bool {
+	switch q["reasons"].(type) {
+	case []any, []string:
+	default:
+		return false
+	}
+	if full, explicit := q["attribution_complete"].(bool); !explicit || (!stopped && !full) {
+		return false
+	}
+	for _, value := range rows(q["reasons"]) {
+		reason, valid := value.(string)
+		if !valid {
+			return false
+		}
+		switch reason {
+		case "instance_not_running", "instance_attribution_unknown":
+			if !stopped {
+				return false
+			}
+		case "gpu_metric_unavailable", "gpu_utilization_unknown", "gpu_utilization_no_samples", "gpu_utilization_stale", "gpu_utilization_identity_unconfirmed":
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// Reuse the context/reason allowlist, but do not accept a JSON-encoded string
+// where the Agent protocol requires an actual reasons array.
+func workerDeletedSharedQuality(q map[string]any) bool {
+	switch q["reasons"].(type) {
+	case []any, []string:
+		return sharedControlContextComplete(q)
+	default:
+		return false
+	}
+}
+
+// Agent responses use Decoder.UseNumber. Do not coerce absent, boolean, string,
+// negative or fractional/underflowed nonzero counters into release evidence.
+func workerDeletedNumericZero(value any) bool {
+	switch n := value.(type) {
+	case json.Number:
+		s := n.String()
+		number, err := strconv.ParseFloat(s, 64)
+		if err != nil || number != 0 || len(s) == 0 || s[0] == '-' {
+			return false
+		}
+		for _, c := range s {
+			if c == 'e' || c == 'E' {
+				return true
+			}
+			if c != '0' && c != '.' {
+				return false
+			}
+		}
+		return true
+	case int:
+		return n == 0
+	case int64:
+		return n == 0
+	case uint64:
+		return n == 0
+	case float64:
+		return n == 0
+	default:
+		return false
+	}
 }
 
 func runImport(ctx context.Context, a *platform.App, j platform.Job) error {
