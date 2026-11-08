@@ -55,7 +55,7 @@ const props = defineProps<{
   active: boolean;
   disabled?: boolean;
 }>();
-const emit = defineEmits<{ changed: []; unresolved: [value: boolean] }>();
+const emit = defineEmits<{ changed: []; unresolved: [value: boolean]; submitting: [value: boolean] }>();
 const auth = useAuthStore();
 const access = useAccessStore();
 const actor = computed(() =>
@@ -92,6 +92,7 @@ const draftEtag = ref<string | null>(null);
 const conflict = ref(false);
 const notice = ref('');
 const action = useAction();
+watch(action.pending, (value) => emit('submitting', value), { flush: 'sync' });
 const uncertain = ref(false);
 const acceptedTask = ref<string | null>(null);
 const dialogOpen = ref(false);
@@ -561,6 +562,7 @@ async function sendIntent() {
   const request = intent.value;
   if (
     !request ||
+    props.disabled ||
     action.pending.value ||
     acceptedTask.value ||
     !current(request.id, request.epoch) ||

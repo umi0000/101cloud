@@ -121,6 +121,15 @@ export const authApi = {
 };
 
 /* ---------------- 普通用户：实例管理与额度 ---------------- */
+/** Members may force only the explicit, fully confirmed cleanup-delete operation. */
+export type MemberDeleteBody = {
+  confirm_name: string;
+  delete_data: true;
+} & (
+  | { cleanup_stuck?: never; confirm_data_loss_risk?: never; mode?: never }
+  | { cleanup_stuck: true; confirm_data_loss_risk: true; mode: 'force' }
+);
+
 
 export const memberApi = {
   attachGPU: (id: ID, body: Omit<AttachBody, 'fixed_uuids'>, w: Write) =>
@@ -137,7 +146,7 @@ export const memberApi = {
   rename: (id: ID, name: string, w: Write) => patch<Instance>(`/instances/${id}`, { name }, w),
   power: (id: ID, action: 'restart' | 'start' | 'stop', body: { mode?: 'graceful' }, w: Write) =>
     post<TaskAccepted>(`/instances/${id}/${action}`, body, w),
-  delete: (id: ID, body: { confirm_name: string; delete_data: true }, w: Write) =>
+  delete: (id: ID, body: MemberDeleteBody, w: Write) =>
     del<TaskAccepted>(`/instances/${id}`, body, w),
   resize: (id: ID, body: { confirm_restart?: boolean; resources: Resources }, w: Write) =>
     post<TaskAccepted>(`/instances/${id}/resize`, body, w),

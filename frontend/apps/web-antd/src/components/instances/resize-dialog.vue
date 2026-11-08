@@ -18,12 +18,13 @@ import { describeError } from '#/locales/errors';
 import { bytesToGib, formatBytes, gibToBytes } from '#/utils/format';
 
 const props = defineProps<{ api: Pick<typeof instancesApi, 'resize' | 'resizeLimits'>; etag: null | string; instance: Instance; disabled?: boolean }>();
-const emit = defineEmits<{ done: []; unresolved: [value: boolean] }>();
+const emit = defineEmits<{ done: []; unresolved: [value: boolean]; submitting: [value: boolean] }>();
 const open = defineModel<boolean>('open', { default: false });
 
 const GIB = 1024n ** 3n;
 const form = ref({ disk_gib: 0, memory_gib: 0, vcpus: 0 });
 const pending = ref(false);
+watch(pending, (value) => emit('submitting', value), { flush: 'sync' });
 const frozen = ref<null | { id: string; body: { confirm_restart?: boolean; resources: Resources }; etag: string | null; key: string }>(null);
 watch(frozen, (value) => emit('unresolved', !!value), { flush: 'sync' });
 let generation = 0;
@@ -175,7 +176,7 @@ const stepGib = (key: 'disk_bytes' | 'memory_bytes') => {
 };
 
 async function submit() {
-  if (pending.value) return false;
+  if (pending.value || props.disabled) return false;
   if (!frozen.value) {
     const r = resources.value;
     if (!r || lifecycleDisabled.value || problems.value.length > 0) return false;

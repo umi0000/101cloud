@@ -583,6 +583,8 @@ export type ProvisioningState =
 export interface Capabilities {
   console: boolean;
   delete: boolean;
+  /** Explicit member cleanup permission; older/absent responses fail closed. */
+  force_delete?: boolean;
   gpu_attach: boolean;
   gpu_rebind: boolean;
   resize: boolean;

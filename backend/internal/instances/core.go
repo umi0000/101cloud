@@ -122,7 +122,7 @@ func ownedQuery(c *gin.Context, a *platform.App, q *gorm.DB) (platform.Row, erro
 	if e != nil {
 		return nil, e
 	}
-	if r["creation_failed_at"] != nil && (!c.GetBool("admin") || (c.Request.Method != "GET" && !c.GetBool("allow_stuck_cleanup"))) {
+	if (!c.GetBool("admin") && r["deleted_at"] != nil) || (r["creation_failed_at"] != nil && (!c.GetBool("admin") || (c.Request.Method != "GET" && !c.GetBool("allow_stuck_cleanup")))) {
 		return nil, platform.E(404, "not_found", "Instance not found")
 	}
 	if !c.GetBool("admin") && platform.Uint(r["user_id"]) != platform.Current(c).ID {
@@ -136,8 +136,14 @@ func ownedQuery(c *gin.Context, a *platform.App, q *gorm.DB) (platform.Row, erro
 		if err != nil {
 			return nil, err
 		}
-		if current["creation_failed_at"] != nil && !c.GetBool("allow_stuck_cleanup") {
+		if (!c.GetBool("admin") && current["deleted_at"] != nil) || (current["creation_failed_at"] != nil && (!c.GetBool("admin") || !c.GetBool("allow_stuck_cleanup"))) {
 			return nil, platform.E(404, "not_found", "Instance not found")
+		}
+		if !c.GetBool("admin") && platform.Uint(current["user_id"]) != platform.Current(c).ID {
+			return nil, platform.E(404, "not_found", "Instance not found")
+		}
+		if platform.Uint(current["user_id"]) != platform.Uint(r["user_id"]) {
+			return nil, conflict("instance_changed", "Instance owner changed; reload before retrying")
 		}
 		if !c.GetBool("allow_stuck_cleanup") {
 			if err = platform.TaskMutationBarrier(db, id); err != nil {
@@ -370,7 +376,26 @@ func packedIP(v any) any {
 	return nil
 }
 func lifecycle(c *gin.Context, a *platform.App, action string) (any, error) {
-	if action == "delete" && c.GetBool("admin") {
+	var e error
+	var in struct {
+		Mode           string    `json:"mode"`
+		Confirm        bool      `json:"confirm_data_loss_risk"`
+		ConfirmName    string    `json:"confirm_name"`
+		DeleteData     bool      `json:"delete_data"`
+		CleanupStuck   bool      `json:"cleanup_stuck"`
+		ConfirmRestart bool      `json:"confirm_restart"`
+		Resources      Resources `json:"resources"`
+	}
+	// Only the member DELETE endpoint may opt into cleanup before the task
+	// barrier. Decode once so malformed input can never authorize a takeover.
+	decoded := action == "delete" && c.Request.Method == "DELETE"
+	if decoded {
+		if e = platform.Decode(c, &in); e != nil {
+			return nil, e
+		}
+	}
+	memberCleanup := decoded && in.CleanupStuck
+	if action == "delete" && (c.GetBool("admin") || memberCleanup) {
 		c.Set("allow_stuck_cleanup", true)
 	}
 	r, e := owned(c, a)
@@ -383,31 +408,24 @@ func lifecycle(c *gin.Context, a *platform.App, action string) (any, error) {
 	if e = permitted(c, r, action); e != nil {
 		return nil, e
 	}
-	var in struct {
-		Mode           string    `json:"mode"`
-		Confirm        bool      `json:"confirm_data_loss_risk"`
-		ConfirmName    string    `json:"confirm_name"`
-		DeleteData     bool      `json:"delete_data"`
-		CleanupStuck   bool      `json:"cleanup_stuck"`
-		ConfirmRestart bool      `json:"confirm_restart"`
-		Resources      Resources `json:"resources"`
-	}
-	if e = platform.Decode(c, &in); e != nil {
-		return nil, e
+	if !decoded {
+		if e = platform.Decode(c, &in); e != nil {
+			return nil, e
+		}
 	}
 	if in.Mode != "" && in.Mode != "force" && in.Mode != "graceful" {
 		return nil, bad("Invalid stop mode")
 	}
 	force := in.Mode == "force"
-	if force && (!c.GetBool("admin") || !in.Confirm) {
+	if force && !memberCleanup && (!c.GetBool("admin") || !in.Confirm) {
 		if !c.GetBool("admin") {
 			return nil, platform.E(403, "force_not_allowed", "Force action requires administrator permission")
 		}
 		return nil, bad("Confirm data loss risk")
 	}
 	if in.CleanupStuck {
-		if !c.GetBool("admin") {
-			return nil, platform.E(403, "force_not_allowed", "Stuck cleanup requires administrator permission")
+		if !c.GetBool("admin") && !memberCleanup {
+			return nil, platform.E(403, "force_not_allowed", "Stuck cleanup requires explicit DELETE authorization")
 		}
 		if action != "delete" || !force || !in.Confirm || !in.DeleteData || in.ConfirmName != platform.Text(r["logical_name"]) {
 			return nil, bad("Stuck cleanup requires force mode, risk, exact name and delete_data confirmation")
@@ -714,6 +732,7 @@ func instanceView(c *gin.Context, a *platform.App, r platform.Row) (platform.Row
 	ready := platform.Text(r["provisioning_state"]) == "ready" && !platform.Bool(out["state_stale"])
 	caps["resize"] = ready && (state == "running" || state == "stopped") && permitted(c, r, "resize") == nil && (state != "running" || (permitted(c, r, "stop") == nil && permitted(c, r, "start") == nil))
 	caps["delete"] = ready && (state == "stopped" || (state == "running" && c.GetBool("admin"))) && permitted(c, r, "delete") == nil
+	caps["force_delete"] = r["deleted_at"] == nil && r["creation_failed_at"] == nil && (c.GetBool("admin") || platform.Uint(r["user_id"]) == platform.Current(c).ID) && permitted(c, r, "delete") == nil
 	db := platform.DB(c, a)
 	var active []platform.Row
 	if e := db.Table("tasks").Select("id,status").Where("instance_id=? AND ((is_instance_mutation=1 AND status IN ?) OR ("+platform.RetainedTaskMutationSQL+"))", r["id"], []string{"queued", "running", "waiting", "unknown"}).Order("id DESC").Limit(1).Find(&active).Error; e != nil {

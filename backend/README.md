@@ -92,9 +92,13 @@ GPU采样正常空状态传递修复（未部署）：指标原因allowlist保�
 
 2026-11-04 已部署 `.111` 并执行上述内嵌迁移，备份位于 `/var/backups/101cloud/20261104-failed-creation-cleanup/`；本段发布记录取代前述仅源码验证阶段的“未操作线上”状态。旧GPU配置记录的operation UUID按原项目解析为原生操作路径，相关隔离MySQL竞态回归通过。实例29的历史失败已确认清理，全部计费会话结束，GPU释放核验为true、IP解除；81.381546 Pt已通过14304笔refund原流水冲正，未退款扣费、未取消相关账单和held预留均收敛为0。结果不明且无明确失败证据的历史任务保留，未盲删。
 
-删除必须精确确认实例名并提交 `delete_data:true`。运行中删除仅管理员可用，另须 `mode:"force"`、`confirm_data_loss_risk:true`；强停可能丢失未保存数据。同一持久化任务保存 force=true，确认强停后才向 Agent 发 DELETE，确认删除后获取新鲜 GPU 实际占用证据才释放分配。超时/未知保留预留并核对记录操作，不盲目重放破坏性步骤；普通用户仅可删除已停止实例。
+普通删除必须精确确认实例名并提交 `delete_data:true`。普通运行中删除仅管理员可用，另须 `mode:"force"`、`confirm_data_loss_risk:true`；强停可能丢失未保存数据。同一持久化任务保存 force=true，确认强停后才向 Agent 发 DELETE，确认删除后获取新鲜 GPU 实际占用证据才释放分配。超时/未知保留预留并核对记录操作，不盲目重放破坏性步骤；普通用户的普通删除仍仅可删除已停止实例。
 
 管理员故障恢复删除：`DELETE /admin/instances/{id}`（亦支持 `POST /admin/instances/{id}/delete`）提交 `cleanup_stuck:true`、`mode:"force"`、`confirm_data_loss_risk:true`、精确 `confirm_name`、`delete_data:true`，可接管操作中/pending/unknown/陈旧实例并返回真实 task_id。事务撤销旧任务/租约、保留任务步骤和审计；原生派发行锁覆盖持久意图到 HTTP 实际写出请求的边界，迟到 operation_id 只追加原 journal，防止迟到 CREATE/START 被当作未派发而重放。先核实/取消并等旧原生操作终态，再确认目标缺席；最初已不存在也成功且不发 stop/delete。此显式清理以目标缺席为准，不等主机 GPU 指标；普通删除严格校验不变。财务/IP/GPU 释放一次，保留 deleted_at 墓碑及所有账本历史，不退还历史消费。丢失提交编号/旧版歧义 journal 公开 cleanup_native_submission_unknown，需从可信原生日志恢复编号后协调当前清理，不盲目重放旧创建或启动。
+
+成员故障恢复删除沿用同一清理引擎：`DELETE /instances/{id}` 必须同时提交上述五项显式清理/风险/精确名称/磁盘确认，且锁内仍为本人、可见未删除/未退役、实例 `allowed_user_actions` 已授予 `delete`（含custom）。`capabilities.force_delete` 仅表示该授权，不受任务忙碌、未就绪、观测陈旧影响；客户端严格要求true，缺失/false关闭入口。ETag、CSRF、幂等事务不变；错误正文、缺确认、他人实例、撤销授权或过期版本均不能取消旧任务。单独强停、强制重启、不带cleanup_stuck的成员强制删除仍禁止。202仅为任务已持久化；任务确认目标缺席后才隐藏实例。结果未知须重试原正文/键/ETag，不替换请求意图。本次源码变更不含数据库迁移或部署。
+
+2026-11-08 本地验收（未部署）：隔离MySQL8.4.13下成员清理HTTP鉴权/CSRF/ETag/重放、锁内授权变更、普通删除边界、成员/管理员接管以及共享stuck-delete/运行中删除回归race通过，`go vet ./...`通过，server回归通过。新增测试夹具的应用重复注册及数据库完整性约束已修正，未禁用外键或CHECK。真实生产前端浏览器以成员登录，在unknown旧任务/未就绪/陈旧观测下输入精确名称并勾选风险，DELETE202后实际runDelete确认TLS原生夹具缺席并释放IP/用量/预留，旧任务superseded_by_cleanup、墓碑deleted确认后才回列表。前端680项测试、类型检查、生产及Linux/amd64内嵌构建通过；临时脚本/数据库已清理，不代表真实硬件删除验收。
 
 套餐配置：`PlanCreate`/`PlanPatch`和`Plan`包含`node_ids`、`gpu_policy`、`allowed_user_actions`、`gpu_user_permissions`。node_ids须非空且不重复，网络覆盖全部所选节点，镜像匹配全部节点/网络项目。启用及active编辑要求节点已验证且active/online、网络已验证、项目镜像ready（提供GPU型号还须gpu_ready）。报价/创建node_id若提供必须匹配所选网络节点并在套餐内。
 

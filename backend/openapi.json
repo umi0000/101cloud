@@ -6749,7 +6749,7 @@
         "tags": [
           "instances"
         ],
-        "description": "Delete an owned stopped instance with confirm_name matching the exact instance name and delete_data:true. Running-instance deletion is administrator-only through the admin endpoint with force and data-loss-risk confirmation. One durable backend task confirms deletion and obtains fresh GPU occupancy evidence before releasing allocations; unknown outcomes retain reservations rather than ambiguously replaying destructive operations.",
+        "description": "Ordinary deletion requires an owned stopped, ready instance with fresh state, exact confirm_name and delete_data:true. Explicit cleanup_stuck:true additionally requires mode:force and confirm_data_loss_risk:true and the current owner's existing delete grant (including custom restrictions). Only this explicit DELETE recovery intent bypasses busy/task-barrier, provisioning and freshness gates; standalone member force stop/restart/delete remains forbidden. It reuses the durable cleanup task engine, revokes old task leases, and releases resources only after authoritative native absence. Hidden failed creations and deleted rows remain unavailable. ETag, CSRF and idempotency checks are unchanged; retry uncertain requests with the identical body/key/ETag.",
         "parameters": [
           {
             "in": "path",
@@ -6821,21 +6821,29 @@
           "content": {
             "application/json": {
               "schema": {
-                "type": "object",
-                "properties": {
-                  "confirm_name": {
-                    "type": "string"
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "confirm_name": { "type": "string" },
+                      "delete_data": { "type": "boolean", "const": true }
+                    },
+                    "required": ["confirm_name", "delete_data"],
+                    "additionalProperties": false
                   },
-                  "delete_data": {
-                    "type": "boolean",
-                    "const": true
+                  {
+                    "type": "object",
+                    "properties": {
+                      "confirm_name": { "type": "string" },
+                      "delete_data": { "type": "boolean", "const": true },
+                      "cleanup_stuck": { "type": "boolean", "const": true },
+                      "mode": { "type": "string", "const": "force" },
+                      "confirm_data_loss_risk": { "type": "boolean", "const": true }
+                    },
+                    "required": ["confirm_name", "delete_data", "cleanup_stuck", "mode", "confirm_data_loss_risk"],
+                    "additionalProperties": false
                   }
-                },
-                "required": [
-                  "confirm_name",
-                  "delete_data"
-                ],
-                "additionalProperties": false
+                ]
               }
             }
           }
@@ -12506,10 +12514,11 @@
           },
           "capabilities": {
             "type": "object",
-            "description": "UI hints only; the server reauthorizes every request against the instance allowed_user_actions for elastic and custom products. Only administrators bypass the action allowlist, not hardware/capacity or confirmation checks. Resize/delete require ready provisioning and fresh observed state. Running delete is administrator-only; running resize by nonadministrators additionally requires stop and start permissions.",
+            "description": "UI hints only; the server reauthorizes every request against the instance allowed_user_actions for elastic and custom products. Only administrators bypass the action allowlist, not hardware/capacity or confirmation checks. Ordinary resize/delete require ready provisioning and fresh observed state. Ordinary running delete is administrator-only; explicit force_delete recovery is separately authorized by the current owner's delete grant and does not depend on busy, provisioning or state freshness. Running resize by nonadministrators additionally requires stop and start permissions.",
             "properties": {
               "resize": { "type": "boolean", "description": "Whether stopped/running resize is available; running requests still require confirm_restart:true." },
-              "delete": { "type": "boolean", "description": "Whether deletion is available; running deletion still requires administrator mode:force and explicit risk, exact-name and data confirmations." }
+              "delete": { "type": "boolean", "description": "Whether ordinary deletion is available; running ordinary deletion still requires administrator mode:force and explicit risk, exact-name and data confirmations." },
+              "force_delete": { "type": "boolean", "description": "Explicit recovery cleanup authorization for a current owner-visible, nondeleted, nonretired instance with delete permission, independent of active tasks, provisioning or state freshness. Clients must require exactly true (absent/false fails closed). DELETE still requires cleanup_stuck:true, mode:force, risk acknowledgement, exact name, delete_data:true, CSRF, If-Match and Idempotency-Key." }
             },
             "additionalProperties": {
               "type": "boolean"

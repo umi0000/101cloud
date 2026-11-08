@@ -1,4 +1,5 @@
 <script lang="ts" setup>
+import type { MemberDeleteBody } from '#/api/backend';
 import type {
   GPUAllocation,
   GPUPolicy,
@@ -76,7 +77,10 @@ const loading = ref(false);
 const missing = ref(false);
 let generation = 0;
 let disposed = false;
-const viewKey = computed(() => `${identity.value}:${id.value}`);
+const lifecycleEpoch = ref(0);
+const viewKey = computed(
+  () => `${identity.value}:${id.value}:${lifecycleEpoch.value}`,
+);
 const tab = computed({
   get: () =>
     typeof route.query.tab === 'string' &&
@@ -94,21 +98,58 @@ const name = ref('');
 const powerKind = ref<'restart' | 'start' | 'stop'>('stop');
 const powerOpen = ref(false);
 const deleteOpen = ref(false);
+const forceDeleteOpen = ref(false);
+type CleanupConfirmation = {
+  id: string;
+  owner: string;
+  name: string;
+  etag: string;
+  generation: number;
+};
+const cleanupConfirmation = shallowRef<CleanupConfirmation | null>(null);
+const deleteAccepted = ref(false);
+const cleanupAuthorizationLost = ref(false);
 const submitting = ref(false);
 const actionError = shallowRef<ErrorText | null>(null);
 type Intent = {
-  kind: 'delete' | 'rename' | 'restart' | 'start' | 'stop';
+  kind: 'delete' | 'force-delete' | 'rename' | 'restart' | 'start' | 'stop';
   id: string;
   key: string;
   etag: string;
   name: string;
   owner: string;
+  deleteBody?: MemberDeleteBody;
 };
 const intent = shallowRef<Intent | null>(null);
 const uncertain = ref(false);
 const gpuVisited = ref(false);
 const gpuUnresolved = ref(false);
 const resizeUnresolved = ref(false);
+const gpuSubmitting = ref(false);
+const resizeSubmitting = ref(false);
+const localSubmitting = computed(
+  () => submitting.value || gpuSubmitting.value || resizeSubmitting.value,
+);
+const forceDeleteAuthorized = computed(
+  () =>
+    instance.value?.capabilities.force_delete === true &&
+    instance.value.user_id === identity.value &&
+    instance.value.id === id.value,
+);
+const canForceDelete = computed(
+  () => forceDeleteAuthorized.value && !!etag.value && !error.value,
+);
+const forceDeleteDisabled = computed(
+  () => !canForceDelete.value || localSubmitting.value || !!intent.value,
+);
+watch(forceDeleteAuthorized, (allowed) => {
+  if (!allowed) {
+    if (intent.value?.kind === 'force-delete')
+      cleanupAuthorizationLost.value = true;
+    forceDeleteOpen.value = false;
+    cleanupConfirmation.value = null;
+  }
+});
 watch(
   tab,
   (value) => {
@@ -133,6 +174,7 @@ const busy = computed(
   () =>
     !!instance.value?.active_task_id ||
     submitting.value ||
+    forceDeleteOpen.value ||
     !!intent.value ||
     gpuUnresolved.value ||
     resizeUnresolved.value,
@@ -204,6 +246,15 @@ async function reload() {
     instance.value = response.data;
     etag.value = response.etag;
     error.value = null;
+    if (
+      deleteAccepted.value &&
+      response.data.observed_state === 'deleted' &&
+      response.data.provisioning_state === 'deleted' &&
+      !response.data.active_task_id
+    ) {
+      await router.replace('/instances');
+      return;
+    }
     if (response.data.active_task_id)
       tasks.track(response.data.active_task_id, '实例操作');
     await Promise.all([
@@ -254,6 +305,8 @@ async function reload() {
       policy.value = null;
       networks.value = [];
       allocations.value = [];
+      if (failure.status === 404 && deleteAccepted.value)
+        await router.replace('/instances');
     } else error.value = describeError(failure);
   } finally {
     if (current()) loading.value = false;
@@ -280,6 +333,10 @@ watch(
     renameOpen.value = false;
     powerOpen.value = false;
     deleteOpen.value = false;
+    forceDeleteOpen.value = false;
+    cleanupConfirmation.value = null;
+    deleteAccepted.value = false;
+    cleanupAuthorizationLost.value = false;
     intent.value = null;
     uncertain.value = false;
     submitting.value = false;
@@ -287,6 +344,8 @@ watch(
     gpuVisited.value = tab.value === 'gpu';
     gpuUnresolved.value = false;
     resizeUnresolved.value = false;
+    gpuSubmitting.value = false;
+    resizeSubmitting.value = false;
     void reload();
   },
   { immediate: true, flush: 'sync' },
@@ -313,6 +372,7 @@ onBeforeUnmount(() => {
 
 function allowed(kind: Intent['kind']) {
   const value = instance.value;
+  if (kind === 'force-delete') return canForceDelete.value;
   if (!value || !ready.value || value.active_task_id) return false;
   if (kind === 'rename') return true;
   if (kind === 'restart') return canRestart.value;
@@ -330,8 +390,25 @@ function openRename() {
   name.value = instance.value?.name ?? '';
   renameOpen.value = true;
 }
+function openForceDelete() {
+  if (forceDeleteDisabled.value || !identity.value || !instance.value || !etag.value)
+    return;
+  cleanupConfirmation.value = {
+    id: id.value,
+    owner: identity.value,
+    name: instance.value.name,
+    etag: etag.value,
+    generation,
+  };
+  powerOpen.value = false;
+  renameOpen.value = false;
+  deleteOpen.value = false;
+  resizeOpen.value = false;
+  forceDeleteOpen.value = true;
+}
 async function submit(kind: Intent['kind']) {
-  if (submitting.value || !identity.value) return false;
+  if (localSubmitting.value || !identity.value) return false;
+  if (forceDeleteOpen.value && kind !== 'force-delete') return false;
   let pending = intent.value;
   if (!pending) {
     if (!allowed(kind) || !etag.value || !instance.value) return false;
@@ -340,20 +417,47 @@ async function submit(kind: Intent['kind']) {
       (!name.value.trim() || [...name.value].length > 128)
     )
       return false;
+    const cleanup = kind === 'force-delete' ? cleanupConfirmation.value : null;
+    if (
+      kind === 'force-delete' &&
+      (!cleanup ||
+        cleanup.generation !== generation ||
+        cleanup.id !== id.value ||
+        cleanup.owner !== identity.value ||
+        cleanup.name !== instance.value.name)
+    ) {
+      forceDeleteOpen.value = false;
+      cleanupConfirmation.value = null;
+      return false;
+    }
     pending = {
       kind,
       id: id.value,
       owner: identity.value,
-      etag: etag.value,
+      etag: cleanup?.etag ?? etag.value,
       key: newIdempotencyKey(),
-      name: kind === 'rename' ? name.value : instance.value.name,
+      name: kind === 'rename' ? name.value : (cleanup?.name ?? instance.value.name),
+      deleteBody:
+        kind === 'force-delete'
+          ? {
+              cleanup_stuck: true,
+              mode: 'force',
+              confirm_data_loss_risk: true,
+              confirm_name: cleanup!.name,
+              delete_data: true,
+            }
+          : kind === 'delete'
+            ? { confirm_name: instance.value.name, delete_data: true }
+            : undefined,
     };
     intent.value = pending;
   }
   if (
     pending.kind !== kind ||
     pending.id !== id.value ||
-    pending.owner !== identity.value
+    pending.owner !== identity.value ||
+    (kind === 'force-delete' &&
+      (!canForceDelete.value || cleanupAuthorizationLost.value))
   )
     return false;
   const token = generation;
@@ -365,10 +469,10 @@ async function submit(kind: Intent['kind']) {
       await memberApi.rename(pending.id, pending.name, w);
     else {
       const response =
-        pending.kind === 'delete'
+        pending.kind === 'delete' || pending.kind === 'force-delete'
           ? await memberApi.delete(
               pending.id,
-              { confirm_name: pending.name, delete_data: true },
+              pending.deleteBody!,
               w,
             )
           : await memberApi.power(
@@ -377,10 +481,31 @@ async function submit(kind: Intent['kind']) {
               pending.kind === 'start' ? {} : { mode: 'graceful' },
               w,
             );
-      if (disposed || token !== generation) return false;
+      if (
+        disposed ||
+        token !== generation ||
+        pending.owner !== identity.value ||
+        pending.id !== id.value ||
+        instance.value?.user_id !== pending.owner
+      )
+        return false;
+      if (pending.kind === 'delete' || pending.kind === 'force-delete')
+        deleteAccepted.value = true;
+      if (pending.kind === 'force-delete') {
+        // Discard old frozen GPU/resize intents only after cleanup is accepted.
+        ++lifecycleEpoch.value;
+        gpuUnresolved.value = false;
+        resizeUnresolved.value = false;
+        resizeOpen.value = false;
+        powerOpen.value = false;
+        renameOpen.value = false;
+        deleteOpen.value = false;
+        forceDeleteOpen.value = false;
+        cleanupConfirmation.value = null;
+      }
       tasks.track(
         response.data.task_id,
-        `${pending.kind === 'delete' ? '销毁' : powerNames[pending.kind]}实例`,
+        `${pending.kind === 'force-delete' ? '强制清理删除' : pending.kind === 'delete' ? '销毁' : powerNames[pending.kind]}实例`,
       );
       tab.value = 'tasks';
     }
@@ -399,6 +524,12 @@ async function submit(kind: Intent['kind']) {
       failure.status >= 500;
     if (!uncertain.value) {
       intent.value = null;
+      if (kind === 'force-delete') {
+        if (failure instanceof ApiError && failure.status === 412)
+          etag.value = null;
+        forceDeleteOpen.value = false;
+        cleanupConfirmation.value = null;
+      }
       await reload();
     }
     return false;
@@ -497,6 +628,13 @@ async function submit(kind: Intent['kind']) {
                 </Menu></template
               >
             </Dropdown>
+            <Button
+              v-if="instance.capabilities.force_delete === true"
+              danger
+              :disabled="forceDeleteDisabled"
+              @click="openForceDelete"
+              >强制清理删除</Button
+            >
           </div>
         </div>
       </Card>
@@ -505,7 +643,7 @@ async function submit(kind: Intent['kind']) {
         class="mb-3"
         type="warning"
         show-icon
-        message="状态信息已过期，暂不能确认实例当前状态。变更操作暂停，等待同步。"
+        message="状态信息已过期，暂不能确认实例当前状态。普通变更暂停；有删除权限时仍可明确确认强制清理删除。"
       />
       <Alert
         v-if="enforcement"
@@ -526,6 +664,20 @@ async function submit(kind: Intent['kind']) {
           ></template
         ></Alert
       >
+      <Alert
+        v-if="instance.capabilities.force_delete === true"
+        class="mb-3"
+        type="warning"
+        show-icon
+        message="操作卡住、结果待核对或尚未就绪时，可使用强制清理删除取消旧操作并永久删除实例及磁盘。此恢复操作不可撤销，受理后仍须等待任务确认。"
+      />
+      <Alert
+        v-if="deleteAccepted"
+        class="mb-3"
+        type="info"
+        show-icon
+        message="删除请求已受理，不表示实例或磁盘已删除。请在任务中心等待确认；结果待核对或失败时不会自动重放旧操作。"
+      />
       <div v-if="error" class="mb-3" role="alert">
         <p>实例刷新失败，以下保留上次结果，变更操作暂停。</p>
         <ErrorFeedback :feedback="error" />
@@ -538,9 +690,16 @@ async function submit(kind: Intent['kind']) {
         class="mb-3"
         type="warning"
         show-icon
-        message="提交结果尚未确认，配置已锁定。请勿重复发起新操作；可用原请求和原幂等键查询式重试。"
+        :message="
+          cleanupAuthorizationLost
+            ? '提交结果尚未确认，但删除权限或实例归属已变化，原请求禁止重试。请查看任务并联系管理员核对，不会自动替换为新操作。'
+            : '提交结果尚未确认，配置已锁定。请勿重复发起新操作；可用原请求和原幂等键查询式重试。'
+        "
         ><template #action
-          ><Button :loading="submitting" @click="submit(intent.kind)"
+          ><Button
+            :loading="submitting"
+            :disabled="intent.kind === 'force-delete' && (!canForceDelete || cleanupAuthorizationLost)"
+            @click="submit(intent.kind)"
             >重试原请求</Button
           ></template
         ></Alert
@@ -710,8 +869,9 @@ async function submit(kind: Intent['kind']) {
             :instance="instance"
             :etag="etag"
             :active="tab === 'gpu'"
-            :disabled="!!intent || resizeUnresolved || !!error"
+            :disabled="!!intent || forceDeleteOpen || resizeUnresolved || !!error"
             @unresolved="gpuUnresolved = $event"
+            @submitting="gpuSubmitting = $event"
             @changed="reload" /><Empty
             v-else-if="instance.instance_type !== 'container'"
             description="当前 GPU 挂载与自动策略仅支持容器实例"
@@ -742,8 +902,9 @@ async function submit(kind: Intent['kind']) {
         :api="memberApi"
         :instance="instance"
         :etag="etag"
-        :disabled="gpuUnresolved || !!intent || !!error"
+        :disabled="gpuUnresolved || forceDeleteOpen || !!intent || !!error"
         @unresolved="resizeUnresolved = $event"
+        @submitting="resizeSubmitting = $event"
         @done="reload"
       />
       <Modal
@@ -783,6 +944,19 @@ async function submit(kind: Intent['kind']) {
         description="永久删除已停止实例及磁盘数据，无法恢复；历史账单和任务保留。"
         :disabled="busy || !allowed('delete')"
         :on-confirm="() => submit('delete')"
+      />
+      <ConfirmAction
+        v-if="cleanupConfirmation"
+        :key="`cleanup:${cleanupConfirmation.generation}:${cleanupConfirmation.etag}`"
+        v-model:open="forceDeleteOpen"
+        title="强制清理删除实例"
+        ok-text="强制清理删除"
+        danger
+        :confirm-name="cleanupConfirmation.name"
+        description="此操作将取消已有操作，强制关闭并永久删除实例及全部磁盘，未保存的数据会丢失且无法恢复。节点权威确认原生实例不存在时才跳过原生操作；离线或请求失败不代表已删除。历史计费、任务和审计记录保留。提交后请等待任务确认。"
+        risk-text="我确认取消旧操作、强制关闭可能丢失未保存数据，并永久删除实例及全部磁盘，此操作不可恢复"
+        :disabled="forceDeleteDisabled"
+        :on-confirm="() => submit('force-delete')"
       />
     </template>
     <template v-else-if="error"
