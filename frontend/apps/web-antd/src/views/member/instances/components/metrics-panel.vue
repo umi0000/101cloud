@@ -279,11 +279,10 @@ onBeforeUnmount(() => { disposed = true; ++generation; ++historySeq; });
             <div><div class="text-muted-foreground text-xs">CPU 使用率（相对配额，不限制为 100%）</div><strong>{{ formatPercent(latest.cpu.allocation_percent) }}</strong></div>
             <div><div class="text-muted-foreground text-xs">内存已用 / 限额</div><strong>{{ bytesText(latest.memory.used_bytes) }} / {{ bytesText(latest.memory.limit_bytes) }}</strong></div>
           </div>
-          <div class="mt-3 flex flex-wrap items-center gap-1 text-xs">
-            <span v-if="normalSampling">采样状态说明</span>
-            <span v-else>采集{{ latest.collection_complete ? '完整' : '不完整' }}；质量{{ latest.quality.complete ? '完整' : '不完整' }}；归因{{ latest.quality.attribution_complete ? '完整' : '不完整' }}</span>
+          <div v-if="!normalSampling || qualityReasons(latest.quality).some((reason) => reason !== 'gpu_utilization_no_samples')" class="mt-3 flex flex-wrap items-center gap-1 text-xs">
+            <span v-if="!normalSampling">采集{{ latest.collection_complete ? '完整' : '不完整' }}；质量{{ latest.quality.complete ? '完整' : '不完整' }}；归因{{ latest.quality.attribution_complete ? '完整' : '不完整' }}</span>
             <Tag v-if="!normalSampling && (!latest.collection_complete || !latest.quality.complete || !latest.quality.attribution_complete || latest.quality.reference_scan_quality !== 'complete')" color="warning">部分指标不可用或归因不完整</Tag>
-            <Tag v-for="reason in qualityReasons(latest.quality)" :key="reason" :color="normalReason(reason) ? undefined : 'warning'">{{ QUALITY_REASONS[reason] ?? reason }}</Tag>
+            <Tag v-for="reason in qualityReasons(latest.quality).filter((reason) => reason !== 'gpu_utilization_no_samples')" :key="reason" :color="normalReason(reason) ? undefined : 'warning'">{{ QUALITY_REASONS[reason] ?? reason }}</Tag>
           </div>
         </template>
         <Spin v-else-if="latestLoading" :spinning="true" />
@@ -322,8 +321,7 @@ onBeforeUnmount(() => { disposed = true; ++generation; ++historySeq; });
               <span>已配置：{{ selectedLatest.configured ? '是' : '否' }} · 已观测：{{ selectedLatest.observed ? '是' : '否' }}<template v-if="!normalSampling"> · 归因{{ selectedLatest.quality.attribution_complete ? '完整' : '不完整' }}</template></span>
               <Tag v-if="!normalSampling && (!selectedLatest.quality.complete || !selectedLatest.quality.attribution_complete || selectedLatest.quality.reference_scan_quality !== 'complete')" color="warning">部分 GPU 指标不可用或归因不完整</Tag>
               <Tag v-if="latest?.instance_state !== 'stopped' && !gpuHasKnownActivity(selectedLatest)" color="warning">部分 GPU 活动指标未知</Tag>
-              <span v-if="latest?.stale === false && latest.instance_state === 'running' && selectedLatest.configured === true && selectedLatest.process_count === 0 && selectedLatest.used_memory_bytes === '0' && selectedLatest.referencing_process_count === 0" class="text-muted-foreground w-full">GPU已挂载，尚无GPU程序活动；运行GPU任务后显示利用率</span>
-              <Tag v-for="reason in qualityReasons(selectedLatest.quality)" :key="reason" :color="normalReason(reason) ? undefined : 'warning'">{{ QUALITY_REASONS[reason] ?? reason }}</Tag>
+              <Tag v-for="reason in qualityReasons(selectedLatest.quality).filter((reason) => reason !== 'gpu_utilization_no_samples')" :key="reason" :color="normalReason(reason) ? undefined : 'warning'">{{ QUALITY_REASONS[reason] ?? reason }}</Tag>
             </div>
             <p v-else-if="selectedGPU && !latest" class="text-muted-foreground mb-3 text-xs">暂无最新 GPU 采样，当前占用未知；以下仅显示所选 UUID 的历史数据。</p>
             <p v-else-if="selectedGPU" class="text-muted-foreground mb-3 text-xs">所选 GPU 在最新采样中不存在；以下仅显示该 UUID 的历史数据。</p>

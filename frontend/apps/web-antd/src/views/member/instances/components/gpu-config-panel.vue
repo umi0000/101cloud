@@ -773,13 +773,6 @@ const metricNotes = (item: GPUAllocation) => {
         metric.quality.reference_scan_quality === 'complete' &&
         (!metric.quality.reasons.includes('gpu_utilization_no_samples') ||
           metric.process_count === 0)));
-  const mountedWithoutActivity =
-    !data.stale &&
-    data.instance_state === 'running' &&
-    metric.configured === true &&
-    metric.process_count === 0 &&
-    metric.used_memory_bytes === '0' &&
-    metric.referencing_process_count === 0;
   return [
     {
       text:
@@ -788,15 +781,8 @@ const metricNotes = (item: GPUAllocation) => {
           : '',
       warning: false,
     },
-    {
-      text: mountedWithoutActivity
-        ? 'GPU已挂载，尚无GPU程序活动；运行GPU任务后显示利用率'
-        : '',
-      warning: false,
-    },
     { text: data.stale ? '采样已过期' : '', warning: true },
     { text: !data.collection_complete ? '采集不完整' : '', warning: true },
-    { text: normalOnly ? '采样状态说明' : '', warning: false },
     {
       text:
         !normalOnly && (!data.quality.complete || !metric.quality.complete)
@@ -826,10 +812,12 @@ const metricNotes = (item: GPUAllocation) => {
       text: !stopped && !knownActivity ? '部分 GPU 活动指标未知' : '',
       warning: true,
     },
-    ...reasons.map((reason) => ({
-      text: QUALITY_REASONS[reason] ?? reason,
-      warning: !normalReasons.has(reason),
-    })),
+    ...reasons
+      .filter((reason) => reason !== 'gpu_utilization_no_samples')
+      .map((reason) => ({
+        text: QUALITY_REASONS[reason] ?? reason,
+        warning: !normalReasons.has(reason),
+      })),
   ].filter((note) => note.text);
 };
 const yesNo = (value: boolean | null) =>

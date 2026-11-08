@@ -567,25 +567,17 @@ describe('independent instance GPU metric display', () => {
 describe.each(['config', 'metrics'] as const)(
   '%s normal GPU sampling states',
   (kind) => {
-    it('shows mounted idle GPU evidence and neutral no-samples reasons without inventing SM zero', async () => {
+    it('preserves known idle quantities without inventing SM zero or release permission', async () => {
       runtime.latest.mockResolvedValue({ data: idleWithoutSamples() });
       mount(kind);
       await flush();
-      expect(root.textContent).toContain(
-        'GPU已挂载，尚无GPU程序活动；运行GPU任务后显示利用率',
-      );
-      expect(root.textContent).toContain('暂无进程级SM活动采样');
       expect(root.textContent).toContain('暂无活动采样');
-      expect(root.textContent).toContain('采样状态说明');
       expect(root.textContent).not.toMatch(
         /部分指标不可用|归因不完整|SM[： ]0%/,
       );
       expect(warningTexts()).toEqual([]);
       if (kind === 'config') {
         for (const selector of ['.gpu-desktop', '.gpu-mobile']) {
-          expect(root.querySelector(selector)?.textContent).toContain(
-            'GPU已挂载，尚无GPU程序活动',
-          );
           expect(root.querySelector(selector)?.textContent).toContain(
             '归因显存 0 B · GPU 进程 0 · 设备引用 0',
           );
@@ -598,74 +590,6 @@ describe.each(['config', 'metrics'] as const)(
         expect(root.textContent).toContain('设备引用数：0');
       }
     });
-
-    it.each<[string, (sample: LatestMetrics) => void]>([
-      [
-        'unconfigured GPU',
-        (sample) => {
-          sample.gpus[0]!.configured = false;
-        },
-      ],
-      [
-        'stale sample',
-        (sample) => {
-          sample.stale = true;
-        },
-      ],
-      [
-        'non-running sample',
-        (sample) => {
-          sample.instance_state = 'unknown';
-        },
-      ],
-      [
-        'GPU context',
-        (sample) => {
-          sample.gpus[0]!.process_count = 1;
-        },
-      ],
-      [
-        'allocated memory',
-        (sample) => {
-          sample.gpus[0]!.used_memory_bytes = '1';
-        },
-      ],
-      [
-        'device reference',
-        (sample) => {
-          sample.gpus[0]!.referencing_process_count = 1;
-        },
-      ],
-      [
-        'unknown processes',
-        (sample) => {
-          sample.gpus[0]!.process_count = null;
-        },
-      ],
-      [
-        'unknown memory',
-        (sample) => {
-          sample.gpus[0]!.used_memory_bytes = null;
-        },
-      ],
-      [
-        'unknown references',
-        (sample) => {
-          sample.gpus[0]!.referencing_process_count = null;
-        },
-      ],
-    ])(
-      'does not infer mounted idle activity from no samples with %s',
-      async (_name, mutate) => {
-        const sample = idleWithoutSamples();
-        mutate(sample);
-        runtime.latest.mockResolvedValue({ data: sample });
-        mount(kind);
-        await flush();
-        expect(root.textContent).toContain('暂无进程级SM活动采样');
-        expect(root.textContent).not.toContain('GPU已挂载，尚无GPU程序活动');
-      },
-    );
 
     it('keeps unsupported active utilization visibly unknown and warning-colored', async () => {
       const sample = latest();
@@ -689,7 +613,6 @@ describe.each(['config', 'metrics'] as const)(
       expect(root.textContent).toContain('172 MiB');
       expect(root.textContent).toMatch(/SM[： ]未知/);
       expect(root.textContent).not.toContain('暂无活动采样');
-      expect(root.textContent).not.toContain('GPU已挂载，尚无GPU程序活动');
       expect(warningTexts()).toContain('实例 GPU SM 利用率未知');
     });
 
@@ -702,7 +625,6 @@ describe.each(['config', 'metrics'] as const)(
       expect(root.textContent).toMatch(/SM[： ]未知/);
       expect(root.textContent).not.toMatch(/SM[： ]暂无活动采样/);
       expect(warningTexts()).toContain('部分 GPU 活动指标未知');
-      expect(root.textContent).not.toContain('采样状态说明');
     });
 
     it('keeps stopped unknown quantities visible with neutral state reasons', async () => {
@@ -730,13 +652,11 @@ describe.each(['config', 'metrics'] as const)(
       await flush();
       expect(root.textContent).toContain('实例已停止，没有运行态 GPU 占用采样');
       expect(root.textContent).toContain('实例已停止，无运行态进程归因');
-      expect(root.textContent).toContain('采样状态说明');
       expect(root.textContent).toMatch(/SM[： ]未知/);
       expect(root.textContent).toMatch(/归因显存[： ]未知/);
       expect(root.textContent).toMatch(/GPU 进程(?:数：| )未知/);
       expect(root.textContent).toMatch(/设备引用(?:数：| )未知/);
       expect(root.textContent).not.toContain('暂无活动采样');
-      expect(root.textContent).not.toContain('GPU已挂载，尚无GPU程序活动');
       expect(warningTexts()).toEqual([]);
     });
 
@@ -777,10 +697,7 @@ describe.each(['config', 'metrics'] as const)(
         runtime.latest.mockResolvedValue({ data: sample });
         mount(kind);
         await flush();
-        expect(root.textContent).toContain('暂无进程级SM活动采样');
         expect(warningTexts()).toContain(expectedWarning);
-        expect(root.textContent).not.toContain('采样状态说明');
-        expect(warningTexts()).not.toContain('暂无进程级SM活动采样');
       },
     );
   },
