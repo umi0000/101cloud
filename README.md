@@ -88,8 +88,28 @@ journalctl -u 101cloud-panel -f
 apt install incus
 incus admin init
 ```
+修改apparmor配置，解决容器apt update卡住的问题
 
-host agent也是用go写的
+首先检查原有配置
+
+```bash
+sysctl kernel.apparmor_restrict_unprivileged_unconfined
+sysctl kernel.apparmor_restrict_unprivileged_userns
+```
+
+持久化修改
+
+```bash
+sudo tee /etc/sysctl.d/99-incus-apparmor-compat.conf >/dev/null <<'EOF'
+
+kernel.apparmor_restrict_unprivileged_unconfined = 0
+EOF
+
+sudo sysctl -p /etc/sysctl.d/99-incus-apparmor-compat.conf
+sysctl kernel.apparmor_restrict_unprivileged_unconfined
+```
+
+然后开始安装host agent
 首先编译
 ```bash
 cd host-agent
