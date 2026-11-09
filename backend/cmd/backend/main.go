@@ -66,7 +66,10 @@ func run() error {
 		if e = migrations.Up(ctx, db); e != nil {
 			return e
 		}
-		return billing.NormalizeDailyBuckets(ctx, db)
+		if e = billing.NormalizeDailyBuckets(ctx, db); e != nil {
+			return e
+		}
+		return billing.WarmBillingReports(ctx, db)
 	case "serve":
 		if e = migrations.Ready(ctx, db); e != nil {
 			return e
@@ -74,6 +77,9 @@ func run() error {
 		// Complete the financial cutover before any HTTP request or worker can
 		// observe legacy daily buckets with overlapping validity.
 		if e = billing.NormalizeDailyBuckets(ctx, db); e != nil {
+			return e
+		}
+		if e = billing.WarmBillingReports(ctx, db); e != nil {
 			return e
 		}
 		initial, err := auth.EnsureAdministrator(ctx, a)

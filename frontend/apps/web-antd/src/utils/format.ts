@@ -1,6 +1,6 @@
 /**
  * 显示格式化。规则见 frontend/前端设计.md 2.3–2.4：
- * - pt 只去掉末尾 0，不四舍五入，不做浮点运算。
+ * - pt 仅显示为 1 位小数，十进制四舍五入（中点远离零），不做浮点运算。
  * - 字节是十进制字符串，用 BigInt 换算。
  * - 时间按后端 +08:00 原样显示，不按浏览器时区转换。
  */
@@ -8,12 +8,18 @@
 const GIB = 1024n ** 3n;
 const MIB = 1024n ** 2n;
 
-/** "5.860000" → "5.86"，"0.000000" → "0"。 */
+/** 仅用于显示："5.850000" → "5.9"，"-0.050000" → "-0.1"，零统一为 "0.0"。 */
 export function formatPt(value: null | string | undefined): string {
   if (value === null || value === undefined || value === '') return '—';
-  if (!value.includes('.')) return value;
-  const trimmed = value.replace(/0+$/, '').replace(/\.$/, '');
-  return trimmed === '-0' ? '0' : trimmed;
+  const match = /^(-?)(\d+)(?:\.(\d+))?$/.exec(value);
+  const whole = match?.[2];
+  if (!match || whole === undefined) return value;
+  const fraction = match[3] ?? '';
+  let tenths = BigInt(whole) * 10n + BigInt(fraction[0] ?? '0');
+  if ((fraction[1] ?? '0') >= '5') tenths += 1n;
+  const digits = tenths.toString().padStart(2, '0');
+  const sign = match[1] && tenths !== 0n ? '-' : '';
+  return `${sign}${digits.slice(0, -1)}.${digits.slice(-1)}`;
 }
 
 /** pt 字符串 → 放大 1e6 的 BigInt，用于比较大小。非法输入返回 null。 */

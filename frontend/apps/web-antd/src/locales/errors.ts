@@ -220,7 +220,10 @@ function publicErrorText(error: PublicError, requestId = ''): ErrorText {
       text: initializationLabel(INITIALIZATION_MESSAGES, error.code) || GENERIC_MESSAGE,
     };
   }
-  const message = error.message.trim();
+  const message = error.message.trim().replace(
+    /(-?\d+(?:\.\d+)?)\s*(pt)\b/gi,
+    (_, value: string, unit: string) => `${formatPt(value)} ${unit}`,
+  );
   // 后端公开的中文业务说明优先；历史英文 message 使用中文码表兜底。
   const fullText =
     (hasChinese(message) ? message : MESSAGES[error.code]) || GENERIC_MESSAGE;
@@ -232,8 +235,12 @@ function publicErrorText(error: PublicError, requestId = ''): ErrorText {
   const text = fullText.slice(0, end);
   const details: string[] = [];
   const append = (line: string) => {
-    if (line && !fullText.includes(line) && !details.includes(line))
-      details.push(line);
+    const formatted = line.replace(
+      /(-?\d+(?:\.\d+)?)\s*(pt)\b/gi,
+      (_, value: string, unit: string) => `${formatPt(value)} ${unit}`,
+    );
+    if (formatted && !fullText.includes(formatted) && !details.includes(formatted))
+      details.push(formatted);
   };
   if (end < fullText.length) details.push(fullText.slice(end).trim());
   const parsed = ErrorDetailsSchema.safeParse(error.details);
@@ -284,10 +291,10 @@ function publicErrorText(error: PublicError, requestId = ''): ErrorText {
             (token) => token === value,
           ) ||
             (
-              clause.match(/≈?-?\d+(?:\.\d+)?\s*(?:GiB|MiB|B|pt)\b/g) ?? []
+              clause.match(/≈?-?\d+(?:\.\d+)?\s*(?:GiB|MiB|B|pt)\b/gi) ?? []
             ).some(
               (token) =>
-                token.replace(/\s/g, '') === formatted.replace(/\s/g, ''),
+                token.replace(/\s/g, '').toLowerCase() === formatted.replace(/\s/g, '').toLowerCase(),
             )),
       );
       return alreadyShown ? [] : [`${label} ${formatted}`];

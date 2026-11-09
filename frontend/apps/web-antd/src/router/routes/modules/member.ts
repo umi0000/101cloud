@@ -12,6 +12,12 @@ const routes: RouteRecordRaw[] = [
     path: '/instances',
   },
   {
+    component: () => import('#/views/member/billing/index.vue'),
+    meta: { authority: ['user'], icon: 'lucide:receipt', keepAlive: false, title: '账单与消耗' },
+    name: 'MemberBilling',
+    path: '/billing',
+  },
+  {
     component: () => import('#/views/member/instances/create.vue'),
     meta: {
       activePath: '/instances',

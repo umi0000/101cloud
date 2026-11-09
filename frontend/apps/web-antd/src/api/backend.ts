@@ -4,6 +4,12 @@
  */
 import type {
   AuditLog,
+  BillingDistribution,
+  BillingInstanceOptions,
+  BillingInstances,
+  BillingOverview,
+  BillingPeriod,
+  BillingTrend,
   ConsoleKind,
   ConsoleSession,
   CreditAccount,
@@ -132,6 +138,15 @@ export type MemberDeleteBody = {
 
 
 export const memberApi = {
+  billingOverview: () => detail<BillingOverview>('/billing/overview'),
+  billingDistribution: (q: { period: BillingPeriod }) =>
+    api.get<BillingDistribution>('/billing/distribution', { params: clean(q) }),
+  billingTrend: (q: { period: BillingPeriod; instance_id?: ID }) =>
+    api.get<BillingTrend>('/billing/trend', { params: clean(q) }),
+  billingInstances: (q: { period: BillingPeriod; instance_id?: ID; search?: string; page: number; page_size: number }) =>
+    api.get<BillingInstances>('/billing/instances', { params: clean(q) }),
+  billingInstanceOptions: (q: { search?: string; page: number; page_size: number }) =>
+    api.get<BillingInstanceOptions>('/billing/instance-options', { params: clean(q) }),
   attachGPU: (id: ID, body: Omit<AttachBody, 'fixed_uuids'>, w: Write) =>
     post<TaskAccepted>(`/instances/${id}/gpu-attachments`, body, w),
   detachGPU: (id: ID, body: { allocation_ids: ID[]; allow_live: boolean }, w: Write) =>

@@ -16,6 +16,239 @@
     }
   ],
   "paths": {
+    "/billing/overview": {
+      "get": {
+        "operationId": "get_billing_overview",
+        "tags": [
+          "billing"
+        ],
+        "description": "Member-owned read-only repeatable snapshot, one server clock, fixed +08 calendar. No user/account selector; unknown, duplicate, malformed query parameters rejected. No explicit credit account returns 409 policy_not_configured. Consumption is expected usage, including unpaid costs, excluding cancelled/failed-creation/admin-exempt usage and all grants/holds/ledger transfers. Unclosed known billable tails are separate estimates; partial/reasons disclose uncertainty. Six-fraction exact strings; breakdown conserves consumed micro-Pt. No settlement, financial locks or Agent calls. All-account hero, unaffected by instance filters. Period summaries end at as_of. Forecast uses current wallet only, FEFO expiry and owner-held reservations, no assumed future grants.",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/BillingOverview"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "request_id"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/billing/distribution": {
+      "get": {
+        "operationId": "get_billing_distribution",
+        "tags": ["billing"],
+        "description": "Own-wallet read-only repeatable snapshot; as_of captured after account read. Only one required period accepted; unknown, duplicate and malformed query parameters return 422, missing own wallet returns 409 policy_not_configured. Natural Asia/Shanghai calendar, Monday week start; from is period start, to=as_of. Unpaged union of owned observed-running nondeleted nonfailed instances (including free/exempt/zero) and owned instances with positive net period consumption (including stopped/unknown/deleted history). Creation failures excluded immediately. Duplicate names retain distinct IDs. Sort consumed descending then numeric ID descending; no TopN or Other. All six-place decimal strings; sum instances = sum breakdown = consumed = recorded + estimated. Known unclosed tails are estimated; partial/reasons disclose uncertainty. Summary SQL plus exact raw complement and lightweight tails only; no wallet forecast, financial mutation or Agent query.",
+        "parameters": [
+          {"name":"period","in":"query","required":true,"schema":{"type":"string","enum":["today","week","month","year"]}}
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {"application/json":{"schema":{
+              "type":"object",
+              "properties":{"data":{"$ref":"#/components/schemas/BillingDistribution"},"request_id":{"type":"string"}},
+              "required":["data","request_id"],
+              "additionalProperties":false
+            }}}
+          },
+          "default":{"$ref":"#/components/responses/ApiError"}
+        }
+      }
+    },
+    "/billing/trend": {
+      "get": {
+        "operationId": "get_billing_trend",
+        "tags": [
+          "billing"
+        ],
+        "description": "Member-owned read-only repeatable snapshot, one server clock, fixed +08 calendar. No user/account selector; unknown, duplicate, malformed query parameters rejected. No explicit credit account returns 409 policy_not_configured. Consumption is expected usage, including unpaid costs, excluding cancelled/failed-creation/admin-exempt usage and all grants/holds/ledger transfers. Unclosed known billable tails are separate estimates; partial/reasons disclose uncertainty. Six-fraction exact strings; breakdown conserves consumed micro-Pt. No settlement, financial locks or Agent calls. Full calendar axis; to is the next calendar boundary, future amounts null (not zero), elapsed empty buckets zero, current bucket partial. today/hour, week/day, month/day, year/month. Cross-boundary charges use differences of rounded cumulative prefixes.",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "period",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "today",
+                "week",
+                "month",
+                "year"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "instance_id",
+            "schema": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/BillingTrend"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "request_id"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/billing/instances": {
+      "get": {
+        "operationId": "get_billing_instances",
+        "tags": [
+          "billing"
+        ],
+        "description": "Member-owned read-only repeatable snapshot, one server clock, fixed +08 calendar. No user/account selector; unknown, duplicate, malformed query parameters rejected. No explicit credit account returns 409 policy_not_configured. Consumption is expected usage, including unpaid costs, excluding cancelled/failed-creation/admin-exempt usage and all grants/holds/ledger transfers. Unclosed known billable tails are separate estimates; partial/reasons disclose uncertainty. Six-fraction exact strings; breakdown conserves consumed micro-Pt. No settlement, financial locks or Agent calls. Includes owned tombstones and zero-consumption selector entries. Search is literal name substring or exact numeric ID. Sort consumed descending then ID descending. Page pagination is SQL-side; to=as_of. A foreign/missing instance_id returns 404.",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "period",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "today",
+                "week",
+                "month",
+                "year"
+              ]
+            }
+          },
+          {
+            "in": "query",
+            "name": "instance_id",
+            "schema": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$"
+            }
+          },
+          {
+            "in": "query",
+            "name": "search",
+            "schema": {
+              "type": "string",
+              "maxLength": 128
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "default": 1
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/BillingInstances"
+                    },
+                    "request_id": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "data",
+                    "request_id"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/ApiError"
+          }
+        }
+      }
+    },
+    "/billing/instance-options": {
+      "get": {
+        "operationId": "get_billing_instance_options",
+        "tags": ["billing"],
+        "description": "Owned instance identities including tombstones and zero-cost instances, sorted by ID descending. No wallet or explicit credit account required. Read-only repeatable snapshot without financial aggregates, live usage, forecasts or Agent calls. Search trims whitespace and matches literal name substring or exact ID. Unknown, duplicate or malformed parameters return 422.",
+        "parameters": [
+          {"in": "query", "name": "search", "schema": {"type": "string", "maxLength": 128}},
+          {"in": "query", "name": "page", "schema": {"type": "integer", "minimum": 1, "maximum": 2147483647, "default": 1}},
+          {"in": "query", "name": "page_size", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {"application/json": {"schema": {
+              "type": "object",
+              "properties": {"data": {"$ref": "#/components/schemas/BillingInstanceOptions"}, "request_id": {"type": "string"}},
+              "required": ["data", "request_id"],
+              "additionalProperties": false
+            }}}
+          },
+          "default": {"$ref": "#/components/responses/ApiError"}
+        }
+      }
+    },
     "/auth/registration": {
       "get": {
         "operationId": "get_auth_registration",
@@ -11534,6 +11767,540 @@
       }
     },
     "schemas": {
+      "BillingBreakdown": {
+        "type": "object",
+        "properties": {
+          "cpu_pt": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+          },
+          "memory_pt": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+          },
+          "disk_pt": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+          },
+          "gpu_pt": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+          }
+        },
+        "required": [
+          "cpu_pt",
+          "memory_pt",
+          "disk_pt",
+          "gpu_pt"
+        ],
+        "additionalProperties": false
+      },
+      "BillingPeriodSummary": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "consumed_pt": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+          },
+          "recorded_pt": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+          },
+          "estimated_pt": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+          },
+          "breakdown": {
+            "$ref": "#/components/schemas/BillingBreakdown"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "consumed_pt",
+          "recorded_pt",
+          "estimated_pt",
+          "breakdown"
+        ],
+        "additionalProperties": false
+      },
+      "BillingCurrent": {
+        "type": "object",
+        "properties": {
+          "hourly_pt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "unavailable"
+            ]
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "hourly_pt",
+          "status",
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "BillingForecast": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "estimated",
+              "not_consuming",
+              "exhausted",
+              "unavailable"
+            ]
+          },
+          "seconds": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[0-9]+$",
+            "description": "Nonnegative whole seconds, floored from the exact first-unfunded boundary. exhausts_at retains microsecond precision."
+          },
+          "exhausts_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "reason": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "basis": {
+            "const": "current_wallet"
+          }
+        },
+        "required": [
+          "status",
+          "seconds",
+          "exhausts_at",
+          "reason",
+          "basis"
+        ],
+        "additionalProperties": false
+      },
+      "BillingBalance": {
+        "type": "object",
+        "properties": {
+          "available_pt": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+          },
+          "reserved_pt": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+          },
+          "outstanding_debt_pt": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+          }
+        },
+        "required": [
+          "available_pt",
+          "reserved_pt",
+          "outstanding_debt_pt"
+        ],
+        "additionalProperties": false
+      },
+      "BillingOverview": {
+        "type": "object",
+        "properties": {
+          "as_of": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "timezone": {
+            "const": "Asia/Shanghai"
+          },
+          "periods": {
+            "type": "object",
+            "properties": {
+              "today": {
+                "$ref": "#/components/schemas/BillingPeriodSummary"
+              },
+              "week": {
+                "$ref": "#/components/schemas/BillingPeriodSummary"
+              },
+              "month": {
+                "$ref": "#/components/schemas/BillingPeriodSummary"
+              },
+              "year": {
+                "$ref": "#/components/schemas/BillingPeriodSummary"
+              }
+            },
+            "required": [
+              "today",
+              "week",
+              "month",
+              "year"
+            ],
+            "additionalProperties": false
+          },
+          "current": {
+            "$ref": "#/components/schemas/BillingCurrent"
+          },
+          "forecast": {
+            "$ref": "#/components/schemas/BillingForecast"
+          },
+          "balance": {
+            "$ref": "#/components/schemas/BillingBalance"
+          },
+          "partial": {
+            "type": "boolean"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "as_of",
+          "timezone",
+          "periods",
+          "current",
+          "forecast",
+          "balance",
+          "partial",
+          "reasons"
+        ],
+        "additionalProperties": false
+      },
+      "BillingTrendItem": {
+        "type": "object",
+        "properties": {
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "consumed_pt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+          },
+          "recorded_pt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+          },
+          "estimated_pt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+          },
+          "partial": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "consumed_pt",
+          "recorded_pt",
+          "estimated_pt",
+          "partial"
+        ],
+        "additionalProperties": false
+      },
+      "BillingTrend": {
+        "type": "object",
+        "properties": {
+          "as_of": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "timezone": {
+            "const": "Asia/Shanghai"
+          },
+          "period": {
+            "type": "string",
+            "enum": [
+              "today",
+              "week",
+              "month",
+              "year"
+            ]
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "instance_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "granularity": {
+            "type": "string",
+            "enum": [
+              "hour",
+              "day",
+              "month"
+            ]
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BillingTrendItem"
+            }
+          },
+          "partial": {
+            "type": "boolean"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "as_of",
+          "timezone",
+          "period",
+          "from",
+          "to",
+          "instance_id",
+          "granularity",
+          "items",
+          "partial",
+          "reasons"
+        ],
+        "additionalProperties": false
+      },
+      "BillingInstanceOption": {
+        "type": "object",
+        "properties": {
+          "instance_id": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+          "name": {"type": "string"},
+          "deleted": {"type": "boolean"}
+        },
+        "required": ["instance_id", "name", "deleted"],
+        "additionalProperties": false
+      },
+      "BillingInstanceOptions": {
+        "type": "object",
+        "properties": {
+          "as_of": {"type": "string", "format": "date-time"},
+          "page": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+          "page_size": {"type": "integer", "minimum": 1, "maximum": 100},
+          "total": {"type": "integer", "minimum": 0},
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/BillingInstanceOption"}}
+        },
+        "required": ["as_of", "page", "page_size", "total", "items"],
+        "additionalProperties": false
+      },
+      "BillingInstance": {
+        "type": "object",
+        "properties": {
+          "instance_id": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$"
+          },
+          "name": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean"
+          },
+          "instance_state": {
+            "type": "string"
+          },
+          "consumed_pt": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+          },
+          "recorded_pt": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+          },
+          "estimated_pt": {
+            "type": "string",
+            "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+          },
+          "breakdown": {
+            "$ref": "#/components/schemas/BillingBreakdown"
+          },
+          "current_hourly_pt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^-?[0-9]+\\.[0-9]{6}$"
+          },
+          "rate_status": {
+            "type": "string",
+            "enum": [
+              "ready",
+              "unavailable"
+            ]
+          }
+        },
+        "required": [
+          "instance_id",
+          "name",
+          "deleted",
+          "instance_state",
+          "consumed_pt",
+          "recorded_pt",
+          "estimated_pt",
+          "breakdown",
+          "current_hourly_pt",
+          "rate_status"
+        ],
+        "additionalProperties": false
+      },
+      "BillingDistributionInstance": {
+        "type":"object",
+        "properties":{
+          "instance_id":{"type":"string","pattern":"^[1-9][0-9]*$"},
+          "name":{"type":"string"},
+          "deleted":{"type":"boolean"},
+          "instance_state":{"type":"string"},
+          "consumed_pt":{"type":"string","pattern":"^-?[0-9]+\\.[0-9]{6}$"},
+          "recorded_pt":{"type":"string","pattern":"^-?[0-9]+\\.[0-9]{6}$"},
+          "estimated_pt":{"type":"string","pattern":"^-?[0-9]+\\.[0-9]{6}$"}
+        },
+        "required":["instance_id","name","deleted","instance_state","consumed_pt","recorded_pt","estimated_pt"],
+        "additionalProperties":false
+      },
+      "BillingDistribution": {
+        "type":"object",
+        "properties":{
+          "as_of":{"type":"string","format":"date-time"},
+          "timezone":{"const":"Asia/Shanghai"},
+          "period":{"type":"string","enum":["today","week","month","year"]},
+          "from":{"type":"string","format":"date-time"},
+          "to":{"type":"string","format":"date-time","description":"Equal to as_of."},
+          "consumed_pt":{"type":"string","pattern":"^-?[0-9]+\\.[0-9]{6}$"},
+          "recorded_pt":{"type":"string","pattern":"^-?[0-9]+\\.[0-9]{6}$"},
+          "estimated_pt":{"type":"string","pattern":"^-?[0-9]+\\.[0-9]{6}$"},
+          "breakdown":{"$ref":"#/components/schemas/BillingBreakdown"},
+          "instances":{"type":"array","items":{"$ref":"#/components/schemas/BillingDistributionInstance"}},
+          "partial":{"type":"boolean"},
+          "reasons":{"type":"array","items":{"type":"string"}}
+        },
+        "required":["as_of","timezone","period","from","to","consumed_pt","recorded_pt","estimated_pt","breakdown","instances","partial","reasons"],
+        "additionalProperties":false
+      },
+      "BillingInstances": {
+        "type": "object",
+        "properties": {
+          "as_of": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "timezone": {
+            "const": "Asia/Shanghai"
+          },
+          "period": {
+            "type": "string",
+            "enum": [
+              "today",
+              "week",
+              "month",
+              "year"
+            ]
+          },
+          "from": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "to": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "page": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "page_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BillingInstance"
+            }
+          },
+          "partial": {
+            "type": "boolean"
+          },
+          "reasons": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "as_of",
+          "timezone",
+          "period",
+          "from",
+          "to",
+          "page",
+          "page_size",
+          "total",
+          "items",
+          "partial",
+          "reasons"
+        ],
+        "additionalProperties": false
+      },
       "RegistrationLimits": {
         "type": "object",
         "properties": {

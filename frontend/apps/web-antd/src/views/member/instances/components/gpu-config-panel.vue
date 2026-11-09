@@ -1405,7 +1405,7 @@ onBeforeUnmount(() => {
           >{{ policy.rebalance.enabled ? '开启' : '关闭' }} · allow_live={{
             policy.rebalance.allow_live
           }}
-          · {{ policy.rebalance.max_hourly_pt }} pt/h</DescriptionsItem
+          · {{ formatPt(policy.rebalance.max_hourly_pt) }} pt/h</DescriptionsItem
         ></Descriptions
       >
       <p

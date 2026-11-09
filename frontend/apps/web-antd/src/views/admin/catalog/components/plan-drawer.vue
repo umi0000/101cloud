@@ -149,7 +149,7 @@ function formFromPlan(p: Plan, copy: boolean): PlanForm {
     image_ids: [...p.image_ids],
     init_template_version_id: p.init_template_version_id ?? undefined,
     instance_type: p.instance_type,
-    max_hourly_pt: formatPt(p.gpu.max_hourly_pt),
+    max_hourly_pt: p.gpu.max_hourly_pt,
     memory_gib: bytesToGib(p.resources.memory_bytes),
     name: p.name,
     network_option_ids: [...p.network_option_ids],

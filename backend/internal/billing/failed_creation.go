@@ -107,6 +107,13 @@ func CancelFailedCreation(ctx context.Context, db *gorm.DB, instance platform.Ro
 	if err != nil {
 		return err
 	}
+	reportChargeIDs := make([]uint64, len(charges))
+	for index, charge := range charges {
+		reportChargeIDs[index] = platform.Uint(charge["id"])
+	}
+	if err = applyBillingReportCharges(db, platform.Uint(ac["id"]), reportChargeIDs, true); err != nil {
+		return err
+	}
 	for _, charge := range charges {
 		if err = db.Table("usage_charges").Where("id=?", charge["id"]).Updates(row{"status": "cancelled", "revision": gorm.Expr("revision+1")}).Error; err != nil {
 			return err

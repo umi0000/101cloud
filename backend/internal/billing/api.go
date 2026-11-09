@@ -24,6 +24,7 @@ func randomKey() (string, error) {
 }
 func Register(a *platform.App, user, admin *gin.RouterGroup) {
 	registerPolicies(a, admin)
+	registerBillingReports(a, user)
 	user.GET("/credits/account", platform.Handle(func(c *gin.Context) (any, error) {
 		r, e := find(platform.DB(c, a), "credit_accounts", "user_id = ?", platform.Current(c).ID)
 		if e != nil {

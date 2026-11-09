@@ -640,6 +640,9 @@ func settleSession(db *gorm.DB, ac, p, s row, t time.Time) error {
 	if e != nil {
 		return e
 	}
+	if e = applyBillingReportCharges(db, platform.Uint(ac["id"]), []uint64{platform.Uint(charge["id"])}, false); e != nil {
+		return e
+	}
 	if !deferred && !value.IsZero() {
 		if e = payCharge(db, ac, s, charge, t); e != nil {
 			return e

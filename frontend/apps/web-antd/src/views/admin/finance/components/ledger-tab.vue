@@ -41,7 +41,7 @@ const list = useCursorList<LedgerEntry>(financeApi.ledger, filters);
 /** 带符号显示：正数加 "+"。 */
 function signed(value: null | string): string {
   const v = formatPt(value);
-  return /^\d/.test(v) && v !== '0' ? `+${v}` : v;
+  return /^\d/.test(v) && v !== '0.0' ? `+${v}` : v;
 }
 
 const columns = [

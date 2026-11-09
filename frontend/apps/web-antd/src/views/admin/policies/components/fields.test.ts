@@ -1,6 +1,22 @@
 import { describe, expect, it } from 'vitest';
 
-import { configFromState, stateFromConfig, validateState } from './fields';
+import { configFromState, configSummary, stateFromConfig, validateState } from './fields';
+
+describe('Pt policy display and exact editable values', () => {
+  it('rounds read-only rates while preserving all six decimal places through form serialization', () => {
+    const config = {
+      cpu_hourly_pt: '1.250000',
+      memory_gib_hourly_pt: '0.049999',
+      disk_gib_hourly_pt: '9007199254740993.950000',
+    };
+    const state = stateFromConfig('pricing', config);
+    expect(configSummary('pricing', config)).toContain('CPU 单价 1.3 pt/核·小时');
+    expect(configSummary('pricing', config)).toContain('内存单价 0.0 pt/GiB·小时');
+    expect(configSummary('pricing', config)).toContain('磁盘单价 9007199254740994.0 pt/GiB·小时');
+    expect(validateState('pricing', state)).toEqual({ cross: [], fields: {} });
+    expect(configFromState('pricing', state)).toEqual(config);
+  });
+});
 
 describe('stopped resource billing policy choices', () => {
 

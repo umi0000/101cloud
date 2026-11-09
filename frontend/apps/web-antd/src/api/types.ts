@@ -17,6 +17,97 @@ export interface Page<T> {
   next_cursor: null | string;
 }
 
+export type BillingPeriod = 'today' | 'week' | 'month' | 'year';
+export interface BillingBreakdown {
+  cpu_pt: Pt;
+  memory_pt: Pt;
+  disk_pt: Pt;
+  gpu_pt: Pt;
+}
+export interface BillingSummary {
+  from: Time;
+  to: Time;
+  consumed_pt: Pt;
+  recorded_pt: Pt;
+  estimated_pt: Pt;
+  breakdown: BillingBreakdown;
+}
+export interface BillingOverview {
+  as_of: Time;
+  timezone: string;
+  periods: Record<BillingPeriod, BillingSummary>;
+  current: { hourly_pt: null | Pt; status: 'ready' | 'unavailable'; reason: null | string };
+  forecast: { status: 'estimated' | 'not_consuming' | 'exhausted' | 'unavailable'; seconds: null | string; exhausts_at: null | Time; reason: null | string; basis: 'current_wallet' };
+  balance: { available_pt: Pt; reserved_pt: Pt; outstanding_debt_pt: Pt };
+  partial: boolean;
+  reasons: string[];
+}
+export interface BillingDistribution extends BillingSummary {
+  as_of: Time;
+  timezone: string;
+  period: BillingPeriod;
+  instances: {
+    instance_id: ID;
+    name: string;
+    deleted: boolean;
+    instance_state: string;
+    consumed_pt: Pt;
+    recorded_pt: Pt;
+    estimated_pt: Pt;
+  }[];
+  partial: boolean;
+  reasons: string[];
+}
+export interface BillingTrend {
+  as_of: Time;
+  timezone: string;
+  period: BillingPeriod;
+  from: Time;
+  to: Time;
+  instance_id: ID | null;
+  granularity: 'hour' | 'day' | 'month';
+  items: { from: Time; to: Time; consumed_pt: null | Pt; recorded_pt: null | Pt; estimated_pt: null | Pt; partial: boolean }[];
+  partial: boolean;
+  reasons: string[];
+}
+export interface BillingInstanceOption {
+  instance_id: ID;
+  name: string;
+  deleted: boolean;
+}
+export interface BillingInstanceOptions {
+  as_of: Time;
+  page: number;
+  page_size: number;
+  total: number;
+  items: BillingInstanceOption[];
+}
+export interface BillingInstance {
+  instance_id: ID;
+  name: string;
+  deleted: boolean;
+  instance_state: string;
+  consumed_pt: Pt;
+  recorded_pt: Pt;
+  estimated_pt: Pt;
+  breakdown: BillingBreakdown;
+  current_hourly_pt: null | Pt;
+  rate_status: 'ready' | 'unavailable';
+}
+export interface BillingInstances {
+  as_of: Time;
+  timezone: string;
+  period: BillingPeriod;
+  from: Time;
+  to: Time;
+  page: number;
+  page_size: number;
+  total: number;
+  items: BillingInstance[];
+  partial: boolean;
+  reasons: string[];
+}
+
 export interface TaskAccepted {
   instance_id: ID | null;
   status: TaskStatus;

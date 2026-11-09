@@ -5,6 +5,24 @@ import { describeError, describeTaskError } from './errors';
 const error = (details: unknown, code = 'initialization_cloud_init_degraded') => ({
   code, message: '内部日志：密码 secret-user-data', details,
 });
+describe('Pt error presentation', () => {
+  it('rounds embedded and structured Pt values without modifying source details or count precision', () => {
+    const details = { unit: 'pt', requested: '1.250000', available: '0.049999', action: '请补充 1.250000 Pt 后重试' };
+    const result = describeError({
+      code: 'insufficient_credit',
+      message: '本次申请 1.250000 Pt；可用额度不足',
+      details,
+    });
+    expect(result.text).toBe('本次申请 1.3 Pt；');
+    expect(result.details).toContain('可用 0.0 pt');
+    expect(result.details).toContain('请补充 1.3 Pt 后重试');
+    expect(details.requested).toBe('1.250000');
+    expect(details.available).toBe('0.049999');
+    expect(describeError(error({ unit: 'count', requested: '1.250000' }, 'quota_exceeded')).details)
+      .toContain('本次申请 1.250000');
+  });
+});
+
 
 describe('initialization diagnostic public boundary', () => {
   it('maps fixed diagnostic fields without treating done as initialization success', () => {
