@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import type { EChartsOption } from 'echarts';
 import type { EchartsUIType } from '@vben/plugins/echarts';
-import type { HistoryPoint, LatestGPUMetric, LatestMetrics, MetricQuality, MetricsHistory } from '#/api/types';
+import type { HistoryPoint, LatestGPUMetric, LatestMetrics, MetricsHistory } from '#/api/types';
 import type { ErrorText } from '#/locales/errors';
 
 import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
@@ -20,6 +20,7 @@ import { QUALITY_REASONS } from '#/locales/enums';
 import { describeError } from '#/locales/errors';
 import { useAuthStore } from '#/store/auth';
 import { formatBytes, formatPercent, shortId, toShanghaiISO } from '#/utils/format';
+import { monitoringReasons as qualityReasons, sharedControlOnly } from '#/utils/monitoring-quality';
 
 echarts.use([MarkAreaComponent]);
 const props = defineProps<{ instanceId: string }>();
@@ -42,13 +43,8 @@ const num = (value: null | number | string | undefined): null | number => {
   return Number.isFinite(parsed) ? parsed : null;
 };
 const bytesText = (value: null | string | undefined) => value == null ? '未知' : formatBytes(value);
-const qualityReasons = (quality: MetricQuality) => {
-  const reasons = new Set(quality.reasons);
-  if (quality.error_code) reasons.add(quality.error_code);
-  return [...reasons];
-};
 const normalReason = (reason: string) => reason === 'gpu_utilization_no_samples' || reason === 'instance_not_running';
-const gpuHasKnownActivity = (gpu: LatestGPUMetric) => gpu.process_count !== null && gpu.referencing_process_count !== null && gpu.used_memory_bytes !== null
+const gpuHasKnownActivity = (gpu: LatestGPUMetric) => gpu.process_count !== null && (gpu.referencing_process_count !== null || sharedControlOnly(gpu.quality)) && gpu.used_memory_bytes !== null
   && (gpu.sm_utilization_percent !== null || gpu.quality.reasons.includes('gpu_utilization_no_samples'));
 const normalSampling = computed(() => {
   const data = latest.value;
@@ -56,8 +52,8 @@ const normalSampling = computed(() => {
   const qualities = [data.quality, ...data.gpus.map((gpu) => gpu.quality)];
   const reasons = qualities.flatMap(qualityReasons);
   const stopped = data.instance_state === 'stopped' && reasons.includes('instance_not_running');
-  return reasons.length > 0 && reasons.every(normalReason)
-    && qualities.every((quality) => stopped || (quality.attribution_complete && quality.reference_scan_quality === 'complete'))
+  return (reasons.length > 0 || qualities.some(sharedControlOnly)) && reasons.every(normalReason)
+    && qualities.every((quality) => stopped || (quality.attribution_complete && quality.reference_scan_quality === 'complete') || (!data.stale && sharedControlOnly(quality)))
     && (stopped || (data.instance_state === 'running' && data.gpus.every((gpu) => gpuHasKnownActivity(gpu)
       && (!gpu.quality.reasons.includes('gpu_utilization_no_samples') || gpu.process_count === 0))));
 });

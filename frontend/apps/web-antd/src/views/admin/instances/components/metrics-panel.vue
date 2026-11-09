@@ -22,6 +22,7 @@ import { usePolling } from '#/composables/api';
 import { QUALITY_REASONS } from '#/locales/enums';
 import { describeError } from '#/locales/errors';
 import { formatBytes, formatPercent, shortId, toShanghaiISO } from '#/utils/format';
+import { monitoringReasons } from '#/utils/monitoring-quality';
 
 import { GPU_STATE_NAMES, yesNo } from './shared';
 
@@ -262,9 +263,9 @@ const RESOLUTION_NAMES: Record<string, string> = { day: '按天', hour: '按小�
           </DescriptionsItem>
           <DescriptionsItem label="采样时间"><TimeText :value="latest.sampled_at" /></DescriptionsItem>
         </Descriptions>
-        <div v-if="latest.quality.reasons.length > 0" class="mb-2 flex flex-wrap items-center gap-1 text-sm">
+        <div v-if="monitoringReasons(latest.quality).length > 0" class="mb-2 flex flex-wrap items-center gap-1 text-sm">
           <span class="text-muted-foreground">质量：</span>
-          <Tooltip v-for="r in latest.quality.reasons" :key="r" :title="QUALITY_REASONS[r] ?? r">
+          <Tooltip v-for="r in monitoringReasons(latest.quality)" :key="r" :title="QUALITY_REASONS[r] ?? r">
             <Tag class="m-0" color="warning">{{ QUALITY_REASONS[r] ?? r }}</Tag>
           </Tooltip>
         </div>
@@ -292,10 +293,10 @@ const RESOLUTION_NAMES: Record<string, string> = { day: '按天', hour: '按小�
             <template v-else-if="column.key === 'state'">{{ GPU_STATE_NAMES[record.state] ?? record.state }}</template>
             <template v-else-if="column.key === 'flags'">{{ yesNo(record.configured) }} / {{ yesNo(record.observed) }}</template>
             <template v-else-if="column.key === 'reasons'">
-              <Tooltip v-for="r in record.quality.reasons" :key="r" :title="QUALITY_REASONS[r] ?? r">
+              <Tooltip v-for="r in monitoringReasons(record.quality)" :key="r" :title="QUALITY_REASONS[r] ?? r">
                 <Tag class="m-0 mr-1" color="warning">{{ QUALITY_REASONS[r] ?? r }}</Tag>
               </Tooltip>
-              <span v-if="record.quality.reasons.length === 0" class="text-muted-foreground">—</span>
+              <span v-if="monitoringReasons(record.quality).length === 0" class="text-muted-foreground">—</span>
             </template>
           </template>
         </Table>

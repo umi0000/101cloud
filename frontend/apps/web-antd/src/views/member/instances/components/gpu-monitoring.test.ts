@@ -6,6 +6,7 @@ import type {
   MetricQuality,
   MetricsHistory,
 } from '#/api/types';
+import { QUALITY_REASONS } from '#/locales/enums';
 
 import { createApp, h, nextTick, ref } from 'vue';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -331,6 +332,42 @@ beforeEach(() => {
 afterEach(() => {
   app?.unmount();
   root?.remove();
+});
+
+describe('shared-control monitoring display is separate from GPU operation safety', () => {
+  const sharedSample = () => {
+    const sample = latest();
+    sample.quality = quality({ complete: false, attribution_complete: false, reference_scan_quality: 'partial', reasons: ['gpu_shared_control_references'] });
+    sample.gpus[0]!.quality = { ...sample.quality, reasons: [...sample.quality.reasons] };
+    sample.gpus[0]!.referencing_process_count = null;
+    return sample;
+  };
+  it('does not flag known shared references as a monitoring failure while the same data still blocks release', async () => {
+    const sample = sharedSample();
+    runtime.latest.mockResolvedValue({ data: sample });
+    mount('metrics'); await flush();
+    expect(warningTexts()).toEqual([]);
+    expect(root.textContent).toContain('设备引用数：未知');
+    app.unmount(); root.remove();
+    mount('config'); await flush(); await selectAllocation();
+    expect(button('卸载所选').disabled).toBe(true);
+  });
+  it('preserves validated active GPU measurements with shared controls', async () => {
+    const sample = sharedSample();
+    Object.assign(sample.gpus[0]!, { process_count: 1, used_memory_bytes: '710934528', sm_utilization_percent: 29, state: 'in_use' });
+    runtime.latest.mockResolvedValue({ data: sample });
+    mount('metrics'); await flush();
+    expect(warningTexts()).toEqual([]);
+    expect(root.textContent).toContain('GPU 进程数：1');
+    expect(root.textContent).toContain('29%');
+  });
+  it.each(['gpu_reference_scan_incomplete', 'gpu_references_unresolved', 'instance_identity_changed', 'gpu_utilization_unknown'])('keeps a real %s failure visible alongside shared controls', async (reason) => {
+    const sample = sharedSample();
+    sample.quality.reasons.push(reason); sample.gpus[0]!.quality.reasons.push(reason);
+    runtime.latest.mockResolvedValue({ data: sample });
+    mount('metrics'); await flush();
+    expect(warningTexts()).toContain(QUALITY_REASONS[reason] ?? reason);
+  });
 });
 
 describe('GPU configuration active task safety barrier', () => {
