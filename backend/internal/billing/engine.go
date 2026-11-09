@@ -81,6 +81,12 @@ func InstanceUsage(ctx context.Context, db *gorm.DB, instance row, event string,
 	return instanceUsageAt(ctx, db, instance, event, allocationIDs, now())
 }
 
+// InstanceUsageAt lets confirmed worker state and both event snapshots use the
+// same transaction clock without changing metering precision or policy.
+func InstanceUsageAt(ctx context.Context, db *gorm.DB, instance row, event string, allocationIDs []uint64, at time.Time) error {
+	return instanceUsageAt(ctx, db, instance, event, allocationIDs, at)
+}
+
 func instanceUsageAt(ctx context.Context, db *gorm.DB, instance row, event string, allocationIDs []uint64, t time.Time) error {
 	if !in(event, "disk_reserved", "running", "stopped", "resize_stopped", "deleted", "resize", "resize_reserved", "resize_running_reserved", "gpu_reserved", "gpu_attached", "gpu_released", "gpu_reservation_cancelled") {
 		return invalid("unsupported usage lifecycle event")
@@ -805,7 +811,20 @@ func reconcileInstanceUsage(ctx context.Context, db *gorm.DB, instance row, t ti
 		if last.EndedAt != nil && !observed.After(*last.EndedAt) {
 			return nil
 		}
-		return instanceUsageAt(ctx, db, instance, "running", nil, observed)
+		if _, err := usageAccount(db, instance); err != nil {
+			return err
+		}
+		finish, err := prepareObservedInstanceEvent(db, instance, state, observed, t)
+		if err != nil {
+			return err
+		}
+		if err = instanceUsageAt(ctx, db, instance, "running", nil, observed); err != nil {
+			return err
+		}
+		if finish != nil {
+			return finish()
+		}
+		return nil
 	}
 	ac, err := usageAccount(db, instance)
 	if err != nil || ac == nil {
@@ -819,6 +838,10 @@ func reconcileInstanceUsage(ctx context.Context, db *gorm.DB, instance row, t ti
 	if err != nil {
 		return err
 	}
+	finish, err := prepareObservedInstanceEvent(db, instance, state, observed, t)
+	if err != nil {
+		return err
+	}
 	for _, session := range sessions {
 		if observed.Before(stamp(session["started_at"])) {
 			continue
@@ -826,6 +849,9 @@ func reconcileInstanceUsage(ctx context.Context, db *gorm.DB, instance row, t ti
 		if err = endSession(db, ac, p, session, observed); err != nil {
 			return err
 		}
+	}
+	if finish != nil {
+		return finish()
 	}
 	return nil
 }

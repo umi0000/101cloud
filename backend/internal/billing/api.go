@@ -25,6 +25,7 @@ func randomKey() (string, error) {
 func Register(a *platform.App, user, admin *gin.RouterGroup) {
 	registerPolicies(a, admin)
 	registerBillingReports(a, user)
+	registerBillingEvents(a, user)
 	user.GET("/credits/account", platform.Handle(func(c *gin.Context) (any, error) {
 		r, e := find(platform.DB(c, a), "credit_accounts", "user_id = ?", platform.Current(c).ID)
 		if e != nil {
@@ -100,6 +101,10 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 			expiry = &x
 		}
 		key := "redemption:" + sid(code["id"]) + ":" + sid(ac["user_id"])
+		before, e := eventAvailable(db, platform.Uint(ac["id"]), t)
+		if e != nil {
+			return nil, e
+		}
 		bucket, e := insert(db, "credit_buckets", row{"account_id": ac["id"], "source_type": "redemption", "business_key": key, "granted_pt": code["grant_pt"], "remaining_pt": code["grant_pt"], "reserved_pt": "0.000000", "valid_from": t, "expires_at": expiry})
 		if e != nil {
 			return nil, e
@@ -108,7 +113,7 @@ func Register(a *platform.App, user, admin *gin.RouterGroup) {
 		if e != nil {
 			return nil, e
 		}
-		if e = grantLedger(db, bucket, key, platform.Current(c).ID, row{"redemption_record_id": record["id"]}); e != nil {
+		if e = grantLedger(db, bucket, key, platform.Current(c).ID, row{"redemption_record_id": record["id"]}, before, t); e != nil {
 			return nil, e
 		}
 		if e = db.Table("redemption_codes").Where("id = ?", code["id"]).Updates(row{"used_count": gorm.Expr("used_count + 1"), "revision": gorm.Expr("revision + 1")}).Error; e != nil {

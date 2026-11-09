@@ -65,13 +65,17 @@ func creationCleanupDB(t *testing.T, handlers ...http.Handler) (*gorm.DB, *platf
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { pool.Close() })
+	const reportColumns = "account_id BIGINT UNSIGNED NOT NULL,instance_id BIGINT UNSIGNED NOT NULL,bucket_start DATETIME(6) NOT NULL,recorded DECIMAL(40,6) NOT NULL DEFAULT 0,cpu DECIMAL(40,6) NOT NULL DEFAULT 0,memory DECIMAL(40,6) NOT NULL DEFAULT 0,disk DECIMAL(40,6) NOT NULL DEFAULT 0,gpu DECIMAL(40,6) NOT NULL DEFAULT 0,PRIMARY KEY(account_id,bucket_start,instance_id)"
 	definitions := map[string]string{
 		"credit_accounts":              "id BIGINT PRIMARY KEY,user_id BIGINT,status VARCHAR(24),credit_policy_version_id BIGINT DEFAULT 1,version BIGINT DEFAULT 0,revision BIGINT DEFAULT 0,settlement_pending BOOL NOT NULL DEFAULT FALSE",
 		"credit_buckets":               "id BIGINT PRIMARY KEY,account_id BIGINT,remaining_pt DECIMAL(20,6),reserved_pt DECIMAL(20,6),valid_from DATETIME(6),expires_at DATETIME(6),version BIGINT DEFAULT 0,revision BIGINT DEFAULT 0",
 		"credit_ledger":                "id BIGINT AUTO_INCREMENT PRIMARY KEY,account_id BIGINT,bucket_id BIGINT,business_key VARCHAR(191) UNIQUE,entry_type VARCHAR(24),amount_delta_pt DECIMAL(20,6),reserved_delta_pt DECIMAL(20,6),remaining_after_pt DECIMAL(20,6),reserved_after_pt DECIMAL(20,6),reservation_id BIGINT,charge_id BIGINT,metadata_redacted JSON",
 		"credit_reservations":          "id BIGINT PRIMARY KEY,account_id BIGINT,session_id BIGINT,bucket_id BIGINT,reserved_pt DECIMAL(20,6),settled_pt DECIMAL(20,6),released_pt DECIMAL(20,6),status VARCHAR(24),closed_at DATETIME(6),revision BIGINT DEFAULT 0",
 		"usage_sessions":               "id BIGINT AUTO_INCREMENT PRIMARY KEY,account_id BIGINT,user_id BIGINT,node_id BIGINT,instance_id BIGINT,charge_kind VARCHAR(24),metering_state VARCHAR(24),status VARCHAR(24),metered_microseconds BIGINT DEFAULT 0,cumulative_expected_pt DECIMAL(20,6) DEFAULT 0,started_at DATETIME(6),last_settled_at DATETIME(6),ended_at DATETIME(6),revision BIGINT DEFAULT 0,pricing_version_id BIGINT,billing_mode VARCHAR(32),config_snapshot JSON,cpu_hourly_pt DECIMAL(20,6) DEFAULT 0,memory_gib_hourly_pt DECIMAL(20,6) DEFAULT 0,disk_gib_hourly_pt DECIMAL(20,6) DEFAULT 0,gpu_hourly_pt DECIMAL(20,6) DEFAULT 0",
-		"usage_charges":                "id BIGINT AUTO_INCREMENT PRIMARY KEY,session_id BIGINT,account_id BIGINT,from_at DATETIME(6),to_at DATETIME(6),expected_pt DECIMAL(20,6),settled_pt DECIMAL(20,6),status VARCHAR(24),settled_at DATETIME(6),calculation_snapshot JSON,revision BIGINT DEFAULT 0,UNIQUE(session_id,from_at)",
+		"usage_charges":                "id BIGINT AUTO_INCREMENT PRIMARY KEY,session_id BIGINT,account_id BIGINT,from_at DATETIME(6),to_at DATETIME(6),expected_pt DECIMAL(20,6),settled_pt DECIMAL(20,6),status VARCHAR(24),settled_at DATETIME(6),calculation_snapshot JSON,revision BIGINT DEFAULT 0,report_rollup_complete BOOL NOT NULL DEFAULT FALSE,report_rollup_applied BOOL NOT NULL DEFAULT FALSE,updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),UNIQUE(session_id,from_at)",
+		"billing_report_hours":         reportColumns,
+		"billing_report_days":          reportColumns,
+		"billing_report_state":         "account_id BIGINT UNSIGNED NOT NULL PRIMARY KEY,max_to_at DATETIME(6) NOT NULL",
 		"tasks":                        "id BIGINT AUTO_INCREMENT PRIMARY KEY,task_type VARCHAR(64),user_id BIGINT,node_id BIGINT,instance_id BIGINT,status VARCHAR(24),phase VARCHAR(64),parameters_redacted JSON,error_code VARCHAR(64),finished_at DATETIME(6),lease_owner VARCHAR(128),lease_generation BIGINT,lease_until DATETIME(6),result_redacted JSON,revision BIGINT DEFAULT 0,idempotency_scope VARCHAR(64),idempotency_key VARCHAR(128),is_instance_mutation BOOL,priority INT",
 		"task_steps":                   "id BIGINT AUTO_INCREMENT PRIMARY KEY,task_id BIGINT,step_key VARCHAR(128),attempt BIGINT,status VARCHAR(24),error_code VARCHAR(64),operation_id VARCHAR(128),node_id BIGINT,project_name VARCHAR(64),parameters_redacted JSON,result_redacted JSON,started_at DATETIME(6),finished_at DATETIME(6),UNIQUE(task_id,step_key,attempt)",
 		"instances":                    "id BIGINT PRIMARY KEY,user_id BIGINT,node_id BIGINT,project_name VARCHAR(64),incus_name VARCHAR(64),incus_uuid VARCHAR(64),image_type VARCHAR(24),image_id BIGINT,image_fingerprint VARCHAR(64),architecture VARCHAR(24),vcpus BIGINT,memory_bytes BIGINT,disk_bytes BIGINT,storage_pool VARCHAR(64),desired_state VARCHAR(24),observed_state VARCHAR(24),provisioning_state VARCHAR(24),observed_at DATETIME(6),deleted_at DATETIME(6),creation_failed_at DATETIME(6),creation_failure_task_id BIGINT,creation_cleanup_state VARCHAR(16),incus_config_snapshot JSON,revision BIGINT DEFAULT 0,billing_mode VARCHAR(32) DEFAULT 'admin_exempt',credit_policy_version_id BIGINT,init_template_version_id BIGINT,cpu_hourly_pt DECIMAL(20,6) DEFAULT 0,memory_gib_hourly_pt DECIMAL(20,6) DEFAULT 0,disk_gib_hourly_pt DECIMAL(20,6) DEFAULT 0,product_type VARCHAR(24),allowed_user_actions JSON,logical_name VARCHAR(64),login_config_ciphertext MEDIUMBLOB,login_initialized_at DATETIME(6)",
@@ -93,6 +97,30 @@ func creationCleanupDB(t *testing.T, handlers ...http.Handler) (*gorm.DB, *platf
 		if err = db.Exec("CREATE TABLE `" + table + "` (" + definition + ") ENGINE=InnoDB").Error; err != nil {
 			t.Fatal(err)
 		}
+	}
+	// Keep the event store identical to the production migration: lifecycle
+	// hooks must write real snapshots rather than rely on missing-table behavior.
+	if err = db.Exec(`CREATE TABLE billing_events (
+		id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+		user_id BIGINT UNSIGNED NOT NULL,
+		account_id BIGINT UNSIGNED NULL,
+		business_key VARCHAR(191) NOT NULL,
+		event_type VARCHAR(32) NOT NULL,
+		published BOOLEAN NOT NULL DEFAULT TRUE,
+		occurred_at DATETIME(6) NOT NULL,
+		instance_id BIGINT UNSIGNED NULL,
+		instance_name VARCHAR(255) NULL,
+		grant_source VARCHAR(32) NULL,
+		amount_pt DECIMAL(30,6) NULL,
+		available_before_pt DECIMAL(30,6) NULL,
+		available_after_pt DECIMAL(30,6) NULL,
+		hourly_before_pt DECIMAL(30,6) NULL,
+		hourly_after_pt DECIMAL(30,6) NULL,
+		PRIMARY KEY (id),
+		UNIQUE KEY uq_billing_events_business (user_id, business_key),
+		KEY ix_billing_events_user_time (user_id, published, occurred_at, id)
+	) ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci`).Error; err != nil {
+		t.Fatal(err)
 	}
 	tx := db.Begin()
 	if tx.Error != nil {
@@ -140,14 +168,14 @@ func creationCleanupDB(t *testing.T, handlers ...http.Handler) (*gorm.DB, *platf
 	fingerprint := sha256.Sum256(server.Certificate().Raw)
 	job := platform.Job{ID: 43, Type: "instance.create", InstanceID: 15, UserID: 2, NodeID: 1, LeaseGeneration: 1}
 	at := a.Time()
-	instance := platform.Row{"id": uint64(15), "user_id": uint64(2), "node_id": uint64(1), "project_name": "default", "incus_name": "test-pending", "image_type": "container", "image_id": 1, "image_fingerprint": strings.Repeat("a", 64), "architecture": "x86_64", "vcpus": 1, "memory_bytes": 1073741824, "disk_bytes": 21474836480, "storage_pool": "default", "credit_policy_version_id": 1, "desired_state": "running", "observed_state": "pending", "provisioning_state": "pending", "incus_config_snapshot": "{}"}
+	instance := platform.Row{"id": uint64(15), "user_id": uint64(2), "node_id": uint64(1), "project_name": "default", "incus_name": "test-pending", "logical_name": "test-pending", "image_type": "container", "image_id": 1, "image_fingerprint": strings.Repeat("a", 64), "architecture": "x86_64", "vcpus": 1, "memory_bytes": 1073741824, "disk_bytes": 21474836480, "storage_pool": "default", "credit_policy_version_id": 1, "desired_state": "running", "observed_state": "pending", "provisioning_state": "pending", "incus_config_snapshot": "{}"}
 	seeds := map[string][]platform.Row{
-		"nodes":                 {{"id": 1, "agent_endpoint": server.URL, "token_ciphertext": token, "server_cert_sha256": fingerprint[:]}},
+		"nodes":                 {{"id": 1, "agent_endpoint": server.URL, "token_ciphertext": token, "server_cert_sha256": fingerprint[:], "health": "online"}},
 		"instances":             {instance},
 		"tasks":                 {{"id": 43, "task_type": "instance.create", "user_id": 2, "node_id": 1, "instance_id": 15, "status": "running", "lease_owner": "test", "lease_generation": 1, "lease_until": at.Add(time.Minute), "result_redacted": "{}"}},
 		"credit_accounts":       {{"id": 7, "user_id": 2, "status": "active"}},
 		"credit_buckets":        {{"id": 1, "account_id": 7, "remaining_pt": "10.000000", "reserved_pt": "2.000000", "valid_from": at.Add(-time.Hour)}},
-		"usage_sessions":        {{"id": 1, "account_id": 7, "user_id": 2, "node_id": 1, "instance_id": 15, "charge_kind": "base_compute", "metering_state": "held", "status": "active", "started_at": at, "last_settled_at": at}, {"id": 2, "account_id": 7, "user_id": 2, "node_id": 1, "instance_id": 15, "charge_kind": "storage", "metering_state": "running", "status": "active", "started_at": at, "last_settled_at": at}},
+		"usage_sessions":        {{"id": 1, "account_id": 7, "user_id": 2, "node_id": 1, "instance_id": 15, "charge_kind": "base_compute", "metering_state": "held", "status": "active", "billing_mode": "credit", "pricing_version_id": 1, "config_snapshot": `{"vcpus":1,"memory_bytes":"1073741824","disk_bytes":"21474836480"}`, "started_at": at, "last_settled_at": at}, {"id": 2, "account_id": 7, "user_id": 2, "node_id": 1, "instance_id": 15, "charge_kind": "storage", "metering_state": "running", "status": "active", "billing_mode": "credit", "pricing_version_id": 1, "config_snapshot": `{"vcpus":1,"memory_bytes":"1073741824","disk_bytes":"21474836480"}`, "started_at": at, "last_settled_at": at}},
 		"credit_reservations":   {{"id": 1, "account_id": 7, "session_id": 1, "bucket_id": 1, "reserved_pt": "1.000000", "settled_pt": "0", "released_pt": "0", "status": "held"}, {"id": 2, "account_id": 7, "session_id": 2, "bucket_id": 1, "reserved_pt": "1.000000", "settled_pt": "0", "released_pt": "0", "status": "held"}},
 		"ip_addresses":          {{"id": 1, "instance_id": 15, "node_id": 1, "node_network_binding_id": 1, "network_pool_id": 1, "address_family": 4, "address": []byte{10, 0, 0, 2}, "status": "reserved", "reservation_task_id": 43, "reserved_at": at}},
 		"gpu_allocations":       {{"id": 1, "instance_id": 15, "user_id": 2, "node_id": 1, "status": "reserved"}},
@@ -155,7 +183,7 @@ func creationCleanupDB(t *testing.T, handlers ...http.Handler) (*gorm.DB, *platf
 		"network_pools":         {{"id": 1, "prefix_length": 24, "dns_servers": "[]"}},
 		"images":                {{"id": 1, "source_type": "local", "fingerprint": []byte(strings.Repeat("b", 32)), "architecture": "aarch64", "image_type": "container", "status": "active", "gpu_ready": false, "properties": "{}"}},
 		"image_nodes":           {{"id": 1, "image_id": 1, "node_id": 1, "project_name": "default", "fingerprint": []byte(strings.Repeat("\xaa", 32)), "architecture": "x86_64", "cloud_init": true, "gpu_ready": true, "properties": "{}", "status": "ready", "last_verified_at": at}},
-		"policy_versions":       {{"id": 1, "kind": "credit", "source_id": 1, "status": "active", "effective_at": at.Add(-time.Hour), "config": "{}"}},
+		"policy_versions":       {{"id": 1, "kind": "credit", "source_id": 1, "status": "active", "effective_at": at.Add(-time.Hour), "config": `{"storage_charge_mode":"running_only","offline_charge_mode":"defer","grace_charge_mode":"waived"}`}},
 	}
 	for table, records := range seeds {
 		for _, record := range records {

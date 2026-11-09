@@ -210,16 +210,21 @@ func balances(db *gorm.DB, aid uint64) (decimal.Decimal, decimal.Decimal, error)
 	return dec(s.Remaining), dec(s.Reserved), e
 }
 func grant(db *gorm.DB, a row, source, key string, value decimal.Decimal, start time.Time, expiry *time.Time, actor uint64) (row, error) {
+	at := now()
+	before, e := eventAvailable(db, platform.Uint(a["id"]), at)
+	if e != nil {
+		return nil, e
+	}
 	b, e := insert(db, "credit_buckets", row{"account_id": a["id"], "source_type": source, "business_key": key, "granted_pt": money(value), "remaining_pt": money(value), "reserved_pt": "0.000000", "valid_from": start, "expires_at": expiry, "version": 0})
 	if e != nil {
 		return nil, e
 	}
-	if e = grantLedger(db, b, key, actor, nil); e != nil {
+	if e = grantLedger(db, b, key, actor, nil, before, at); e != nil {
 		return nil, e
 	}
 	return b, nil
 }
-func grantLedger(db *gorm.DB, b row, key string, actor uint64, links row) error {
+func grantLedger(db *gorm.DB, b row, key string, actor uint64, links row, before string, at time.Time) error {
 	value := dec(b["granted_pt"])
 	if !value.IsZero() {
 		kind := "grant"
@@ -240,7 +245,10 @@ func grantLedger(db *gorm.DB, b row, key string, actor uint64, links row) error 
 	if e := db.Table("credit_accounts").Where("id = ?", b["account_id"]).Updates(row{"version": gorm.Expr("version + 1"), "revision": gorm.Expr("revision + 1")}).Error; e != nil {
 		return e
 	}
-	return refreshSettlementPending(db, platform.Uint(b["account_id"]), now())
+	if e := refreshSettlementPending(db, platform.Uint(b["account_id"]), at); e != nil {
+		return e
+	}
+	return recordGrantEvent(db, b, before, at)
 }
 
 // The caller holds the account lock. A pending marker means at least one old

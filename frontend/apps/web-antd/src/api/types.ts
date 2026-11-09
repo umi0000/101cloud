@@ -18,6 +18,30 @@ export interface Page<T> {
 }
 
 export type BillingPeriod = 'today' | 'week' | 'month' | 'year';
+export interface BillingEvent {
+  id: string;
+  event_type: 'credit.grant' | 'instance.create' | 'instance.start' | 'instance.stop' | 'instance.delete';
+  occurred_at: Time;
+  instance_id: ID | null;
+  instance_name: string | null;
+  grant_source: string | null;
+  amount_pt: Pt | null;
+  available_before_pt: Pt | null;
+  available_after_pt: Pt | null;
+  hourly_before_pt: Pt | null;
+  hourly_after_pt: Pt | null;
+}
+export interface BillingEvents {
+  as_of: Time;
+  timezone: string;
+  period: BillingPeriod;
+  from: Time;
+  to: Time;
+  page: number;
+  page_size: number;
+  total: number;
+  items: BillingEvent[];
+}
 export interface BillingBreakdown {
   cpu_pt: Pt;
   memory_pt: Pt;
@@ -37,7 +61,7 @@ export interface BillingOverview {
   timezone: string;
   periods: Record<BillingPeriod, BillingSummary>;
   current: { hourly_pt: null | Pt; status: 'ready' | 'unavailable'; reason: null | string };
-  forecast: { status: 'estimated' | 'not_consuming' | 'exhausted' | 'unavailable'; seconds: null | string; exhausts_at: null | Time; reason: null | string; basis: 'current_wallet' };
+  forecast: { status: 'estimated' | 'not_consuming' | 'exhausted' | 'unavailable'; seconds: null | string; exhausts_at: null | Time; reason: null | string; basis: 'current_balance_at_current_rate' };
   balance: { available_pt: Pt; reserved_pt: Pt; outstanding_debt_pt: Pt };
   partial: boolean;
   reasons: string[];

@@ -2,7 +2,7 @@ import type { BillingOverview, BillingTrend } from '#/api/types';
 import { describe, expect, it } from 'vitest';
 import { bucketLabel, bucketTooltip, forecastText } from './display';
 
-const forecast = (status: BillingOverview['forecast']['status'], seconds: null | string = null): BillingOverview['forecast'] => ({ status, seconds, exhausts_at: null, reason: null, basis: 'current_wallet' });
+const forecast = (status: BillingOverview['forecast']['status'], seconds: null | string = null): BillingOverview['forecast'] => ({ status, seconds, exhausts_at: null, reason: null, basis: 'current_balance_at_current_rate' });
 describe('billing forecast presentation', () => {
   it('does not turn unavailable or idle forecasts into zero or infinity', () => {
     expect(forecastText(undefined)).toBe('暂不可估算');
@@ -10,12 +10,22 @@ describe('billing forecast presentation', () => {
     expect(forecastText(forecast('not_consuming'))).toBe('当前不消耗额度');
     expect(forecastText(forecast('exhausted', '0'))).toBe('额度已耗尽');
   });
-  it('uses exact integer arithmetic for duration and rejects malformed estimates', () => {
-    expect(forecastText(forecast('estimated', '59'))).toBe('不足 1 分钟');
-    expect(forecastText(forecast('estimated', '3660'))).toBe('约 1 小时 1 分钟');
-    expect(forecastText(forecast('estimated', '176400'))).toBe('约 2 天 1 小时');
-    expect(forecastText(forecast('estimated', 'NaN'))).toBe('暂不可估算');
-    expect(forecastText(forecast('estimated', '900719925474099300'))).not.toContain('Infinity');
+  it.each([
+    ['0', '不足 1 分钟'],
+    ['59', '不足 1 分钟'],
+    ['60', '约 1 分钟'],
+    ['3599', '约 59 分钟'],
+    ['3600', '约 1 小时 0 分钟'],
+    ['3660', '约 1 小时 1 分钟'],
+    ['86399', '约 23 小时 59 分钟'],
+    ['86400', '约 1 天 0 小时'],
+    ['176400', '约 2 天 1 小时'],
+    ['864000000000000000090000', '约 10000000000000000001 天 1 小时'],
+  ])('formats API seconds %s without rounding or calendar truncation', (seconds, expected) => {
+    expect(forecastText(forecast('estimated', seconds))).toBe(expected);
+  });
+  it.each([null, '', 'NaN', '-1', '1.5', '1e3'])('keeps missing or malformed seconds %s unavailable', (seconds) => {
+    expect(forecastText(forecast('estimated', seconds))).toBe('暂不可估算');
   });
 });
 const trend: BillingTrend = {

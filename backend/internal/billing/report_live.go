@@ -3,7 +3,6 @@ package billing
 import (
 	"encoding/json"
 	"math"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -35,25 +34,23 @@ func loadBillingSnapshot(db *gorm.DB, account row, at time.Time, needRates, fore
 	if err != nil {
 		return live, err
 	}
-	var buckets, reservations []row
+	var buckets []row
 	if forecast {
-		buckets, err = rows(db.Select("id,remaining_pt,reserved_pt,expires_at,valid_from").Order("expires_at IS NULL,expires_at,id"), "credit_buckets", "account_id=? AND (remaining_pt<>0 OR reserved_pt<>0)", account["id"])
-		if err != nil {
-			return live, err
-		}
-		reservations, err = rows(db.Select("bucket_id,session_id,reserved_pt,settled_pt,released_pt"), "credit_reservations", "account_id=? AND status='held' AND reserved_pt>settled_pt+released_pt", account["id"])
+		buckets, err = rows(db.Select("remaining_pt,reserved_pt,expires_at,valid_from"), "credit_buckets", "account_id=? AND (remaining_pt<>0 OR reserved_pt<>0)", account["id"])
 		if err != nil {
 			return live, err
 		}
 	}
 	// Failed creations disappear from consumption/debt immediately, before the
 	// asynchronous cancellation/refund worker has touched their historical rows.
-	var unpaid []row
+	var debt decimal.Decimal
 	if forecast {
-		err = db.Table("usage_charges c").Select("c.session_id,COALESCE(SUM(c.expected_pt-c.settled_pt),0) unpaid_pt,COALESCE(SUM(CASE WHEN c.status='insufficient' THEN c.expected_pt-c.settled_pt ELSE 0 END),0) debt_pt,MAX(CASE WHEN c.status='pending' AND JSON_EXTRACT(c.calculation_snapshot,'$.offline_deferred')=true AND (n.id IS NULL OR n.health<>'online') THEN 1 ELSE 0 END) deferred").Joins("JOIN usage_sessions s ON s.id=c.session_id").Joins("JOIN instances i ON i.id=s.instance_id").Joins("LEFT JOIN nodes n ON n.id=s.node_id").Where("c.account_id=? AND c.status IN ('pending','insufficient') AND c.expected_pt>c.settled_pt AND i.creation_failed_at IS NULL", account["id"]).Group("c.session_id").Find(&unpaid).Error
+		var total struct{ DebtPT decimal.Decimal }
+		err = db.Table("usage_charges c").Select("COALESCE(SUM(c.expected_pt-c.settled_pt),0) debt_pt").Joins("JOIN usage_sessions s ON s.id=c.session_id").Joins("JOIN instances i ON i.id=s.instance_id").Where("c.account_id=? AND c.status='insufficient' AND c.expected_pt>c.settled_pt AND i.creation_failed_at IS NULL", account["id"]).Scan(&total).Error
 		if err != nil {
 			return live, err
 		}
+		debt = total.DebtPT
 	}
 	byInstance := make(map[uint64][]row)
 	instanceByID := make(map[uint64]row, len(instances))
@@ -125,15 +122,11 @@ func loadBillingSnapshot(db *gorm.DB, account row, at time.Time, needRates, fore
 		gpuByInstance[id] = append(gpuByInstance[id], platform.Uint(allocation["id"]))
 	}
 
-	var wallet billingForecastWallet
-	var obligations map[uint64]decimal.Decimal
-	walletValid, deferred := true, false
+	walletValid := true
+	available := decimal.Zero
 	if forecast {
-		wallet.Held = make(map[uint64]decimal.Decimal)
-		reserved, debt := decimal.Zero, decimal.Zero
-		bucketByID := make(map[uint64]row, len(buckets))
+		reserved := decimal.Zero
 		for _, bucket := range buckets {
-			bucketByID[platform.Uint(bucket["id"])] = bucket
 			remaining, held := dec(bucket["remaining_pt"]), dec(bucket["reserved_pt"])
 			reserved = reserved.Add(held)
 			if remaining.IsNegative() || held.IsNegative() || held.GreaterThan(remaining) {
@@ -141,61 +134,23 @@ func loadBillingSnapshot(db *gorm.DB, account row, at time.Time, needRates, fore
 			}
 			expires := stamp(bucket["expires_at"])
 			if !stamp(bucket["valid_from"]).After(at) && (expires.IsZero() || expires.After(at)) {
-				free := remaining.Sub(held)
-				if free.IsPositive() {
-					wallet.Free = append(wallet.Free, billingForecastBucket{Amount: free, Expires: expires})
-				}
+				available = available.Add(remaining.Sub(held))
 			}
 		}
-		for _, reservation := range reservations {
-			bucket := bucketByID[platform.Uint(reservation["bucket_id"])]
-			if bucket == nil {
-				walletValid = false
-				continue
-			}
-			if stamp(bucket["valid_from"]).After(at) {
-				continue
-			}
-			id := platform.Uint(reservation["session_id"])
-			wallet.Held[id] = wallet.Held[id].Add(dec(reservation["reserved_pt"]).Sub(dec(reservation["settled_pt"])).Sub(dec(reservation["released_pt"])))
-		}
-		free := wallet.freeTotal()
-		obligations = make(map[uint64]decimal.Decimal)
-		for _, charge := range unpaid {
-			id := platform.Uint(charge["session_id"])
-			obligations[id] = dec(charge["unpaid_pt"])
-			debt = debt.Add(dec(charge["debt_pt"]))
-			deferred = deferred || platform.Uint(charge["deferred"]) != 0
-		}
-		live.Balance = billingBalanceDTO{AvailablePT: money(free.Sub(debt)), ReservedPT: money(reserved), OutstandingDebtPT: money(debt)}
+		available = available.Sub(debt)
+		live.Balance = billingBalanceDTO{AvailablePT: money(available), ReservedPT: money(reserved), OutstandingDebtPT: money(debt)}
 	}
-	var workload []billingForecastSession
 	for _, instance := range instances {
 		id := platform.Uint(instance["id"])
 		ss := byInstance[id]
 		policy := policies[platform.Uint(instance["credit_policy_version_id"])]
 		online := platform.Text(nodes[platform.Uint(instance["node_id"])]["health"]) == "online"
-		rate, tails, consuming, reasons := billingInstanceUsage(instance, ss, policy, eventByInstance[id], online, gpuByInstance[id], at, forecast)
+		rate, tails, reasons := billingInstanceUsage(instance, ss, policy, eventByInstance[id], online, gpuByInstance[id], at)
 		live.Rates[id] = rate
 		for _, reason := range reasons {
 			live.addReason(reason)
 		}
-		for _, tail := range tails {
-			live.Tails = append(live.Tails, tail)
-			if !forecast {
-				continue
-			}
-			micros, ok := billingElapsedMicros(tail.From, tail.To)
-			if !ok || micros > math.MaxUint64-tail.BaseMicros {
-				live.addReason("metering_overflow")
-				continue
-			}
-			amount := expected(tail.Session, tail.BaseMicros+micros).Sub(tail.BaseExpected)
-			obligations[platform.Uint(tail.Session["id"])] = obligations[platform.Uint(tail.Session["id"])].Add(amount)
-		}
-		if forecast {
-			workload = append(workload, consuming...)
-		}
+		live.Tails = append(live.Tails, tails...)
 	}
 	current := decimal.Zero
 	currentKnown := true
@@ -224,36 +179,17 @@ func loadBillingSnapshot(db *gorm.DB, account row, at time.Time, needRates, fore
 		}
 		return live, nil
 	}
-	// Unknown tails can consume the same free wallet as a known session. Never
-	// forecast just the known subset, or count the public debt-adjusted balance
-	// as funding and then subtract that debt a second time.
+	// Use exactly the public available balance and current total rate. Historical
+	// partial usage, pending costs and unclosed tails do not reduce it again.
 	switch {
-	case !currentKnown || live.Partial:
+	case !currentKnown:
 		live.Forecast = billingForecastUnavailable("current_workload_unavailable")
-	case len(workload) == 0:
-		live.Forecast = billingForecastDTO{Status: "not_consuming", Basis: "current_wallet"}
 	case !walletValid:
 		live.Forecast = billingForecastUnavailable("wallet_inconsistent")
 	case platform.Text(account["status"]) != "active":
 		live.Forecast = billingForecastUnavailable("account_not_active")
-	case deferred:
-		live.Forecast = billingForecastUnavailable("offline_settlement_deferred")
 	default:
-		ids := make([]uint64, 0, len(obligations))
-		for id := range obligations {
-			ids = append(ids, id)
-		}
-		sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
-		unpaidCost := false
-		for _, id := range ids {
-			if !wallet.pay(id, obligations[id]) {
-				unpaidCost = true
-			}
-		}
-		live.Forecast = simulateBillingForecast(wallet, workload, at)
-		if unpaidCost && live.Forecast.Status != "exhausted" {
-			live.Forecast = billingForecastUnavailable("unfunded_existing_usage")
-		}
+		live.Forecast = billingStaticForecast(available, current, at)
 	}
 	return live, nil
 }
@@ -268,27 +204,22 @@ func (live *billingLive) addReason(reason string) {
 	live.Reasons = append(live.Reasons, reason)
 }
 
-// billingInstanceLive mirrors settleSession's waiver test: an interval crossing
+// billingInstanceUsage mirrors settleSession's waiver test: an interval crossing
 // exhausted_at is still billable when its persisted cursor precedes that time.
 // A waived *current* rate does not erase that already accrued crossing interval.
-func billingInstanceLive(instance row, sessions []row, policy, event row, online bool, gpuIDs []uint64, at time.Time) (billingRate, []billingTail, []billingForecastSession, []string) {
-	return billingInstanceUsage(instance, sessions, policy, event, online, gpuIDs, at, true)
-}
-
-func billingInstanceUsage(instance row, sessions []row, policy, event row, online bool, gpuIDs []uint64, at time.Time, needForecast bool) (billingRate, []billingTail, []billingForecastSession, []string) {
+func billingInstanceUsage(instance row, sessions []row, policy, event row, online bool, gpuIDs []uint64, at time.Time) (billingRate, []billingTail, []string) {
 	rate := billingRate{Status: "ready"}
 	var tails []billingTail
-	var workload []billingForecastSession
 	var reasons []string
 	unknown := func(reason string) {
 		rate.Status = "unavailable"
 		reasons = append(reasons, reason)
 	}
 	if instance["creation_failed_at"] != nil {
-		return rate, tails, workload, reasons
+		return rate, tails, reasons
 	}
 	if platform.Text(instance["billing_mode"]) == "admin_exempt" {
-		return rate, tails, workload, reasons
+		return rate, tails, reasons
 	}
 	if instance["deleted_at"] != nil {
 		for _, session := range sessions {
@@ -297,7 +228,7 @@ func billingInstanceUsage(instance row, sessions []row, policy, event row, onlin
 				break
 			}
 		}
-		return rate, tails, workload, reasons
+		return rate, tails, reasons
 	}
 	waived := false
 	exhausted := time.Time{}
@@ -305,12 +236,12 @@ func billingInstanceUsage(instance row, sessions []row, policy, event row, onlin
 		var snapshot row
 		if json.Unmarshal([]byte(platform.Text(event["policy_snapshot"])), &snapshot) != nil || snapshot == nil || !in(platform.Text(snapshot["grace_charge_mode"]), "waived", "charged") {
 			unknown("enforcement_policy_unavailable")
-			return rate, tails, workload, reasons
+			return rate, tails, reasons
 		}
 		exhausted = stamp(event["exhausted_at"])
 		if exhausted.IsZero() || exhausted.After(at) {
 			unknown("enforcement_boundary_unavailable")
-			return rate, tails, workload, reasons
+			return rate, tails, reasons
 		}
 		waived = platform.Text(snapshot["grace_charge_mode"]) == "waived"
 	}
@@ -322,7 +253,7 @@ func billingInstanceUsage(instance row, sessions []row, policy, event row, onlin
 			}
 		}
 		if allWaived {
-			return rate, tails, workload, reasons
+			return rate, tails, reasons
 		}
 	}
 	fresh := freshUsageObservation(instance, at)
@@ -389,9 +320,6 @@ func billingInstanceUsage(instance row, sessions []row, policy, event row, onlin
 			gpus[platform.Uint(session["gpu_allocation_id"])] = true
 			if !waived {
 				rate.Hourly = rate.Hourly.Add(hourly)
-				if positive && needForecast {
-					workload = append(workload, billingForecastSession{Session: session, BaseMicros: base + elapsed})
-				}
 			}
 		}
 	}
@@ -416,7 +344,7 @@ func billingInstanceUsage(instance row, sessions []row, policy, event row, onlin
 			}
 		}
 	}
-	return rate, tails, workload, reasons
+	return rate, tails, reasons
 }
 
 // Validate rather than turning missing/corrupt frozen hardware or prices into 0.
@@ -462,177 +390,44 @@ func billingElapsedMicros(from, to time.Time) (uint64, bool) {
 	return uint64(duration.Microseconds()), true
 }
 
-type billingForecastBucket struct {
-	Amount  decimal.Decimal
-	Expires time.Time
-}
-
-type billingForecastWallet struct {
-	Free []billingForecastBucket
-	Held map[uint64]decimal.Decimal
-}
-
-type billingForecastSession struct {
-	Session row
-	// Counter at as_of, after deducting the unclosed tail exactly once.
-	BaseMicros uint64
-}
-
-func (wallet *billingForecastWallet) freeTotal() decimal.Decimal {
-	total := decimal.Zero
-	for _, bucket := range wallet.Free {
-		total = total.Add(bucket.Amount)
-	}
-	return total
-}
-
-func (wallet *billingForecastWallet) pay(sessionID uint64, amount decimal.Decimal) bool {
-	owned := decimal.Min(amount, wallet.Held[sessionID])
-	wallet.Held[sessionID] = wallet.Held[sessionID].Sub(owned)
-	return wallet.payFree(amount.Sub(owned))
-}
-
-func (wallet *billingForecastWallet) payFree(amount decimal.Decimal) bool {
-	for index := range wallet.Free {
-		paid := decimal.Min(amount, wallet.Free[index].Amount)
-		wallet.Free[index].Amount = wallet.Free[index].Amount.Sub(paid)
-		amount = amount.Sub(paid)
-		if !amount.IsPositive() {
-			return true
-		}
-	}
-	return !amount.IsPositive()
-}
+const billingForecastBasis = "current_balance_at_current_rate"
 
 func billingForecastUnavailable(reason string) billingForecastDTO {
-	return billingForecastDTO{Status: "unavailable", Reason: &reason, Basis: "current_wallet"}
+	return billingForecastDTO{Status: "unavailable", Reason: &reason, Basis: billingForecastBasis}
 }
 
-// Static workload simulation, not a promised stop time: no future grants,
-// not-yet-valid buckets, session releases, renewals or workload changes. Held
-// money pays only its owner and survives expiry. Free money is consumed FEFO and
-// expires at its stored boundary. Demand uses the engine's rounded cumulative
-// fee, including each session's existing rounding phase. The returned horizon
-// is the first microsecond whose workload demand cannot all be funded; an
-// already source-less consuming session is exhausted immediately.
-// Seconds is floored to whole seconds; ExhaustsAt retains the exact microsecond.
-func simulateBillingForecast(wallet billingForecastWallet, sessions []billingForecastSession, at time.Time) billingForecastDTO {
-	if len(sessions) == 0 {
-		return billingForecastDTO{Status: "not_consuming", Basis: "current_wallet"}
+// billingStaticForecast is a balance/rate conversion, not an actual stop time.
+// QuoRem truncates the exact decimal ratio without division rounding or floats.
+// Future grants, expiry, held-credit ownership and fee rounding phases have no
+// role here: available already excludes reservations and reported debt once.
+func billingStaticForecast(available, hourly decimal.Decimal, at time.Time) billingForecastDTO {
+	if hourly.IsNegative() {
+		return billingForecastUnavailable("current_workload_unavailable")
 	}
-	// Own the simulation buffers; callers may retain their original snapshot.
-	wallet.Free = append([]billingForecastBucket(nil), wallet.Free...)
-	held := make(map[uint64]decimal.Decimal, len(wallet.Held))
-	for id, amount := range wallet.Held {
-		if amount.IsNegative() {
-			return billingForecastUnavailable("wallet_inconsistent")
-		}
-		held[id] = amount
+	if hourly.IsZero() {
+		return billingForecastDTO{Status: "not_consuming", Basis: billingForecastBasis}
 	}
-	wallet.Held = held
-	sort.SliceStable(wallet.Free, func(i, j int) bool {
-		left, right := wallet.Free[i].Expires, wallet.Free[j].Expires
-		return !left.IsZero() && (right.IsZero() || left.Before(right))
-	})
-	limit := uint64(math.MaxInt64 / int64(time.Microsecond))
-	active := make([]billingForecastSession, 0, len(sessions))
-	for _, session := range sessions {
-		_, positive, valid := billingSessionHourly(session.Session)
-		if !valid {
-			return billingForecastUnavailable("session_rate_unavailable")
-		}
-		if !positive {
-			continue
-		}
-		if remaining := uint64(math.MaxUint64) - session.BaseMicros; remaining < limit {
-			limit = remaining
-		}
-		active = append(active, session)
+	seconds := decimal.Zero
+	status := "exhausted"
+	if available.IsPositive() {
+		seconds, _ = available.Mul(decimal.NewFromInt(3600)).QuoRem(hourly, 0)
+		status = "estimated"
 	}
-	sessions = active
-	if len(sessions) == 0 {
-		return billingForecastDTO{Status: "not_consuming", Basis: "current_wallet"}
-	}
-	baseCosts := make([]decimal.Decimal, len(sessions))
-	for index, session := range sessions {
-		baseCosts[index] = expected(session.Session, session.BaseMicros)
-	}
-	for _, bucket := range wallet.Free {
-		if bucket.Amount.IsNegative() {
-			return billingForecastUnavailable("wallet_inconsistent")
-		}
-	}
-	result := func(micros uint64) billingForecastDTO {
-		seconds := strconv.FormatUint(micros/1000000, 10)
-		exhausts := at.Add(time.Duration(micros) * time.Microsecond)
-		if exhausts.Year() > 9999 || exhausts.Year() < 1 {
-			return billingForecastUnavailable("forecast_horizon_out_of_range")
-		}
-		timestamp := exhausts.Format(time.RFC3339Nano)
-		status := "estimated"
-		if micros == 0 {
-			status = "exhausted"
-		}
-		return billingForecastDTO{Status: status, Seconds: &seconds, ExhaustsAt: &timestamp, Basis: "current_wallet"}
-	}
-	elapsed := uint64(0)
-	for {
-		current := at.Add(time.Duration(elapsed) * time.Microsecond)
-		for index := range wallet.Free {
-			if expiry := wallet.Free[index].Expires; !expiry.IsZero() && !expiry.After(current) {
-				wallet.Free[index].Amount = decimal.Zero
+	value := seconds.String()
+	result := billingForecastDTO{Status: status, Seconds: &value, Basis: billingForecastBasis}
+	// Avoid time.Duration's ~292-year limit and never discard a valid duration
+	// merely because RFC3339 cannot represent the corresponding calendar time.
+	whole := seconds.Coefficient()
+	if whole.IsInt64() {
+		offset := whole.Int64()
+		latest := time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC).Unix()
+		if at.Year() >= 1 && at.Year() <= 9999 && offset <= latest-at.Unix() {
+			end := time.Unix(at.Unix()+offset, int64(at.Nanosecond())).In(at.Location())
+			if end.Year() >= 1 && end.Year() <= 9999 {
+				timestamp := end.Format(time.RFC3339Nano)
+				result.ExhaustsAt = &timestamp
 			}
 		}
-		free := wallet.freeTotal()
-		if !free.IsPositive() {
-			for _, session := range sessions {
-				if !wallet.Held[platform.Uint(session.Session["id"])].IsPositive() {
-					return result(elapsed)
-				}
-			}
-		}
-		next := limit
-		for _, bucket := range wallet.Free {
-			if !bucket.Amount.IsPositive() || bucket.Expires.IsZero() || !bucket.Expires.After(current) {
-				continue
-			}
-			micros, ok := billingElapsedMicros(at, bucket.Expires)
-			if ok && at.Add(time.Duration(micros)*time.Microsecond).Before(bucket.Expires) {
-				micros++
-			}
-			if ok && micros < next {
-				next = micros
-			}
-		}
-		needAt := func(target uint64) decimal.Decimal {
-			need := decimal.Zero
-			for index, session := range sessions {
-				cost := expected(session.Session, session.BaseMicros+target).Sub(baseCosts[index])
-				need = need.Add(decimal.Max(decimal.Zero, cost.Sub(wallet.Held[platform.Uint(session.Session["id"])])))
-			}
-			return need
-		}
-		if needAt(next).GreaterThan(free) {
-			low, high := elapsed, next
-			for low < high {
-				middle := low + (high-low)/2
-				if needAt(middle).GreaterThan(free) {
-					high = middle
-				} else {
-					low = middle + 1
-				}
-			}
-			return result(low)
-		}
-		// Every owner consumes its held credit before sharing the free pool.
-		for index, session := range sessions {
-			cost := expected(session.Session, session.BaseMicros+next)
-			wallet.pay(platform.Uint(session.Session["id"]), cost.Sub(baseCosts[index]))
-			baseCosts[index] = cost
-		}
-		if next == limit {
-			return billingForecastUnavailable("forecast_horizon_out_of_range")
-		}
-		elapsed = next
 	}
+	return result
 }

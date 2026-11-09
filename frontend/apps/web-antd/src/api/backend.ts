@@ -5,6 +5,7 @@
 import type {
   AuditLog,
   BillingDistribution,
+  BillingEvents,
   BillingInstanceOptions,
   BillingInstances,
   BillingOverview,
@@ -139,6 +140,8 @@ export type MemberDeleteBody = {
 
 export const memberApi = {
   billingOverview: () => detail<BillingOverview>('/billing/overview'),
+  billingEvents: (q: { period: BillingPeriod; page: number; page_size: number }) =>
+    api.get<BillingEvents>('/billing/events', { params: clean(q) }),
   billingDistribution: (q: { period: BillingPeriod }) =>
     api.get<BillingDistribution>('/billing/distribution', { params: clean(q) }),
   billingTrend: (q: { period: BillingPeriod; instance_id?: ID }) =>

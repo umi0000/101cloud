@@ -18,10 +18,12 @@ import { useAuthStore } from '#/store/auth';
 import { formatPt } from '#/utils/format';
 import { bucketLabel, bucketTooltip, forecastText } from './display';
 import DistributionPie from './distribution-pie.vue';
+import BillingEvents from './billing-events.vue';
 import { instanceDistribution, typeDistribution } from './distribution';
 
 const auth = useAuthStore();
 const access = useAccessStore();
+const eventCard = ref<InstanceType<typeof BillingEvents>>();
 const identity = computed(() => !access.loginExpired && auth.me?.user.role === 'user' ? auth.me.user.id : null);
 const period = ref<BillingPeriod>('today');
 const distributionPeriod = ref<BillingPeriod>('today');
@@ -48,7 +50,7 @@ const sequences: Record<Resource, number> = { overview: 0, distribution: 0, tren
 let generation = 0;
 let disposed = false;
 let searchTimer: ReturnType<typeof setTimeout> | undefined;
-const anyLoading = computed(() => Object.values(loading.value).some(Boolean));
+const anyLoading = computed(() => !!eventCard.value?.loading || Object.values(loading.value).some(Boolean));
 const partial = computed(() => overview.value?.partial || trend.value?.partial || instances.value?.partial);
 const typeSlices = computed(() => distribution.value ? typeDistribution(distribution.value) : []);
 const instanceSlices = computed(() => distribution.value ? instanceDistribution(distribution.value) : []);
@@ -95,8 +97,9 @@ async function load(resource: Resource, clear = false) {
     if (current()) loading.value[resource] = false;
   }
 }
-function refresh() {
+function refresh(includeEvents = true) {
   void load('overview'); void load('distribution'); void load('trend'); void load('instances');
+  if (includeEvents) eventCard.value?.refresh();
 }
 function choose(value: unknown) {
   const id = typeof value === 'string' ? value : undefined;
@@ -143,7 +146,7 @@ watch(identity, () => {
   overview.value = null; distribution.value = null; trend.value = null; instances.value = null; choices.value = null;
   errors.value = {}; loading.value = {}; instanceId.value = undefined; selectedLabel.value = '';
   search.value = ''; selectorSearch.value = ''; page.value = 1; selectorPage.value = 1; expanded.value = [];
-  refresh();
+  refresh(false);
 }, { immediate: true, flush: 'sync' });
 watch(distributionPeriod, () => { void load('distribution', true); }, { flush: 'sync' });
 watch([period, instanceId], () => {
@@ -157,10 +160,10 @@ onBeforeUnmount(() => { disposed = true; ++generation; clearTimeout(searchTimer)
 <template>
   <Page title="账单与消耗" description="按北京时间统计使用消耗">
     <Alert v-if="!identity" message="请使用普通用户账号登录后查看账单。" type="info" show-icon />
-    <div v-else class="min-w-0 space-y-4">
+    <div v-else class="flex min-w-0 flex-col gap-4">
       <div class="flex flex-wrap items-center justify-between gap-2">
         <p class="text-muted-foreground m-0 text-sm">全账户 · 今日 00:00 至今<template v-if="overview"> · 更新于 <TimeText :value="overview.as_of" /></template></p>
-        <Button :loading="anyLoading" @click="refresh">刷新数据</Button>
+        <Button :loading="anyLoading" @click="refresh()">刷新数据</Button>
       </div>
       <Alert v-if="errors.overview" message="账户汇总更新失败，已有数据为上次结果。" type="warning" show-icon><template #description><ErrorFeedback :feedback="errors.overview" /></template></Alert>
       <Spin :spinning="!!loading.overview && !overview">
@@ -179,9 +182,9 @@ onBeforeUnmount(() => { disposed = true; ++generation; clearTimeout(searchTimer)
               <p class="text-muted-foreground mb-0 mt-2 text-xs">全账户当前计费工作负载</p>
             </div>
             <div class="min-w-0">
-              <Tooltip title="按当前工作负载、有效额度及到期时间估算，不含未来发放；不是实际停机期限。"><span class="text-muted-foreground text-sm">预计可用时长 ⓘ</span></Tooltip>
+              <Tooltip title="当前可用额度 ÷ 当前消耗速率，按原始精确值静态折算；忽略额度到期及每日刷新，不计未来发放，不是实际停机期限。"><span class="text-muted-foreground text-sm">当前额度可用时长 ⓘ</span></Tooltip>
               <div class="mt-2 break-words text-2xl font-medium">{{ forecastText(overview?.forecast) }}</div>
-              <p v-if="overview?.forecast.exhausts_at" class="text-muted-foreground mb-0 mt-2 text-xs">预计至 <TimeText :value="overview.forecast.exhausts_at" /></p>
+              <p v-if="overview?.forecast.exhausts_at && (overview.forecast.status === 'estimated' || overview.forecast.status === 'exhausted')" class="text-muted-foreground mb-0 mt-2 text-xs">静态折算时刻 <TimeText :value="overview.forecast.exhausts_at" /></p>
             </div>
           </div>
         </Card>
@@ -237,6 +240,7 @@ onBeforeUnmount(() => { disposed = true; ++generation; clearTimeout(searchTimer)
         </Spin>
         <div class="mt-4 flex flex-wrap items-center justify-between gap-3"><span class="text-muted-foreground text-xs">共 {{ instances?.total ?? '—' }} 个实例<template v-if="instances"> · <TimeText :value="instances.as_of" /></template></span><Pagination :current="page" :total="instances?.total ?? 0" :page-size="20" :show-size-changer="false" size="small" @change="(value: number) => { page = value; expanded = []; load('instances', true); }" /></div>
       </Card>
+      <BillingEvents ref="eventCard" :identity="identity" />
     </div>
   </Page>
 </template>

@@ -22,7 +22,7 @@
         "tags": [
           "billing"
         ],
-        "description": "Member-owned read-only repeatable snapshot, one server clock, fixed +08 calendar. No user/account selector; unknown, duplicate, malformed query parameters rejected. No explicit credit account returns 409 policy_not_configured. Consumption is expected usage, including unpaid costs, excluding cancelled/failed-creation/admin-exempt usage and all grants/holds/ledger transfers. Unclosed known billable tails are separate estimates; partial/reasons disclose uncertainty. Six-fraction exact strings; breakdown conserves consumed micro-Pt. No settlement, financial locks or Agent calls. All-account hero, unaffected by instance filters. Period summaries end at as_of. Forecast uses current wallet only, FEFO expiry and owner-held reservations, no assumed future grants.",
+        "description": "Member-owned read-only repeatable snapshot, one server clock, fixed +08 calendar. No user/account selector; unknown, duplicate, malformed query parameters rejected. No explicit credit account returns 409 policy_not_configured. Consumption is expected usage, including unpaid costs, excluding cancelled/failed-creation/admin-exempt usage and all grants/holds/ledger transfers. Unclosed known billable tails are separate estimates; partial/reasons disclose uncertainty. Six-fraction exact strings; breakdown conserves consumed micro-Pt. No settlement, financial locks or Agent calls. All-account hero, unaffected by instance filters. Period summaries end at as_of. Forecast is only the exact static conversion floor(balance.available_pt * 3600 / current.hourly_pt), using the raw six-place values, not rounded display values. It does not truncate at expiry or daily refresh, assume future grants, or deduct pending usage, unclosed tails, debt or reservations again. Available balance still excludes currently invalid buckets and subtracts reservations and reported debt once. This is not an actual shutdown deadline. Historical usage partial alone does not prevent a known balance/rate conversion.",
         "parameters": [],
         "responses": {
           "200": {
@@ -223,6 +223,30 @@
           "default": {
             "$ref": "#/components/responses/ApiError"
           }
+        }
+      }
+    },
+    "/billing/events": {
+      "get": {
+        "operationId": "get_billing_events",
+        "tags": ["billing"],
+        "description": "Authenticated self-only published successful events, ordered occurred_at DESC, id DESC. One read-only repeatable-read snapshot and one clock after snapshot establishment. Asia/Shanghai calendar, Monday-start week, from inclusive, to exclusive, occurred_at <= as_of. No account required or created, no settlement, financial locks, Agent calls or raw usage aggregation. No historical backfill. Failed creation drafts are hidden; publishing preserves their original transaction clock. Creation admission/held reservations are not success and built-in creation startup is not an independent start event. Available balances are eligible remaining less reserved and outstanding insufficient debt at the same grant clock. Hourly snapshots are account-wide frozen active/running metering-session nominal Pt/h including parallel CPU/memory/storage/GPU, not utilization or current catalog prices. Unknown metering, pricing, policy, grace evidence or deferred offline usage produces null rather than zero. Unknown, duplicate or malformed parameters return 422; no ownership or instance selectors. Nullable snapshots mean unavailable or inapplicable, not zero. Internal ownership, business key and publication fields are not exposed.",
+        "parameters": [
+          {"in": "query", "name": "period", "required": true, "schema": {"type": "string", "enum": ["today", "week", "month", "year"]}},
+          {"in": "query", "name": "page", "schema": {"type": "integer", "minimum": 1, "maximum": 2147483647, "default": 1}},
+          {"in": "query", "name": "page_size", "schema": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20}}
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {"application/json": {"schema": {
+              "type": "object",
+              "properties": {"data": {"$ref": "#/components/schemas/BillingEvents"}, "request_id": {"type": "string"}},
+              "required": ["data", "request_id"],
+              "additionalProperties": false
+            }}}
+          },
+          "default": {"$ref": "#/components/responses/ApiError"}
         }
       }
     },
@@ -11883,14 +11907,15 @@
               "null"
             ],
             "pattern": "^[0-9]+$",
-            "description": "Nonnegative whole seconds, floored from the exact first-unfunded boundary. exhausts_at retains microsecond precision."
+            "description": "Nonnegative whole-second string: exact decimal floor(balance.available_pt * 3600 / current.hourly_pt). Known positive rate with nonpositive balance gives exhausted and 0; known zero rate gives not_consuming and null seconds. Unknown rate, inconsistent wallet or inactive account gives unavailable. No expiry/refresh cutoff, future grants or second deduction of pending usage, tails, debt or reservations."
           },
           "exhausts_at": {
             "type": [
               "string",
               "null"
             ],
-            "format": "date-time"
+            "format": "date-time",
+            "description": "Static as_of + seconds, not an actual shutdown or grace deadline. Null if the calendar timestamp is out of range, while computable seconds remains valid."
           },
           "reason": {
             "type": [
@@ -11899,7 +11924,7 @@
             ]
           },
           "basis": {
-            "const": "current_wallet"
+            "const": "current_balance_at_current_rate"
           }
         },
         "required": [
@@ -12231,6 +12256,40 @@
         },
         "required":["as_of","timezone","period","from","to","consumed_pt","recorded_pt","estimated_pt","breakdown","instances","partial","reasons"],
         "additionalProperties":false
+      },
+      "BillingEvent": {
+        "type": "object",
+        "properties": {
+          "id": {"type": "string", "pattern": "^[1-9][0-9]*$"},
+          "event_type": {"type": "string", "maxLength": 32},
+          "occurred_at": {"type": "string", "format": "date-time"},
+          "instance_id": {"type": ["string", "null"], "pattern": "^[1-9][0-9]*$"},
+          "instance_name": {"type": ["string", "null"], "maxLength": 255},
+          "grant_source": {"type": ["string", "null"], "maxLength": 32},
+          "amount_pt": {"type": ["string", "null"], "pattern": "^-?[0-9]+\\.[0-9]{6}$"},
+          "available_before_pt": {"type": ["string", "null"], "pattern": "^-?[0-9]+\\.[0-9]{6}$"},
+          "available_after_pt": {"type": ["string", "null"], "pattern": "^-?[0-9]+\\.[0-9]{6}$"},
+          "hourly_before_pt": {"type": ["string", "null"], "pattern": "^-?[0-9]+\\.[0-9]{6}$"},
+          "hourly_after_pt": {"type": ["string", "null"], "pattern": "^-?[0-9]+\\.[0-9]{6}$"}
+        },
+        "required": ["id", "event_type", "occurred_at", "instance_id", "instance_name", "grant_source", "amount_pt", "available_before_pt", "available_after_pt", "hourly_before_pt", "hourly_after_pt"],
+        "additionalProperties": false
+      },
+      "BillingEvents": {
+        "type": "object",
+        "properties": {
+          "as_of": {"type": "string", "format": "date-time"},
+          "timezone": {"const": "Asia/Shanghai"},
+          "period": {"type": "string", "enum": ["today", "week", "month", "year"]},
+          "from": {"type": "string", "format": "date-time"},
+          "to": {"type": "string", "format": "date-time"},
+          "page": {"type": "integer", "minimum": 1, "maximum": 2147483647},
+          "page_size": {"type": "integer", "minimum": 1, "maximum": 100},
+          "total": {"type": "integer", "minimum": 0},
+          "items": {"type": "array", "items": {"$ref": "#/components/schemas/BillingEvent"}}
+        },
+        "required": ["as_of", "timezone", "period", "from", "to", "page", "page_size", "total", "items"],
+        "additionalProperties": false
       },
       "BillingInstances": {
         "type": "object",

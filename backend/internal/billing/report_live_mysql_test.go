@@ -95,7 +95,7 @@ func reportGrantMySQL(t *testing.T, f *adjustmentMySQLFixture, key, amount strin
 	}
 }
 
-func TestMySQLReportLiveExpiredOwnerHeldFreeAndFutureFunds(t *testing.T) {
+func TestMySQLReportLiveExcludesExpiredReservedAndFutureFunds(t *testing.T) {
 	at := reportLiveClock()
 	f := reportLiveMySQLFixture(t, at)
 	expired := at.Add(-time.Microsecond)
@@ -112,13 +112,13 @@ func TestMySQLReportLiveExpiredOwnerHeldFreeAndFutureFunds(t *testing.T) {
 	if live.Partial || live.Current.Status != "ready" || live.Current.HourlyPT == nil || *live.Current.HourlyPT != "3600.000000" || live.Balance.AvailablePT != "4.000000" || live.Balance.ReservedPT != "55.000000" || live.Balance.OutstandingDebtPT != "0.000000" {
 		t.Fatalf("live balance/rate mismatch: %#v", live)
 	}
-	assertReportForecast(t, live.Forecast, "estimated", "6", at.Add(6*time.Second+time.Microsecond))
+	assertReportForecast(t, live.Forecast, "estimated", "4", at.Add(4*time.Second))
 	if !reflect.DeepEqual(beforeAccount, debtRow(t, f.db, "credit_accounts", 1)) || !reflect.DeepEqual(beforeSession, debtRow(t, f.db, "usage_sessions", 2)) || ledgerCount != f.count(t, "credit_ledger", "1=1") || f.count(t, "usage_charges", "1=1") != 0 {
 		t.Fatal("reporting mutated financial state")
 	}
 }
 
-func TestMySQLReportLiveDeductsUnpaidAndTailExactlyOnce(t *testing.T) {
+func TestMySQLReportLiveUsesAvailableWithoutRedeductingPendingDebtReservedOrTail(t *testing.T) {
 	at := reportLiveClock()
 	f := reportLiveMySQLFixture(t, at)
 	reportGrantMySQL(t, f, "report-own-payment", "2", at.Add(-time.Hour), nil, 2, "2")
@@ -137,10 +137,9 @@ func TestMySQLReportLiveDeductsUnpaidAndTailExactlyOnce(t *testing.T) {
 	if live.Partial || len(live.Tails) != 1 || live.Tails[0].BaseMicros != 2000000 || money(live.Tails[0].BaseExpected) != "2.000000" || live.Balance.AvailablePT != "4.000000" || live.Balance.OutstandingDebtPT != "1.000000" || live.Balance.ReservedPT != "2.000000" {
 		t.Fatalf("debt/tail mismatch: %#v", live)
 	}
-	// Original free5+own2 - recorded unpaid2 - estimated tail1 = free4.
-	// The public available4 already subtracts debt1; using it as the simulation
-	// source would incorrectly shorten this forecast by one second.
-	assertReportForecast(t, live.Forecast, "estimated", "4", at.Add(4*time.Second+time.Microsecond))
+	// Public available is free5 - reported debt1. Neither held2, pending1 nor
+	// the unclosed tail1 changes the static conversion a second time.
+	assertReportForecast(t, live.Forecast, "estimated", "4", at.Add(4*time.Second))
 }
 
 func TestMySQLReportLiveExpiryBoundaryAndZeroFunding(t *testing.T) {
@@ -149,7 +148,7 @@ func TestMySQLReportLiveExpiryBoundaryAndZeroFunding(t *testing.T) {
 	assertReportForecast(t, reportLoadMySQL(t, f, at).Forecast, "exhausted", "0", at)
 	expiry := at.Add(2 * time.Second)
 	reportGrantMySQL(t, f, "report-expiring-free", "5", at.Add(-time.Hour), &expiry, 0, "")
-	assertReportForecast(t, reportLoadMySQL(t, f, at).Forecast, "estimated", "2", expiry)
+	assertReportForecast(t, reportLoadMySQL(t, f, at).Forecast, "estimated", "5", at.Add(5*time.Second))
 	if err := f.db.Table("instances").Where("id=1").Update("observed_at", expiry).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -161,6 +160,103 @@ func TestMySQLReportLiveExpiryBoundaryAndZeroFunding(t *testing.T) {
 		t.Fatalf("free bucket valid at exact expiry: %#v", live.Balance)
 	}
 	assertReportForecast(t, live.Forecast, "exhausted", "0", expiry)
+}
+
+func TestMySQLReportLiveStaticDurationCrossesRefresh(t *testing.T) {
+	at := reportLiveClock()
+	for _, tc := range []struct{ amount, seconds string }{{"200.000000", "180000"}, {"199.900000", "179910"}, {"199.999999", "179999"}} {
+		t.Run(tc.amount, func(t *testing.T) {
+			f := reportLiveMySQLFixture(t, at)
+			if err := f.db.Table("usage_sessions").Where("id=2").Update("cpu_hourly_pt", "4.000000").Error; err != nil {
+				t.Fatal(err)
+			}
+			expiry := time.Date(at.Year(), at.Month(), at.Day(), 23, 0, 0, 0, zone)
+			reportGrantMySQL(t, f, "report-before-refresh", tc.amount, at.Add(-time.Hour), &expiry, 0, "")
+			reportGrantMySQL(t, f, "report-after-refresh", "1000", at.Add(time.Hour), nil, 0, "")
+			end := at.Add(time.Duration(dec(tc.seconds).IntPart()) * time.Second)
+			live := reportLoadMySQL(t, f, at)
+			if live.Balance.AvailablePT != tc.amount {
+				t.Fatalf("unexpected available: %#v", live.Balance)
+			}
+			assertReportForecast(t, live.Forecast, "estimated", tc.seconds, end)
+			if !end.After(expiry) {
+				t.Fatal("static duration did not cross the refresh")
+			}
+			for _, boundary := range []time.Time{at.Add(time.Minute), at} {
+				if err := f.db.Table("credit_buckets").Where("business_key='report-before-refresh'").Update("expires_at", boundary).Error; err != nil {
+					t.Fatal(err)
+				}
+				live = reportLoadMySQL(t, f, at)
+				if boundary.After(at) {
+					assertReportForecast(t, live.Forecast, "estimated", tc.seconds, end)
+				} else {
+					if live.Balance.AvailablePT != "0.000000" {
+						t.Fatalf("already expired bucket included: %#v", live.Balance)
+					}
+					assertReportForecast(t, live.Forecast, "exhausted", "0", at)
+				}
+			}
+		})
+	}
+}
+
+func TestMySQLReportLiveHistoricalPartialAllowsKnownStaticDuration(t *testing.T) {
+	at := reportLiveClock()
+	f := reportLiveMySQLFixture(t, at)
+	reportGrantMySQL(t, f, "report-known-balance", "5", at.Add(-time.Hour), nil, 0, "")
+	recordedInstanceCopy(t, f, 2)
+	if err := f.db.Table("instances").Where("id=2").Updates(row{"deleted_at": at, "desired_state": "deleted", "observed_state": "deleted"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	session := debtRow(t, f.db, "usage_sessions", 2)
+	session["id"], session["instance_id"], session["last_settled_at"] = uint64(3), uint64(2), at.Add(-time.Second)
+	delete(session, "active_instance_id")
+	delete(session, "allocation_key")
+	if err := f.db.Table("usage_sessions").Create(&session).Error; err != nil {
+		t.Fatal(err)
+	}
+	live := reportLoadMySQL(t, f, at)
+	if !live.Partial || live.Current.Status != "ready" || live.Current.HourlyPT == nil || *live.Current.HourlyPT != "3600.000000" || !reflect.DeepEqual(live.Reasons, []string{"deleted_session_unclosed"}) {
+		t.Fatalf("historical partial/current mismatch: %#v", live)
+	}
+	assertReportForecast(t, live.Forecast, "estimated", "5", at.Add(5*time.Second))
+}
+
+func TestMySQLReportLiveInactiveAndInconsistentWalletUnavailable(t *testing.T) {
+	at := reportLiveClock()
+	for _, hourly := range []string{"0.000000", "4.000000"} {
+		t.Run(hourly, func(t *testing.T) {
+			f := reportLiveMySQLFixture(t, at)
+			reportGrantMySQL(t, f, "report-wallet-validity", "5", at.Add(-time.Hour), nil, 0, "")
+			if err := f.db.Table("usage_sessions").Where("id=2").Update("cpu_hourly_pt", hourly).Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := f.db.Table("credit_accounts").Where("id=1").Update("status", "frozen").Error; err != nil {
+				t.Fatal(err)
+			}
+			live := reportLoadMySQL(t, f, at)
+			assertReportForecast(t, live.Forecast, "unavailable", "", time.Time{})
+			if live.Forecast.Reason == nil || *live.Forecast.Reason != "account_not_active" {
+				t.Fatalf("inactive account lost reason: %#v", live.Forecast)
+			}
+			if err := f.db.Table("credit_accounts").Where("id=1").Update("status", "active").Error; err != nil {
+				t.Fatal(err)
+			}
+			// Only this isolated fixture permits corruption, to exercise the
+			// reader's defensive wallet validity check without weakening SQL.
+			if err := f.db.Exec("ALTER TABLE credit_buckets ALTER CHECK ck_credit_buckets_amounts NOT ENFORCED").Error; err != nil {
+				t.Fatal(err)
+			}
+			if err := f.db.Table("credit_buckets").Where("business_key='report-wallet-validity'").Update("reserved_pt", "6").Error; err != nil {
+				t.Fatal(err)
+			}
+			live = reportLoadMySQL(t, f, at)
+			assertReportForecast(t, live.Forecast, "unavailable", "", time.Time{})
+			if live.Forecast.Reason == nil || *live.Forecast.Reason != "wallet_inconsistent" {
+				t.Fatalf("inconsistent wallet lost reason: %#v", live.Forecast)
+			}
+		})
+	}
 }
 
 func TestMySQLReportLiveStoppedHeldUnknownAndFailed(t *testing.T) {
@@ -227,7 +323,7 @@ func TestMySQLReportLiveOfflinePendingAndUnfundedDebt(t *testing.T) {
 		t.Fatal(err)
 	}
 	live = reportLoadMySQL(t, f, at)
-	assertReportForecast(t, live.Forecast, "estimated", "3", at.Add(3*time.Second+time.Microsecond))
+	assertReportForecast(t, live.Forecast, "estimated", "5", at.Add(5*time.Second))
 	if err := f.db.Table("usage_charges").Where("id=?", platform.Uint(charge["id"])).Updates(row{"status": "insufficient", "expected_pt": "10"}).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +340,7 @@ func TestMySQLReportLiveTailRoundingBoundary(t *testing.T) {
 	if err := f.db.Table("usage_sessions").Where("id=2").Updates(row{"cpu_hourly_pt": "0.000001", "last_settled_at": at.Add(-time.Microsecond), "metered_microseconds": uint64(1799999999), "cumulative_expected_pt": "0.000000"}).Error; err != nil {
 		t.Fatal(err)
 	}
-	reportGrantMySQL(t, f, "report-one-micro-held", "0.000001", at.Add(-time.Hour), nil, 2, "0.000001")
+	reportGrantMySQL(t, f, "report-one-micro-free-and-held", "0.000002", at.Add(-time.Hour), nil, 2, "0.000001")
 	live := reportLoadMySQL(t, f, at)
 	if live.Partial || len(live.Tails) != 1 {
 		t.Fatalf("rounding tail missing: %#v", live)
@@ -253,7 +349,10 @@ func TestMySQLReportLiveTailRoundingBoundary(t *testing.T) {
 	if got := expected(tail.Session, tail.BaseMicros+1).Sub(tail.BaseExpected); money(got) != "0.000001" {
 		t.Fatalf("tail rounded independently: %s", got)
 	}
-	assertReportForecast(t, live.Forecast, "exhausted", "0", at)
+	if live.Balance.AvailablePT != "0.000001" || live.Balance.ReservedPT != "0.000001" {
+		t.Fatalf("rounding tail changed public available: %#v", live.Balance)
+	}
+	assertReportForecast(t, live.Forecast, "estimated", "3600", at.Add(time.Hour))
 }
 
 func TestMySQLReportLiveGraceWaivedAndStoredExemption(t *testing.T) {

@@ -399,6 +399,30 @@ func workerRetainedCreationError(cause error) error {
 	details["action"] = "物理资源预留仍保留；确定未交付失败将由后台安全回收，派发有歧义时仅核对原操作，不会重放创建或初始化。"
 	return platform.EDetails(409, platform.Text(public["code"]), platform.Text(public["message"]), platform.Row(details))
 }
+
+// Recovery wrappers retain the original operation identity, including when a
+// CREATE invokes START internally. A repeated observation is not a new event.
+func workerBillingIdentity(ctx context.Context, db *gorm.DB, j platform.Job) (uint64, string, error) {
+	id := j.ID
+	switch source := ctx.Value(workerRecoveryKey{}).(type) {
+	case uint64:
+		if source != 0 && source < id {
+			id = source
+		}
+	case []uint64:
+		for _, candidate := range source {
+			if candidate != 0 && candidate < id {
+				id = candidate
+			}
+		}
+	}
+	task, err := platform.Get(db, "tasks", id, false)
+	if err != nil {
+		return 0, "", err
+	}
+	return id, platform.Text(task["task_type"]), nil
+}
+
 func workerConfirm(ctx context.Context, a *platform.App, j platform.Job, r platform.Row, state, event string, extra platform.Row) error {
 	return workerConfirmStep(ctx, a, j, r, state, event, extra, "")
 }
@@ -422,6 +446,46 @@ func workerConfirmStep(ctx context.Context, a *platform.App, j platform.Job, r p
 				extra["provisioning_state"] = "failed"
 			}
 		}
+		at := a.Time()
+		root, kind, err := workerBillingIdentity(ctx, db, j)
+		if err != nil {
+			return err
+		}
+		key := "task:" + strconv.FormatUint(root, 10) + ":"
+		var finish func() error
+		if locked["creation_failed_at"] == nil {
+			eventType, published := "", true
+			if kind == "instance.create" && event == "running" {
+				eventType, published = "instance.create", false
+			} else if kind == "instance.create" && event == "stopped" {
+				var draft struct {
+					ID        *uint64
+					Published bool
+				}
+				// Current read without locking an absent event key/gap: only our
+				// already-owned instance is locked, even for wallet-less users.
+				if err = db.Table("instances i").Clauses(clause.Locking{Strength: "UPDATE", Table: clause.Table{Name: "i"}}).Select("e.id,e.published").Joins("LEFT JOIN billing_events e ON e.user_id=i.user_id AND e.business_key=?", key+"instance.create").Where("i.id=?", locked["id"]).Take(&draft).Error; err != nil {
+					return err
+				}
+				if draft.ID == nil {
+					eventType = "instance.create"
+				} else if !draft.Published {
+					eventType = "instance.stop"
+				}
+			} else if kind == "instance.create" && stepKey == "create.verify" && state == "stopped" {
+				eventType = "instance.create"
+			} else if kind == "instance.start" && event == "running" {
+				eventType = "instance.start"
+			} else if (event == "stopped" || event == "resize_stopped") && (kind == "instance.stop" || kind == "instance.start" || kind == "instance.resize" || kind == "instance.delete") {
+				eventType = "instance.stop"
+			}
+			if eventType != "" {
+				finish, err = billing.PrepareInstanceEvent(db, locked, eventType, key+eventType, at, published)
+				if err != nil {
+					return err
+				}
+			}
+		}
 		changes := platform.Row{"observed_state": state, "observed_at": a.Time(), "revision": gorm.Expr("revision + 1")}
 		for k, v := range extra {
 			changes[k] = v
@@ -433,7 +497,18 @@ func workerConfirmStep(ctx context.Context, a *platform.App, j platform.Job, r p
 			return err
 		}
 		if event != "" {
-			if err = billing.InstanceUsage(ctx, db, locked, event, nil); err != nil {
+			if err = billing.InstanceUsageAt(ctx, db, locked, event, nil, at); err != nil {
+				return err
+			}
+		}
+		if finish != nil {
+			if err = finish(); err != nil {
+				return err
+			}
+		}
+		deliveredStopped := j.Type == "instance.create" && event == "stopped" && platform.Text(locked["provisioning_state"]) == "ready"
+		if kind == "instance.create" && (stepKey == "create.verify" || deliveredStopped) && locked["creation_failed_at"] == nil {
+			if err = billing.PublishInstanceEvent(db, platform.Uint(locked["user_id"]), key+"instance.create"); err != nil {
 				return err
 			}
 		}
@@ -739,6 +814,11 @@ func runCreateWork(ctx context.Context, a *platform.App, j platform.Job) error {
 		return err
 	}
 	if finalState != "running" || platform.Text(current["desired_state"]) != "running" {
+		if finalState == "stopped" {
+			if err = workerConfirmStep(ctx, a, j, r, "stopped", "", platform.Row{"provisioning_state": "ready"}, "create.verify"); err != nil {
+				return workerUnknown(ctx, a, j, r, err)
+			}
+		}
 		return a.TaskResult(ctx, j, platform.Row{"instance_id": strconv.FormatUint(j.InstanceID, 10), "observed_state": finalState, "initialization": "pending"})
 	}
 	if err = workerConfirm(ctx, a, j, r, finalState, finalState, platform.Row{"provisioning_state": "ready"}); err != nil {
@@ -1477,7 +1557,7 @@ func runDelete(ctx context.Context, a *platform.App, j platform.Job) error {
 			return nil
 		}
 		now := a.Time()
-		if e = billing.InstanceUsage(ctx, db, current, "deleted", nil); e != nil {
+		if e = billing.ConfirmInstanceUsage(ctx, db, current, "deleted", "instance.delete", "instance.delete:"+strconv.FormatUint(j.InstanceID, 10), now); e != nil {
 			return e
 		}
 		if e = db.Table("gpu_allocations").Where("instance_id = ? AND active_slot = 1", j.InstanceID).Updates(platform.Row{"status": "released", "configured": false, "observed": false, "release_verified": true, "released_at": now, "last_verified_at": now, "revision": gorm.Expr("revision + 1")}).Error; e != nil {
@@ -2369,12 +2449,30 @@ func workerLateStop(ctx context.Context, a *platform.App, j platform.Job, r plat
 		if platform.Text(current["desired_state"]) == "running" {
 			return nil
 		}
-		if e = db.Table("instances").Where("id = ?", j.InstanceID).Updates(platform.Row{"observed_state": "running", "observed_at": a.Time(), "revision": gorm.Expr("revision + 1")}).Error; e != nil {
+		at := a.Time()
+		root, kind, e := workerBillingIdentity(ctx, db, j)
+		if e != nil {
+			return e
+		}
+		var finish func() error
+		if current["creation_failed_at"] == nil && (kind == "instance.create" || kind == "instance.start") {
+			key := "task:" + strconv.FormatUint(root, 10) + ":" + kind
+			finish, e = billing.PrepareInstanceEvent(db, current, kind, key, at, kind != "instance.create")
+			if e != nil {
+				return e
+			}
+		}
+		if e = db.Table("instances").Where("id = ?", j.InstanceID).Updates(platform.Row{"observed_state": "running", "observed_at": at, "revision": gorm.Expr("revision + 1")}).Error; e != nil {
 			return e
 		}
 		current["observed_state"] = "running"
-		if e = billing.InstanceUsage(ctx, db, current, "running", nil); e != nil {
+		if e = billing.InstanceUsageAt(ctx, db, current, "running", nil, at); e != nil {
 			return e
+		}
+		if finish != nil {
+			if e = finish(); e != nil {
+				return e
+			}
 		}
 		var stops []platform.Row
 		if e = db.Table("tasks").Where("instance_id = ? AND task_type = 'instance.stop'", j.InstanceID).Order("id DESC").Find(&stops).Error; e != nil {

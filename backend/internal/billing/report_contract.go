@@ -39,6 +39,9 @@ type billingCurrentDTO struct {
 	Reason   *string `json:"reason"`
 }
 
+// Forecast is only floor(balance.available_pt * 3600 / current.hourly_pt).
+// It ignores future grants and expiry and is not an actual stop deadline.
+// Seconds stays valid when the static calendar timestamp is out of range.
 type billingForecastDTO struct {
 	Status     string  `json:"status"`
 	Seconds    *string `json:"seconds"`

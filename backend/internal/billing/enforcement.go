@@ -544,11 +544,21 @@ func reconcileEvent(ctx context.Context, a *platform.App, id uint64) error {
 				return e
 			}
 			if strings.EqualFold(status, "Stopped") {
-				if e = InstanceUsage(ctx, db, instance, "stopped", nil); e != nil {
+				at := now()
+				finish, err := prepareObservedInstanceEvent(db, instance, "stopped", at, at)
+				if err != nil {
+					return err
+				}
+				if e = instanceUsageAt(ctx, db, instance, "stopped", nil, at); e != nil {
 					return e
 				}
-				if e = db.Table("instances").Where("id = ?", i["id"]).Updates(row{"observed_state": "stopped", "observed_at": now(), "revision": gorm.Expr("revision + 1")}).Error; e != nil {
+				if e = db.Table("instances").Where("id = ?", i["id"]).Updates(row{"observed_state": "stopped", "observed_at": at, "revision": gorm.Expr("revision + 1")}).Error; e != nil {
 					return e
+				}
+				if finish != nil {
+					if e = finish(); e != nil {
+						return e
+					}
 				}
 				return db.Table("credit_enforcement_instances").Where("id = ?", item["id"]).Updates(row{"status": "stopped", "revision": gorm.Expr("revision + 1")}).Error
 			}
