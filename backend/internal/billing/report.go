@@ -297,7 +297,7 @@ func billingTrend(db *gorm.DB, ac row, at time.Time, live billingLive, o billing
 func billingInstances(db *gorm.DB, ac row, at time.Time, live billingLive, o billingReportOptions) (billingInstancesDTO, error) {
 	w := billingPeriod(at, o.period)
 	out := billingInstancesDTO{AsOf: at, Timezone: billingTimezone, Period: o.period, From: w.From, To: at, Page: o.page, PageSize: o.size, Items: []billingInstanceDTO{}, Partial: live.Partial, Reasons: live.Reasons}
-	filter := "i.user_id = ?"
+	filter := "i.user_id = ? AND i.deleted_at IS NULL AND i.creation_failed_at IS NULL"
 	filterArgs := []any{ac["user_id"]}
 	if o.instance != 0 {
 		filter += " AND i.id = ?"

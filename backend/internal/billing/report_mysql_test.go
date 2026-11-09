@@ -122,21 +122,30 @@ func TestMySQLBillingReportsSQLOverlapConservationAndSnapshotReadOnly(t *testing
 	}
 }
 
-func TestMySQLBillingReportRoutesTombstonesSearchPaginationAndNoWrites(t *testing.T) {
+func TestMySQLBillingReportRoutesExistingInstancesSearchPaginationAndNoWrites(t *testing.T) {
 	f := reportFixture(t)
 	at := now()
 	from := billingPeriod(at, "year").From
 	reportCharge(t, f, 1, from, from.Add(time.Microsecond), "7.000000", "insufficient")
-	for _, id := range []uint64{2, 3} {
+	for _, id := range []uint64{2, 3, 5} {
 		i := debtRow(t, f.db, "instances", 1)
 		i["id"], i["incus_name"], i["logical_name"] = id, "report-instance-"+sid(id), "Report % literal "+sid(id)
 		if id == 2 {
 			i["deleted_at"], i["desired_state"], i["observed_state"] = at, "deleted", "deleted"
+		} else {
+			i["desired_state"], i["observed_state"] = "running", "running"
+		}
+		if id == 5 {
+			i["creation_failed_at"] = at
 		}
 		if err := f.db.Table("instances").Create(&i).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
+	if err := f.db.Table("usage_sessions").Where("id=2").Update("instance_id", 2).Error; err != nil {
+		t.Fatal(err)
+	}
+	reportCharge(t, f, 2, from, from.Add(time.Microsecond), "3.000000", "insufficient")
 	foreign := debtRow(t, f.db, "instances", 1)
 	foreign["id"], foreign["user_id"], foreign["incus_name"] = 4, 1, "report-foreign-instance"
 	if err := f.db.Table("instances").Create(&foreign).Error; err != nil {
@@ -148,28 +157,42 @@ func TestMySQLBillingReportRoutesTombstonesSearchPaginationAndNoWrites(t *testin
 	}
 	var list billingInstancesDTO
 	reportCall(t, f, "/billing/instances?period=year&page_size=1", 200, &list)
-	if list.Total != 3 || len(list.Items) != 1 || list.Items[0].InstanceID != "1" || list.Items[0].RecordedPT != "7.000000" || list.Items[0].EstimatedPT != "0.000000" {
+	if list.Total != 2 || len(list.Items) != 1 || list.Items[0].InstanceID != "1" || list.Items[0].InstanceState != "stopped" || list.Items[0].RecordedPT != "7.000000" || list.Items[0].EstimatedPT != "0.000000" {
 		t.Fatalf("list sorting/SQL scan failed: %+v", list)
 	}
 	if list.Items[0].Breakdown.CPUPT != "3.500000" || list.Items[0].Breakdown.MemoryPT != "3.500000" || list.Items[0].Breakdown.DiskPT != "0.000000" || list.Items[0].Breakdown.GPUPT != "0.000000" {
 		t.Fatalf("snapshot component split: %+v", list.Items[0])
 	}
 	reportCall(t, f, "/billing/instances?period=year&page_size=1&page=2", 200, &list)
-	if len(list.Items) != 1 || list.Items[0].InstanceID != "3" {
+	if len(list.Items) != 1 || list.Items[0].InstanceID != "3" || list.Items[0].InstanceState != "running" {
 		t.Fatalf("ID tiebreak failed: %+v", list)
 	}
 	reportCall(t, f, "/billing/instances?period=year&search=%25", 200, &list)
-	if list.Total != 2 {
+	if list.Total != 1 || len(list.Items) != 1 || list.Items[0].InstanceID != "3" {
 		t.Fatalf("literal search failed: %+v", list)
 	}
 	reportCall(t, f, "/billing/instances?period=year&instance_id=2", 200, &list)
-	if list.Total != 1 || len(list.Items) != 1 || !list.Items[0].Deleted || list.Items[0].Name != "Report % literal 2" {
-		t.Fatalf("tombstone missing: %+v", list)
+	if list.Total != 0 || len(list.Items) != 0 {
+		t.Fatalf("deleted instance leaked: %+v", list)
 	}
 	var overview billingOverviewDTO
 	reportCall(t, f, "/billing/overview", 200, &overview)
-	if overview.Periods["year"].ConsumedPT != "7.000000" {
-		t.Fatalf("unpaid consumption excluded: %+v", overview)
+	if overview.Periods["year"].ConsumedPT != "10.000000" {
+		t.Fatalf("current or deleted-instance consumption excluded from account total: %+v", overview)
+	}
+	var distribution billingDistributionDTO
+	reportCall(t, f, "/billing/distribution?period=year", 200, &distribution)
+	if distribution.ConsumedPT != "10.000000" {
+		t.Fatalf("account distribution lost historical consumption: %+v", distribution)
+	}
+	foundDeleted := false
+	for _, item := range distribution.Instances {
+		if item.InstanceID == "2" && item.Deleted && item.ConsumedPT == "3.000000" {
+			foundDeleted = true
+		}
+	}
+	if !foundDeleted {
+		t.Fatalf("distribution lost deleted-instance history: %+v", distribution)
 	}
 	var trend billingTrendDTO
 	reportCall(t, f, "/billing/trend?period=year", 200, &trend)

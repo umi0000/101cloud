@@ -7,7 +7,7 @@ import { computed, onBeforeUnmount, ref, shallowRef, watch } from 'vue';
 import { Page } from '@vben/common-ui';
 import { EchartsUI, useEcharts } from '@vben/plugins/echarts';
 import { useAccessStore } from '@vben/stores';
-import { Alert, Button, Card, Empty, InputSearch, Pagination, Select, Spin, Tag, Tooltip } from 'ant-design-vue';
+import { Alert, Button, Card, Empty, InputSearch, Pagination, Select, Spin, Tooltip } from 'ant-design-vue';
 import { memberApi } from '#/api/backend';
 import ErrorFeedback from '#/components/error-feedback.vue';
 import StatusTag from '#/components/status-tag.vue';
@@ -53,7 +53,7 @@ const partial = computed(() => overview.value?.partial || trend.value?.partial |
 const typeSlices = computed(() => distribution.value ? typeDistribution(distribution.value) : []);
 const instanceSlices = computed(() => distribution.value ? instanceDistribution(distribution.value) : []);
 const options = computed(() => {
-  const result = (choices.value?.items ?? []).map((item) => ({ value: item.instance_id, label: `${item.name} #${item.instance_id}${item.deleted ? '（已删除）' : ''}` }));
+  const result = (choices.value?.items ?? []).map((item) => ({ value: item.instance_id, label: `${item.name} #${item.instance_id}` }));
   if (instanceId.value && !result.some((item) => item.value === instanceId.value)) result.unshift({ value: instanceId.value, label: selectedLabel.value });
   return result;
 });
@@ -209,7 +209,7 @@ onBeforeUnmount(() => { disposed = true; ++generation; clearTimeout(searchTimer)
         <div class="mb-4 grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2">
           <div><label class="mb-1 block text-sm" for="billing-period">统计周期</label><Select id="billing-period" v-model:value="period" :options="periods" class="w-full" /></div>
           <div><label class="mb-1 block text-sm" for="billing-instance">实例筛选</label>
-            <Select id="billing-instance" :value="instanceId" :options="options" :filter-option="false" :loading="!!loading.choices" allow-clear show-search class="w-full" placeholder="全部实例（含已删除历史）" @dropdown-visible-change="openChoices" @search="searchChoices" @change="choose">
+            <Select id="billing-instance" :value="instanceId" :options="options" :filter-option="false" :loading="!!loading.choices" allow-clear show-search class="w-full" placeholder="全部实例" @dropdown-visible-change="openChoices" @search="searchChoices" @change="choose">
               <template #dropdownRender="{ menuNode }"><component :is="menuNode" /><div class="border-border flex items-center justify-between gap-2 border-t p-2"><Button size="small" :disabled="selectorPage <= 1 || !!loading.choices" @mousedown.prevent @click="selectorPage--; load('choices', true)">上一页</Button><span class="text-xs">{{ selectorPage }} / {{ Math.max(1, Math.ceil((choices?.total ?? 0) / 20)) }}</span><Button size="small" :disabled="selectorPage * 20 >= (choices?.total ?? 0) || !!loading.choices" @mousedown.prevent @click="selectorPage++; load('choices', true)">下一页</Button></div></template>
             </Select>
             <div v-if="errors.choices" class="text-destructive mt-1 text-xs" role="alert">实例选项加载失败 <Button size="small" type="link" @click="load('choices')">重试</Button></div>
@@ -226,7 +226,7 @@ onBeforeUnmount(() => { disposed = true; ++generation; clearTimeout(searchTimer)
           <div class="space-y-3">
             <article v-for="item in instances?.items ?? []" :key="item.instance_id" class="border-border min-w-0 rounded-lg border p-4">
               <div class="flex flex-wrap items-start justify-between gap-3">
-                <div class="min-w-0 flex-1"><div class="flex flex-wrap items-center gap-2"><span v-if="item.deleted" class="break-all font-medium">{{ item.name }}</span><RouterLink v-else :to="`/instances/${item.instance_id}`" class="text-primary break-all font-medium">{{ item.name }}</RouterLink><Tag v-if="item.deleted">已删除</Tag><StatusTag v-else kind="observed" :value="item.instance_state" /></div><span class="text-muted-foreground text-xs">#{{ item.instance_id }}</span></div>
+                <div class="min-w-0 flex-1"><div class="flex flex-wrap items-center gap-2"><RouterLink :to="`/instances/${item.instance_id}`" class="text-primary break-all font-medium">{{ item.name }}</RouterLink><StatusTag kind="observed" :value="item.instance_state" /></div><span class="text-muted-foreground text-xs">#{{ item.instance_id }}</span></div>
                 <Tooltip :title="`已记录 ${formatPt(item.recorded_pt)} Pt；未结算尾段估算 ${formatPt(item.estimated_pt)} Pt`"><span class="break-all font-mono font-semibold">{{ formatPt(item.consumed_pt) }} Pt</span></Tooltip>
               </div>
               <div class="mt-3 flex flex-wrap items-center justify-between gap-2"><span class="text-muted-foreground break-all text-sm">当前速率 {{ item.rate_status === 'ready' ? `${formatPt(item.current_hourly_pt)} Pt/h` : '暂不可用' }}</span><Button size="small" type="link" :aria-expanded="expanded.includes(item.instance_id)" @click="toggle(item.instance_id)">{{ expanded.includes(item.instance_id) ? '收起明细' : '费用明细' }}</Button></div>

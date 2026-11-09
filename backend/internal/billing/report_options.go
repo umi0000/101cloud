@@ -65,7 +65,7 @@ func registerBillingInstanceOptions(a *platform.App, user *gin.RouterGroup) {
 		}
 		out := billingInstanceOptionsDTO{Page: o.page, PageSize: o.size, Items: []billingInstanceOptionDTO{}}
 		err = platform.DB(c, a).Transaction(func(db *gorm.DB) error {
-			filter := "user_id = ?"
+			filter := "user_id = ? AND deleted_at IS NULL AND creation_failed_at IS NULL"
 			args := []any{platform.Current(c).ID}
 			if o.search != "" {
 				// LOCATE preserves literal percent/underscore search semantics.

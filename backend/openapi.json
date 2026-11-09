@@ -143,7 +143,8 @@
         "tags": [
           "billing"
         ],
-        "description": "Member-owned read-only repeatable snapshot, one server clock, fixed +08 calendar. No user/account selector; unknown, duplicate, malformed query parameters rejected. No explicit credit account returns 409 policy_not_configured. Consumption is expected usage, including unpaid costs, excluding cancelled/failed-creation/admin-exempt usage and all grants/holds/ledger transfers. Unclosed known billable tails are separate estimates; partial/reasons disclose uncertainty. Six-fraction exact strings; breakdown conserves consumed micro-Pt. No settlement, financial locks or Agent calls. Includes owned tombstones and zero-consumption selector entries. Search is literal name substring or exact numeric ID. Sort consumed descending then ID descending. Page pagination is SQL-side; to=as_of. A foreign/missing instance_id returns 404.",
+        "description": "Member-owned read-only repeatable snapshot, one server clock, fixed +08 calendar. No user/account selector; unknown, duplicate, malformed query parameters rejected. No explicit credit account returns 409 policy_not_configured. Consumption is expected usage, including unpaid costs, excluding cancelled/failed-creation/admin-exempt usage and all grants/holds/ledger transfers. Unclosed known billable tails are separate estimates; partial/reasons disclose uncertainty. Six-fraction exact strings; breakdown conserves consumed micro-Pt. No settlement, financial locks or Agent calls. Lists only owned instances with deleted_at IS NULL, including running, stopped and zero-consumption instances; deleted-instance costs remain in account-wide reports and distributions. Search is literal name substring or exact numeric ID. Sort consumed descending then ID descending. Page pagination and total apply the same nondeleted filter; to=as_of. A foreign/missing instance_id returns 404; an owned deleted instance_id returns an empty list.",
+        "x-existing-instance-filter": "deleted_at IS NULL AND creation_failed_at IS NULL; identical visibility to the member instance list; no running-state restriction",
         "parameters": [
           {
             "in": "query",
@@ -229,7 +230,8 @@
       "get": {
         "operationId": "get_billing_instance_options",
         "tags": ["billing"],
-        "description": "Owned instance identities including tombstones and zero-cost instances, sorted by ID descending. No wallet or explicit credit account required. Read-only repeatable snapshot without financial aggregates, live usage, forecasts or Agent calls. Search trims whitespace and matches literal name substring or exact ID. Unknown, duplicate or malformed parameters return 422.",
+        "description": "Owned nondeleted instance identities, including running, stopped and zero-cost instances, sorted by ID descending. Both items and total exclude deleted_at IS NOT NULL. No wallet or explicit credit account required. Read-only repeatable snapshot without financial aggregates, live usage, forecasts or Agent calls. Search trims whitespace and matches literal name substring or exact ID. Unknown, duplicate or malformed parameters return 422.",
+        "x-existing-instance-filter": "deleted_at IS NULL AND creation_failed_at IS NULL; identical visibility to the member instance list; no running-state restriction",
         "parameters": [
           {"in": "query", "name": "search", "schema": {"type": "string", "maxLength": 128}},
           {"in": "query", "name": "page", "schema": {"type": "integer", "minimum": 1, "maximum": 2147483647, "default": 1}},

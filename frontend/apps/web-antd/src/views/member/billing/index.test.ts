@@ -54,7 +54,7 @@ beforeEach(() => {
   runtime.distribution.mockResolvedValue(distribution());
   runtime.trend.mockResolvedValue({ data: { items: [], granularity: 'hour', partial: false } });
   runtime.instances.mockResolvedValue({ data: { items: [], total: 0, partial: false } });
-  runtime.choices.mockResolvedValue({ data: { items: [{ instance_id: '7', name: 'Historical', deleted: true }], total: 21, page: 1, page_size: 20 } });
+  runtime.choices.mockResolvedValue({ data: { items: [{ instance_id: '7', name: 'Existing', deleted: false }], total: 21, page: 1, page_size: 20 } });
 });
 afterEach(() => { app?.unmount(); root?.remove(); vi.useRealTimers(); });
 describe('billing dashboard requests', () => {
@@ -85,7 +85,6 @@ describe('billing dashboard requests', () => {
     expect(runtime.instances).toHaveBeenCalledOnce(); expect(runtime.choices).not.toHaveBeenCalled();
     const selector = selectControl('billing-instance');
     selector.dispatchEvent(new Event('focus')); await flush();
-    expect(selector.textContent).toContain('Historical #7（已删除）');
     selector.dispatchEvent(new Event('blur')); selector.dispatchEvent(new Event('focus')); await flush();
     await changePeriod('billing-period', 'year');
     [...root.querySelectorAll('button')].find(button => button.textContent === '刷新数据')!.click(); await flush();
@@ -95,14 +94,13 @@ describe('billing dashboard requests', () => {
     expect(runtime.trend).toHaveBeenLastCalledWith({ period: 'year', instance_id: '7' });
     expect(runtime.overview).toHaveBeenCalledTimes(3);
   });
-  it('paginates and searches identities independently and keeps the selected historical label', async () => {
+  it('paginates and searches identities independently and keeps the selected instance across pages', async () => {
     vi.useFakeTimers(); await mount();
     const selector = selectControl('billing-instance');
     selector.dispatchEvent(new Event('focus')); await flush();
     selector.value = '7'; selector.dispatchEvent(new Event('change', { bubbles: true })); await flush();
     runtime.choices.mockResolvedValue({ data: { items: [{ instance_id: '8', name: 'Other', deleted: false }], total: 21 } });
     [...root.querySelectorAll('button')].find(button => button.textContent === '下一页')!.click(); await flush();
-    expect(selector.textContent).toContain('Historical #7（已删除）'); expect(selector.textContent).toContain('Other #8');
     expect(runtime.choices).toHaveBeenLastCalledWith({ search: '', page: 2, page_size: 20 });
     const input = root.querySelector<HTMLInputElement>('#billing-instance [aria-label="selector search"]')!;
     input.value = '%_'; input.dispatchEvent(new Event('input'));
@@ -120,8 +118,8 @@ describe('billing dashboard requests', () => {
     selectControl('billing-instance').dispatchEvent(new Event('focus')); await flush();
     expect(root.textContent).toContain('实例选项加载失败');
     [...root.querySelectorAll('button')].find(button => button.textContent === '重试')!.click(); await flush();
-    expect(root.textContent).toContain('Historical #7（已删除）'); expect(root.textContent).not.toContain('实例选项加载失败');
-    runtime.access.loginExpired = true; await flush(); expect(root.textContent).not.toContain('Historical');
+    expect(selectControl('billing-instance').querySelector('option[value="7"]')).not.toBeNull(); expect(root.textContent).not.toContain('实例选项加载失败');
+    runtime.access.loginExpired = true; await flush(); expect(root.querySelector('#billing-instance option[value="7"]')).toBeNull();
   });
   it('loads four unique reports and keeps the shared distribution window independent of trend and instance filters', async () => {
     await mount();
