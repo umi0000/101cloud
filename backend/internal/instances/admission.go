@@ -226,7 +226,7 @@ func admitCreate(ctx context.Context, a *platform.App, db *gorm.DB, owner uint64
 	if templateID != 0 {
 		r["init_template_version_id"] = templateID
 	}
-	creation := platform.Row{"gpu_count": spec.GPU.Count, "login_mode": "none", "cloud_init": platform.Bool(image["cloud_init"]), "cloud_init_capable": native == nil && platform.Bool(image["cloud_init"])}
+	creation := platform.Row{"gpu_count": spec.GPU.Count, "login_mode": "none", "cloud_init": platform.Bool(image["cloud_init"]), "cloud_init_capable": native == nil && platform.Bool(image["cloud_init"]), "nvidia_runtime": native == nil && spec.InstanceType == "container" && platform.Bool(image["gpu_ready"])}
 	if login != nil {
 		creation["login_mode"] = "password"
 		if len(login.SSHPublicKeys) != 0 {

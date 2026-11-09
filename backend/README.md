@@ -541,6 +541,16 @@ curl -f https://cloud.example.com/api/v1/health/ready
 
 镜像源管理接口为 `GET /api/v1/admin/image-sources`、`GET /api/v1/admin/nodes/{id}/remote-images?source_id=images`；仅固定可信HTTPS源images（Ubuntu OS同样从该真实目录选择，不支持Canonical Cloud专用格式）。`POST /api/v1/admin/images` 接收 `{code?,version?,instance_type,source_type,properties,nodes:[{node_id,project_name,architecture,fingerprint,cloud_init,gpu_ready,source_id?,variant?,properties?}]}`，返回201 Image及`nodes[].task_id`。查看 `GET /api/v1/admin/images/{id}/nodes`，用带If-Match的 `POST /api/v1/admin/images/{id}/nodes` 批量管理配置，后者返回202及`{image_id,tasks}`。选择实例镜像时传 `GET /api/v1/catalog/images?node_id=...&project_name=...`，只列该节点/项目ready配置；project_name可选但须同时指定node_id，省略则为节点默认项目。GPU-ready为人工兼容性断言，不安装驱动。
 
+新建 GPU-ready 容器（成员套餐与管理员 custom 共用准入）会按所选网络对应的 **node/project `image_nodes.gpu_ready`** 冻结 `incus_config_snapshot.creation.nvidia_runtime`，而不是读取镜像目录的全局兼容性位。即使 `gpu.count=0`，也会在原生创建请求中写入 `nvidia.runtime=true`、`nvidia.driver.capabilities=compute,utility`，首次启动前核对观察到的配置；缺失或不符按创建配置错误拒绝交付，不静默降级成 CPU。worker 重试/恢复只读已批准快照，不重新查询目录；后续目录编辑及原幂等键重放不会反转既有批准。普通未标记镜像的 0GPU 创建、VM、原生导入及既有实例不补写此预备位；旧快照不升级、不自动重启。已有显式 GPU 分配的创建保留原 NVIDIA 配置行为。
+
+这只是 NVIDIA runtime 与 `compute,utility` 用户态库的首次启动准备，不是 GPU 授权或分配：0GPU 不生成 `gpu_allocations`、GPU 配额占用、GPU 用量/计费或预留；新建请求仍为空 profiles、root+eth0，只有原有显式分配流程才追加 GPU 设备。不使用 `nvidia.visible.devices=all`、unix-char 通配设备或宿主根目录 bind，也不改变挂载/卸载/换卡、安全门禁或用户动作权限。依据 [Incus 维护者与社区的首次启动/后加卡示例](https://discuss.linuxcontainers.org/t/enabling-gpu-passthrough-post-launch/20062)：runtime 让容器具备用户态库，但未加 GPU 设备时 `nvidia-smi` 为 `No devices were found`；之后添加指定设备才可使用。
+
+GPU-ready 仍是管理员的兼容性断言，不安装 NVIDIA 内核驱动或 CUDA toolkit；宿主必须预先具备与 Incus 兼容的 NVIDIA 驱动及用户态注入依赖（例如 libnvidia-container / nvidia-container-cli）。将此类镜像部署到缺少注入依赖的宿主，即使初始 0GPU 也可能首次启动失败；平台不会自动移除 NVIDIA 配置以绕过失败。本地 Darwin 无实际 Incus/NVIDIA GPU 硬件，MySQL 准入与协议回归不等于真实驱动注入、CUDA 计算或设备隔离验收，需在获得授权的硬件环境另行验收。本功能无 SQL 迁移，不修复旧实例。
+
+本地独立烟雾已通过：完整迁移的隔离MySQL、固定叶证书TLS原生服务夹具、生产 `App.Run` 工作循环实际完成创建→配置核验→首启；捕获的创建请求有NVIDIA runtime/capabilities，无GPU设备，最终GPU分配与GPU计费会话均为0。此为协议/状态验证，不是实际硬件驱动注入验收。`gpu.go`、Agent归属采样及用户GPU操作面板指纹与变更前一致，全后端vet通过。内嵌前端Linux/amd64产物 `bin/101cloud-backend-nvidia-runtime-prepare-20261109-linux-amd64`，SHA256 `d5dcc991deff47fc541048a1cea74ae414c94e5d013acf9e787721089de5250a`；未部署，无新迁移，无Host Agent更新。
+
+本轮完整 `internal/instances` MySQL race 回归及全后端vet通过，包含成员/管理员零GPU准入、node/project能力与全局目录分歧、GPU配额为0仍可预备、普通CPU/VM/导入不注入、显式GPU原有准入、NVIDIA配置丢失/不符不得首启、原生创建后观察失败再恢复不重复派发等边界。新准入与worker测试均使用真实数据库或固定证书TLS请求，不以源码/配置文本断言代替状态验证。
+
 `20261102_00_node_images.sql` 在95迁移之后建立 `image_nodes`，历史 `init.sql` 保持原始checksum。现有local镜像与节点按default_project_name交叉生成pending配置和verification-only任务，未核验前绝不ready；旧remote记录不推断可信源。迁移不改现有实例冻结指纹/架构、额度或原任务（含unknown任务）。迁移任务参数仅包含字符串image_node_id；新API排队任务同时包含入队时冻结的config（image_id/node_id/project_name/architecture/fingerprint/instance_type/source_type/source_id/cloud_init/gpu_ready/variant），worker操作原生API前还会固化不可变日志。旧local镜像properties.cloud_init显式布尔值保留；仅当该属性缺失时，worker根据原生镜像properties.variant是否为cloud推断cloud-init，GPU兼容性绝不自动推断。派发结果不明须对账，不盲目重复下载；失败不删除已有原生镜像。
 
 6. 显式选择套餐node_ids，配置这些节点内网络和节点/项目镜像，设置GPU初始策略、用户动作与权限后启用。多个套餐可同时启用，任意时候可编辑或独立停用；active保存完整验证就绪性，既有实例冻结配置不变。管理员创建用户后需明确配额（初始全部为0）；自助注册用户使用注册设置中的默认配额，自定义实例还需max_resident_instances。VM仅CPU；可选GPU容器提供型号及正数gpu_count范围并绑定gpu-pricing。用户可count=0，但价格上限仍受套餐约束。

@@ -173,9 +173,13 @@ CPU用累计计数差分和独立观测时间窗，首次/重启/缺测不构造
 - 多 UUID 为多卡，空数组移除 Agent 管理的显卡配置；只管理 `agent-gpu-N`，不静默删除其他 GPU 或 profile 配置。
 - 默认要求实例已停止。`allow_live: true` 显式允许在线改入口，**不迁移 CUDA context、不杀旧进程、不保证旧卡显存释放**。
 - `add_only` 可选，默认false；true时仍需运行态显式 `allow_live:true`，在实例锁及ETag保护下核对最新原生配置是请求集合的子集，拒绝隐式移除、未知物理映射和配置冲突。保留已有GPU的设备名和所有属性，只追加真正新增的卡；请求顺序变化不重命名/卸载旧卡。它不绕过后端指标、配额、库存或授权检查，不是释放授权；不支持此字段的旧Agent会拒绝而非降级执行。
-- CPU 工作空间以后要在线接卡，应在首次启动前准备 `nvidia.runtime=true` 和库环境；热插卡不重新执行 NVIDIA 启动 hook。
+- CPU 工作空间以后要在线接卡，应在首次启动前准备 `nvidia.runtime=true` 和库环境；热插卡不重新执行 NVIDIA 启动 hook。后端现对新建 GPU-ready 容器（包括初始 `gpu.count=0`）按所选 node/project 镜像能力冻结预备决定，并在原生创建请求中写入 `nvidia.runtime=true` 与 `nvidia.driver.capabilities=compute,utility`，首次启动前核对配置，不符拒绝交付。Agent 挂卡接口不因此变更，也不负责修复既有实例或原生导入，不自动重启。
 - 使用 ETag 防止覆盖配置；返回 `operation_id`、`operation_completed`、`configuration_state`、`actual`、`etag`，失败不假定已回滚。
 - `resource_release` 始终是 `not_verified`，配置成功不等于设备挂载和进程状态一致。配额、共享人数、计费和实际占用核验仍由业务层组织。
+
+runtime 预备不授予设备：0GPU 不增加分配、配额占用、GPU 用量/计费或预留，仍由原来的显式分配流程、权限与释放安全门禁管理具体 GPU UUID；不启用 `nvidia.visible.devices=all`、unix-char 通配挂载或宿主根目录 bind。[Incus 维护者与社区示例](https://discuss.linuxcontainers.org/t/enabling-gpu-passthrough-post-launch/20062)说明：只有 runtime 时可获得 NVIDIA 用户态库，但未加 GPU 设备时 `nvidia-smi` 显示 `No devices were found`，之后再添加指定 GPU 设备才可使用。
+
+GPU-ready 是镜像兼容性断言，不为宿主/容器安装 NVIDIA 内核驱动或 CUDA toolkit。宿主需事先具备与 Incus 兼容的 NVIDIA 驱动与注入依赖（例如 libnvidia-container / nvidia-container-cli）；缺少依赖时，这类新容器即使 0GPU 也可能首次启动失败，不会静默移除 NVIDIA 配置降级为 CPU。当前本地 Darwin 无实际 Incus/NVIDIA GPU 硬件，MySQL 与协议回归不能替代真实驱动库注入、CUDA 计算及设备隔离验收；硬件验收须另获授权。本改动不部署、不修改 Agent GPU 操作逻辑。
 
 ### 新实例首次启动前的 cloud-init 准备
 

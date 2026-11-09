@@ -655,10 +655,13 @@ func workerCreateBody(ctx context.Context, a *platform.App, r platform.Row) (pla
 	if err = a.DB.WithContext(ctx).Table("gpu_allocations").Where("instance_id = ? AND active_slot = 1", r["id"]).Count(&allocations).Error; err != nil {
 		return nil, err
 	}
-	if allocations > 0 {
-		if platform.Text(r["image_type"]) != "container" {
-			return nil, platform.E(409, "configuration_conflict", "GPU 仅支持容器实例，请管理员核对实例类型与 GPU 申请。")
-		}
+	if allocations > 0 && platform.Text(r["image_type"]) != "container" {
+		return nil, platform.E(409, "configuration_conflict", "GPU 仅支持容器实例，请管理员核对实例类型与 GPU 申请。")
+	}
+	// Only admission's frozen creation capability may prepare a zero-GPU
+	// container; recovery must not consult mutable image catalog metadata.
+	nvidiaRuntime := platform.Text(r["image_type"]) == "container" && platform.Bool(object(object(r["incus_config_snapshot"])["creation"])["nvidia_runtime"])
+	if allocations > 0 || nvidiaRuntime {
 		cfg["nvidia.runtime"] = "true"
 		cfg["nvidia.driver.capabilities"] = "compute,utility"
 	}
