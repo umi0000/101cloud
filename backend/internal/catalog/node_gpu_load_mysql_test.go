@@ -226,13 +226,13 @@ func TestMySQLNodeGPULoadRefreshIsolationAndFailures(t *testing.T) {
 	assertGPULoadSnapshotUnchanged(t, snapshot, gpuLoadMySQLRow(t, a, "node_gpu_load_snapshots", 1))
 	for _, failedMode := range []int32{1, 2, 3} {
 		mode.Store(failedMode)
-		if err := refreshNodeGPULoad(ctx, a, 1); err == nil {
+		if err := refreshNodeGPULoad(ctx, platform.New(a.DB, a.Config), 1); err == nil {
 			t.Fatalf("failed dynamic observation mode %d succeeded", failedMode)
 		}
 		assertGPULoadSnapshotUnchanged(t, snapshot, gpuLoadMySQLRow(t, a, "node_gpu_load_snapshots", 1))
 	}
 	mode.Store(0)
-	if err := refreshNodeGPULoad(ctx, a, 1); err != nil {
+	if err := refreshNodeGPULoad(ctx, platform.New(a.DB, a.Config), 1); err != nil {
 		t.Fatal(err)
 	}
 	if !platform.Stamp(gpuLoadMySQLRow(t, a, "node_gpu_load_snapshots", 1)["sampled_at"]).After(platform.Stamp(snapshot["sampled_at"])) {

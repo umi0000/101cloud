@@ -208,6 +208,45 @@ func TestMySQLGPUHighWindowsAreSchedulingPolicySpecific(t *testing.T) {
 	}
 }
 
+func TestMySQLGPUHighWindowsRejectReplayedSamples(t *testing.T) {
+	a := explicitMonitoringApp(t)
+	ctx := t.Context()
+	node, err := platform.Get(a.DB, "nodes", 1, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := a.Time().Add(-time.Minute)
+	policy := platform.Row{"sm_weight": "0.5", "memory_weight": "0.5", "source_high_load_pct": 80, "poll_interval_seconds": 10}
+	cards := []any{platform.Row{"uuid": "GPU-shared", "utilization_percent": 100, "memory_utilization_percent": 100}}
+	sample := func(at time.Time, gpus []any) {
+		t.Helper()
+		observation := platform.NodeResourceObservation{SampledAt: at, Data: platform.Row{"gpus": gpus}}
+		if err := sampleGPUResources(ctx, a, node, observation, "5", policy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(last, since time.Time) {
+		t.Helper()
+		var window platform.Row
+		if err := a.DB.Table("metric_gpu_high_windows").Where("node_id=1 AND gpu_uuid='GPU-shared' AND policy_version_id=5").Take(&window).Error; err != nil {
+			t.Fatal(err)
+		}
+		if !platform.Stamp(window["last_sampled_at"]).Equal(last) || !platform.Stamp(window["high_since"]).Equal(since) {
+			t.Fatalf("wrong persisted observation times: %+v; want last=%s since=%s", window, last, since)
+		}
+	}
+	sample(start, cards)
+	sample(start, []any{}) // A replay cannot clear or renew a window.
+	check(start, start)
+	second := start.Add(10 * time.Second)
+	sample(second, cards)
+	check(second, start)
+	third := second.Add(10 * time.Second)
+	sample(third, []any{})
+	sample(second, cards) // A delayed observation cannot revive a cleared window.
+	check(third, time.Time{})
+}
+
 func TestMetricResolutionUsesFrozenBucketSize(t *testing.T) {
 	for _, fixture := range []struct {
 		resolution string

@@ -6,6 +6,19 @@ Go 节点服务。业务后端只连接 Agent，Agent 通过本机 Unix socket �
 
 初始化、后端接入和各类 API 的完整示例见 [Agent 使用指南](docs/AGENT使用指南.md)。
 
+## Incus 管理 API 故障排查
+
+健康检查、资源接口与后台指标采集共享本地 Incus 只读观测门控：最多两个在途观测，不排队；Incus 调用失败后冷却 5 秒，已有请求结束后只放行一次恢复探测。资源接口真正的 Incus 读取失败返回 502，冷却或并发拒绝返回 503；不以旧观测冒充成功。日志记录固定阶段及分类，不记录原始错误、令牌或查询参数。此门控不重试或修改正在运行的实例操作。
+
+`systemctl is-active incus` 只能说明进程存在；Agent 的历史指标接口返回 200 也不表示 Incus 可用。可在宿主机从独立监控每 30 秒执行一次以下只读探针，连续三次失败告警，不自动重启：
+
+```bash
+timeout 5s curl --fail --silent --show-error \
+  --unix-socket /var/lib/incus/unix.socket http://localhost/1.0 >/dev/null
+```
+
+故障未恢复时记录 `ss -xlnp` 的监听队列及所有者、`ps -L` 的守护进程线程状态、`/proc/<PID>/limits` 和 FD 数量、Incus 与内核日志。监听队列满和 `EAGAIN` 只能定位到连接积压，不证明守护进程死锁。若容器业务必须持续，只在确认本机 `incus.service` 使用 `KillMode=process`、默认或显式 `SIGTERM` 且无实例关闭钩子后，评估单独重启 `incus.service`；不要同时重启 socket 或 startup 单元。
+
 ## 快速开始
 
 ```bash

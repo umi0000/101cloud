@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"time"
 
 	"101cloud/backend/internal/platform"
 	"gorm.io/gorm"
@@ -51,28 +50,25 @@ func pollNodeInventory(ctx context.Context, a *platform.App) error {
 }
 
 func refreshNodeInventory(ctx context.Context, a *platform.App, id uint64) error {
-	sampled := a.Time()
 	initial, err := platform.Get(a.DB.WithContext(ctx), "nodes", id, false)
 	if err != nil {
 		return err
 	}
-	call, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	health, observationErr := a.Agent(call, id, "GET", "/agent/v1/health", nil)
-	online := observationErr == nil && platform.Text(health["status"]) == "ok" && platform.Bool(health["incus"])
+	observation, observationErr := a.ObserveNodeInventory(ctx, initial)
+	if errors.Is(observationErr, platform.ErrNodeObservationDeferred) {
+		return nil
+	}
+	healthAt, resourcesAt := observation.HealthSampledAt, observation.Resource.SampledAt
+	if healthAt.IsZero() {
+		return observationErr
+	}
 	var snapshot platform.Row
 	var data []byte
-	if online {
-		var raw map[string]any
-		raw, observationErr = a.Agent(call, id, "GET", "/agent/v1/resources", nil)
-		if observationErr == nil {
-			snapshot, observationErr = nodeResourceSnapshot(raw)
-		}
+	if observationErr == nil {
+		snapshot, observationErr = nodeResourceSnapshot(observation.Resource.Data)
 		if observationErr == nil {
 			data, observationErr = json.Marshal(snapshot)
 		}
-	} else if observationErr == nil {
-		observationErr = platform.E(503, "node_unavailable", "Agent or Incus health check failed")
 	}
 	// Use the parent context so a timed-out Agent request can record failure;
 	// shutdown cancellation still prevents writes. Never refresh inventory on failure.
@@ -81,22 +77,22 @@ func refreshNodeInventory(ctx context.Context, a *platform.App, id uint64) error
 		if err != nil {
 			return err
 		}
-		if err = nodeObservationFence(current, initial, sampled); err != nil {
+		if err = nodeObservationFence(current, initial, healthAt, resourcesAt); err != nil {
 			return err
 		}
 		state := "offline"
 		updates := platform.Row{}
-		if online {
+		if observation.Online {
 			state = "online"
-			updates["last_heartbeat_at"] = sampled
-			updates["connection_verified_at"] = sampled
+			updates["last_heartbeat_at"] = healthAt
+			updates["connection_verified_at"] = healthAt
 		}
-		if observationErr == nil {
-			if _, err = nodeSaveGPUs(tx, a, id, snapshot, sampled); err != nil {
+		if observationErr == nil && resourcesAt.After(platform.Stamp(current["resources_sampled_at"])) {
+			if _, err = nodeSaveGPUs(tx, a, id, snapshot, resourcesAt); err != nil {
 				return err
 			}
 			updates["resources"] = string(data)
-			updates["resources_sampled_at"] = sampled
+			updates["resources_sampled_at"] = resourcesAt
 		}
 		updates["health"] = state
 		// Pure observations must not invalidate an administrator's edit ETag.

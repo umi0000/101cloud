@@ -4,6 +4,12 @@
 
 后端自身提供 **HTTP**，默认 `127.0.0.1:8080`。浏览器入口的 HTTPS 交给 Nginx/Caddy；Host Agent 仍使用独立的 HTTPS 和证书指纹认证。当前不提供 NAT 或端口映射。
 
+## 节点后台观测保护
+
+节点库存、GPU 负载与 GPU 自动策略共用同一节点的后台资源观测；并发消费者复用同一次读取，顺序调用可短暂复用 1 秒。失败退避独立于最后成功时间，按 2、4、8、16、30 秒递增并带少量抖动；冷却到期只发起一次恢复探测。保留原始观测时间，同一份 GPU 样本不会重复推进高负载窗口，旧数据也不能冒充新观测。
+
+此保护只约束后台观测；实例启停、删除、GPU 变更及结果未知的操作仍按已有任务日志对账，不自动重放。宿主机只读探针和人工恢复边界见 [Agent README](../host-agent/README.md#incus-管理-api-故障排查)。
+
 ## 成员账单统计（2026-11-09，未部署）
 
 - 成员 `GET /api/v1/billing/overview`、`/billing/trend?period=today|week|month|year&instance_id?`、`/billing/instances?period=…&search?&instance_id?&page=1&page_size=20` 提供账单页；不接受用户/账户选择器。总览始终统计本人整个账户，实例筛选不影响顶部总览。已有账户缺失返回明确的 `409 policy_not_configured`，不构造零钱包。

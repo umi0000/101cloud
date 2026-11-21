@@ -54,6 +54,7 @@ const (
 // The caller must authenticate and authorize the trusted backend before invoking it.
 type Service struct {
 	socketPath       string
+	observations     incusObservationGate
 	gpuCollector     func(context.Context, *api.Resources) ([]GPUInfo, *float64)
 	networkCollector func(context.Context) NetworkInfo
 	ipProber         func(context.Context, IPProbeRequest) (IPProbeResult, error)
@@ -86,6 +87,7 @@ func New(socketPath string) (*Service, error) {
 	}
 	return &Service{
 		socketPath:       socketPath,
+		observations:     incusObservationGate{now: time.Now},
 		gpuCollector:     collectGPUs,
 		networkCollector: collectNetwork,
 		ipProber:         probeIPv4,
@@ -184,36 +186,36 @@ func requireMethod(w http.ResponseWriter, r *http.Request, method string) bool {
 func (s *Service) health(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), readTimeout)
 	defer cancel()
-	client, err := s.connect(ctx, "default")
-	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "incus_unavailable", err.Error())
-		return
-	}
-	defer closeIncus(client)
-	server, _, err := client.GetServer()
-	if err != nil {
-		writeError(w, http.StatusServiceUnavailable, "incus_unavailable", err.Error())
+	var serverName string
+	failure := s.observeIncus(ctx, func(client incus.InstanceServer) error {
+		server, _, err := client.GetServer()
+		if err == nil {
+			serverName = server.Environment.ServerName
+		}
+		return err
+	})
+	if failure.reason != "" {
+		failure.write(w, http.StatusServiceUnavailable, "incus_unavailable")
 		return
 	}
 	writeJSON(w, http.StatusOK, struct {
 		Status     string `json:"status"`
 		Incus      bool   `json:"incus"`
 		ServerName string `json:"server_name"`
-	}{"ok", true, server.Environment.ServerName})
+	}{"ok", true, serverName})
 }
 
 func (s *Service) resources(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), readTimeout)
 	defer cancel()
-	client, err := s.connect(ctx, "default")
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "incus_resources_failed", err.Error())
-		return
-	}
-	defer closeIncus(client)
-	resources, err := client.GetServerResources()
-	if err != nil {
-		writeError(w, http.StatusBadGateway, "incus_resources_failed", err.Error())
+	var resources *api.Resources
+	failure := s.observeIncus(ctx, func(client incus.InstanceServer) error {
+		var err error
+		resources, err = client.GetServerResources()
+		return err
+	})
+	if failure.reason != "" {
+		failure.write(w, http.StatusBadGateway, "incus_resources_failed")
 		return
 	}
 	var gpus []GPUInfo

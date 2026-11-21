@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"101cloud/hostagent/internal/monitor"
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/units"
 )
@@ -27,28 +28,45 @@ type metricsInput struct {
 // output project filter. A remote cluster member's PID is never a local PID.
 func (s *Service) collectMetricsInput(ctx context.Context) metricsInput {
 	out := metricsInput{Instances: []monitor.Instance{}, Inventory: []monitor.GPUDevice{}, Errors: []string{}}
-	client, err := s.connect(ctx, "default")
-	if err != nil {
-		out.Errors = append(out.Errors, "incus_connection_unavailable")
+	var server *api.Server
+	var full []api.InstanceFull
+	var resources *api.Resources
+	var counterObservedAt time.Time
+	var collectionError string
+	failure := s.observeIncus(ctx, func(client incus.InstanceServer) error {
+		var err error
+		collectionError = "incus_server_unavailable"
+		server, _, err = client.GetServer()
+		if err != nil {
+			return err
+		}
+		collectionError = "instance_inventory_unavailable"
+		full, err = client.GetInstancesFullAllProjects(api.InstanceTypeAny)
+		if err != nil {
+			return err
+		}
+		counterObservedAt = time.Now()
+		collectionError = "gpu_device_inventory_unavailable"
+		resources, err = client.GetServerResources()
+		if err == nil {
+			collectionError = ""
+		}
+		return err
+	})
+	if failure.reason != "" {
+		if failure.phase == "connect" && collectionError == "incus_server_unavailable" {
+			collectionError = "incus_connection_unavailable"
+		}
+		if collectionError != "" {
+			out.Errors = append(out.Errors, collectionError)
+		}
+		out.Errors = append(out.Errors, "incus_"+failure.phase+"_"+failure.reason)
+	}
+	if counterObservedAt.IsZero() {
 		return out
 	}
-	defer closeIncus(client)
-	server, _, err := client.GetServer()
-	if err != nil {
-		out.Errors = append(out.Errors, "incus_server_unavailable")
-		return out
-	}
-	full, err := client.GetInstancesFullAllProjects(api.InstanceTypeAny)
-	if err != nil {
-		out.Errors = append(out.Errors, "instance_inventory_unavailable")
-		return out
-	}
-	counterObservedAt := time.Now()
-	out.Complete = true
-	resources, err := client.GetServerResources()
-	if err != nil {
-		out.Errors = append(out.Errors, "gpu_device_inventory_unavailable")
-	} else {
+	out.Complete = failure.reason == ""
+	if resources != nil {
 		out.Inventory = metricsDeviceInventory(resources)
 	}
 	for _, instance := range full {

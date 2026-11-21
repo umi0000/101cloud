@@ -63,6 +63,10 @@ func evaluateGPU(ctx context.Context, a *platform.App) error {
 			id := platform.Text(instance["scheduling_policy_id"])
 			groups[id] = append(groups[id], instance)
 		}
+		var initial platform.Row
+		var observation platform.NodeResourceObservation
+		var observationErr error
+		var observed bool
 		for policyID, instances := range groups {
 			scheduling, err := a.Policy(ctx, "gpu-scheduling", policyID)
 			if err != nil {
@@ -84,9 +88,20 @@ func evaluateGPU(ctx context.Context, a *platform.App) error {
 			if !due {
 				continue
 			}
-			call, cancel := context.WithTimeout(ctx, 15*time.Second)
-			err = sampleGPUResources(call, a, n.ID, policyID, scheduling)
-			cancel()
+			if !observed {
+				observed = true
+				initial, observationErr = platform.Get(a.DB.WithContext(ctx), "nodes", n.ID, false)
+				if observationErr == nil {
+					observation, observationErr = a.ObserveNodeResources(ctx, initial)
+				}
+				if observationErr != nil && !errors.Is(observationErr, platform.ErrNodeObservationDeferred) {
+					failures = append(failures, observationErr)
+				}
+			}
+			if observationErr != nil {
+				continue
+			}
+			err = sampleGPUResources(ctx, a, initial, observation, policyID, scheduling)
 			if err != nil {
 				failures = append(failures, err)
 				continue
@@ -107,26 +122,7 @@ func metricDecimal(v any) (decimal.Decimal, bool) {
 	d, e := decimal.NewFromString(platform.Text(v))
 	return d, e == nil
 }
-func sampleGPUResources(ctx context.Context, a *platform.App, node uint64, policyID string, policy platform.Row) error {
-	raw, e := a.Agent(ctx, node, "GET", "/agent/v1/resources", nil)
-	if e != nil {
-		return e
-	}
-	data, e := json.Marshal(raw)
-	if e != nil {
-		return e
-	}
-	var decoded struct {
-		GPUs []struct {
-			UUID   string           `json:"uuid"`
-			SM     *decimal.Decimal `json:"utilization_percent"`
-			Memory *decimal.Decimal `json:"memory_utilization_percent"`
-			Error  string           `json:"error"`
-		} `json:"gpus"`
-	}
-	if e = json.Unmarshal(data, &decoded); e != nil {
-		return e
-	}
+func sampleGPUResources(ctx context.Context, a *platform.App, initial platform.Row, observation platform.NodeResourceObservation, policyID string, policy platform.Row) error {
 	sw, ok := metricDecimal(policy["sm_weight"])
 	if !ok {
 		return fmt.Errorf("invalid scheduling weight")
@@ -139,38 +135,74 @@ func sampleGPUResources(ctx context.Context, a *platform.App, node uint64, polic
 	if !ok {
 		return fmt.Errorf("invalid scheduling threshold")
 	}
-	observedAt := a.Time()
+	gpus := observation.Data["gpus"].([]any)
+	highByUUID := make(map[string]bool, len(gpus))
+	seen := make([]string, 0, len(gpus))
+	maxPercent := decimal.NewFromInt(100)
+	for _, value := range gpus {
+		card := value.(map[string]any)
+		uuid, _ := card["uuid"].(string)
+		if uuid == "" {
+			continue
+		}
+		if _, duplicate := highByUUID[uuid]; duplicate {
+			return platform.E(503, "observation_incomplete", "Agent GPU load identities are ambiguous")
+		}
+		seen = append(seen, uuid)
+		sm, smOK := metricDecimal(card["utilization_percent"])
+		memory, memoryOK := metricDecimal(card["memory_utilization_percent"])
+		highByUUID[uuid] = platform.Text(card["error"]) == "" && smOK && memoryOK &&
+			sm.Sign() >= 0 && sm.LessThanOrEqual(maxPercent) && memory.Sign() >= 0 && memory.LessThanOrEqual(maxPercent) &&
+			sm.Mul(sw).Add(memory.Mul(mw)).GreaterThanOrEqual(high)
+	}
+	node, observedAt := platform.Uint(initial["id"]), observation.SampledAt
 	interval := time.Duration(platform.Uint(policy["poll_interval_seconds"])) * time.Second
 	return a.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		seen := []string{}
-		for _, g := range decoded.GPUs {
-			if g.UUID == "" {
-				continue
+		current, e := platform.Get(tx, "nodes", node, true)
+		if e != nil {
+			return e
+		}
+		if !platform.SameNodeConnection(current, initial) {
+			return platform.E(409, "configuration_conflict", "node connection changed during GPU evaluation")
+		}
+		q := tx.Table("metric_gpu_high_windows").Where("node_id=? AND policy_version_id=?", node, policyID)
+		var windows []platform.Row
+		if e := q.Session(&gorm.Session{}).Clauses(clause.Locking{Strength: "UPDATE"}).Find(&windows).Error; e != nil {
+			return e
+		}
+		previous := make(map[string]platform.Row, len(windows))
+		for _, window := range windows {
+			if !observedAt.After(platform.Stamp(window["last_sampled_at"])) {
+				return nil // A reused or superseded observation cannot change continuity.
 			}
-			seen = append(seen, g.UUID)
-			var previous platform.Row
-			e := tx.Table("metric_gpu_high_windows").Clauses(clause.Locking{Strength: "UPDATE"}).Where("node_id=? AND gpu_uuid=? AND policy_version_id=?", node, g.UUID, policyID).Take(&previous).Error
-			if e != nil && !errors.Is(e, gorm.ErrRecordNotFound) {
-				return e
-			}
+			previous[platform.Text(window["gpu_uuid"])] = window
+		}
+		updatedAt := a.Time()
+		for _, uuid := range seen {
 			var since any
-			if g.Error == "" && g.SM != nil && g.Memory != nil && g.SM.Sign() >= 0 && g.SM.LessThanOrEqual(decimal.NewFromInt(100)) && g.Memory.Sign() >= 0 && g.Memory.LessThanOrEqual(decimal.NewFromInt(100)) && g.SM.Mul(sw).Add(g.Memory.Mul(mw)).GreaterThanOrEqual(high) {
+			if highByUUID[uuid] {
 				since = observedAt
-				if previous["high_since"] != nil && observedAt.Sub(platform.Stamp(previous["last_sampled_at"])) <= 2*interval {
-					since = platform.Stamp(previous["high_since"])
+				prior := previous[uuid]
+				if prior["high_since"] != nil && observedAt.Sub(platform.Stamp(prior["last_sampled_at"])) <= 2*interval {
+					since = platform.Stamp(prior["high_since"])
 				}
 			}
-			row := map[string]any{"node_id": node, "gpu_uuid": g.UUID, "policy_version_id": policyID, "high_since": since, "last_sampled_at": observedAt, "updated_at": a.Time()}
+			row := map[string]any{"node_id": node, "gpu_uuid": uuid, "policy_version_id": policyID, "high_since": since, "last_sampled_at": observedAt, "updated_at": updatedAt}
 			if e := tx.Table("metric_gpu_high_windows").Clauses(gpuHighWindowConflict).Create(row).Error; e != nil {
 				return e
 			}
 		}
-		q := tx.Table("metric_gpu_high_windows").Where("node_id=? AND policy_version_id=?", node, policyID)
 		if len(seen) > 0 {
 			q = q.Where("gpu_uuid NOT IN ?", seen)
 		}
-		return q.Updates(map[string]any{"high_since": nil, "updated_at": a.Time()}).Error
+		return q.Updates(map[string]any{"high_since": nil, "last_sampled_at": observedAt, "updated_at": updatedAt}).Error
 	})
+}
+
+func gpuHighWindowReady(now time.Time, window platform.Row, maxAge, duration time.Duration) bool {
+	last := platform.Stamp(window["last_sampled_at"])
+	since := platform.Stamp(window["high_since"])
+	return !since.IsZero() && !since.After(last) && platform.ObservationFresh(now, last, maxAge) && last.Sub(since) >= duration
 }
 
 func evaluateGPUInstance(ctx context.Context, a *platform.App, id uint64) error {
@@ -283,7 +315,7 @@ func evaluateGPUInstance(ctx context.Context, a *platform.App, id uint64) error 
 				if e != nil && !errors.Is(e, gorm.ErrRecordNotFound) {
 					return e
 				}
-				if high["high_since"] != nil && a.Time().Sub(platform.Stamp(high["last_sampled_at"])) <= time.Duration(maxAge)*time.Second && a.Time().Sub(platform.Stamp(high["high_since"])) >= time.Duration(platform.Uint(scheduling["evaluation_window_seconds"]))*time.Second {
+				if gpuHighWindowReady(a.Time(), high, time.Duration(maxAge)*time.Second, time.Duration(platform.Uint(scheduling["evaluation_window_seconds"]))*time.Second) {
 					rebind = append(rebind, allocation)
 				}
 			}

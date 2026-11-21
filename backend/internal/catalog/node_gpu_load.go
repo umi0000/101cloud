@@ -56,24 +56,21 @@ func refreshNodeGPULoad(ctx context.Context, a *platform.App, id uint64) error {
 	if err != nil {
 		return err
 	}
-	// Timestamp the start, not the end: slow networking cannot renew old load.
-	sampled := a.Time()
-	call, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	raw, err := a.Agent(call, id, "GET", "/agent/v1/resources", nil)
+	observation, err := a.ObserveNodeResources(ctx, initial)
+	if errors.Is(err, platform.ErrNodeObservationDeferred) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	cards, ok := raw["gpus"].([]any)
-	if !ok {
-		return platform.E(503, "observation_incomplete", "Agent GPU load observation is incomplete")
-	}
+	sampled := observation.SampledAt
+	cards := observation.Data["gpus"].([]any)
 	loads := make([]platform.Row, 0, len(cards))
 	seen := make(map[string]bool, len(cards))
 	for _, value := range cards {
-		card, ok := value.(map[string]any)
+		card := value.(map[string]any)
 		uuid := platform.Text(card["uuid"])
-		if !ok || uuid == "" || seen[uuid] {
+		if uuid == "" || seen[uuid] {
 			return platform.E(503, "observation_incomplete", "Agent GPU load identities are incomplete or ambiguous")
 		}
 		seen[uuid] = true
@@ -94,7 +91,7 @@ func refreshNodeGPULoad(ctx context.Context, a *platform.App, id uint64) error {
 		if err != nil {
 			return err
 		}
-		if !nodeSameConnection(current, initial) {
+		if !platform.SameNodeConnection(current, initial) {
 			return platform.E(409, "configuration_conflict", "node connection changed during GPU load collection")
 		}
 		var previous platform.Row
@@ -102,7 +99,11 @@ func refreshNodeGPULoad(ctx context.Context, a *platform.App, id uint64) error {
 		if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 			return err
 		}
-		if platform.Stamp(previous["sampled_at"]).After(sampled) {
+		previousAt := platform.Stamp(previous["sampled_at"])
+		if previousAt.Equal(sampled) {
+			return nil
+		}
+		if previousAt.After(sampled) {
 			return platform.E(409, "observation_superseded", "a newer GPU load observation has already been recorded")
 		}
 		return tx.Table("node_gpu_load_snapshots").Clauses(clause.OnConflict{DoUpdates: clause.AssignmentColumns([]string{"sampled_at", "resources"})}).Create(platform.Row{"node_id": id, "sampled_at": sampled, "resources": string(data)}).Error

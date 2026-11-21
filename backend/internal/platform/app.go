@@ -69,6 +69,8 @@ type App struct {
 	shutdownHooks []func()
 	executionMu   sync.Mutex
 	executions    map[uint64]map[*taskExecution]context.CancelFunc
+
+	nodeObservations nodeObservations
 }
 
 func New(db *gorm.DB, cfg Config) *App {

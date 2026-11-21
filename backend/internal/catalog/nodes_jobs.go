@@ -100,26 +100,22 @@ func nodeInventoryJob(ctx context.Context, a *platform.App, job platform.Job) er
 	return a.TaskResult(ctx, job, result)
 }
 
-func nodeSameConnection(a, b platform.Row) bool {
-	for _, key := range []string{"agent_endpoint", "token_ciphertext", "server_cert_sha256", "key_version"} {
-		if platform.Text(a[key]) != platform.Text(b[key]) {
-			return false
-		}
-	}
-	return true
-}
 func nodeInventoryFence(ctx context.Context, tx *gorm.DB, job platform.Job, current, initial platform.Row, sampled, now time.Time) error {
-	if e := nodeObservationFence(current, initial, sampled); e != nil {
+	if e := nodeObservationFence(current, initial, sampled, sampled); e != nil {
 		return e
 	}
 	return catalogTaskFence(ctx, tx, job, now)
 }
 
-func nodeObservationFence(current, initial platform.Row, sampled time.Time) error {
-	if !nodeSameConnection(current, initial) {
+func nodeObservationFence(current, initial platform.Row, healthAt, resourcesAt time.Time) error {
+	if !platform.SameNodeConnection(current, initial) {
 		return platform.E(409, "configuration_conflict", "node connection changed during the probe; run a new probe")
 	}
-	if platform.Stamp(current["resources_sampled_at"]).After(sampled) || platform.Stamp(current["last_heartbeat_at"]).After(sampled) {
+	resourceFence := healthAt
+	if resourcesAt.After(resourceFence) {
+		resourceFence = resourcesAt
+	}
+	if platform.Stamp(current["resources_sampled_at"]).After(resourceFence) || platform.Stamp(current["last_heartbeat_at"]).After(healthAt) {
 		return platform.E(409, "observation_superseded", "a newer node probe has already been recorded")
 	}
 	return nil

@@ -8,9 +8,26 @@ import (
 	"testing"
 	"time"
 
+	"101cloud/backend/internal/platform"
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
+
+func TestGPUHighWindowUsesObservationTime(t *testing.T) {
+	start := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
+	window := platform.Row{"high_since": start, "last_sampled_at": start}
+	const maxAge, duration = 20 * time.Second, 5 * time.Second
+	if gpuHighWindowReady(start.Add(10*time.Second), window, maxAge, duration) {
+		t.Fatal("one high observation matured by wall-clock time alone")
+	}
+	window["last_sampled_at"] = start.Add(duration)
+	if !gpuHighWindowReady(start.Add(duration), window, maxAge, duration) {
+		t.Fatal("successive high observations did not satisfy the window")
+	}
+	if gpuHighWindowReady(start, window, maxAge, duration) || gpuHighWindowReady(start.Add(duration+maxAge+time.Microsecond), window, maxAge, duration) {
+		t.Fatal("future or expired high observation allowed GPU rebalance")
+	}
+}
 
 // Execute the production selector against MySQL's actual JSON/boolean evaluator.
 // A derived relation keeps the regression independent of business fixtures and

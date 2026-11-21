@@ -57,8 +57,12 @@ func (a *App) AgentConnection(ctx context.Context, nodeID uint64) (agentclient.C
 	if e != nil {
 		return agentclient.ConnectionConfig{}, e
 	}
+	return a.agentConnection(r)
+}
+
+func (a *App) agentConnection(r Row) (agentclient.ConnectionConfig, error) {
 	endpoint := strings.TrimRight(Text(r["agent_endpoint"]), "/")
-	if e = a.CheckEndpoint(endpoint); e != nil {
+	if e := a.CheckEndpoint(endpoint); e != nil {
 		return agentclient.ConnectionConfig{}, e
 	}
 	token, e := a.Decrypt([]byte(Text(r["token_ciphertext"])))
@@ -72,6 +76,10 @@ func (a *App) AgentClient(ctx context.Context, nodeID uint64) (*http.Client, str
 	if e != nil {
 		return nil, "", e
 	}
+	return a.agentClient(cfg)
+}
+
+func (a *App) agentClient(cfg agentclient.ConnectionConfig) (*http.Client, string, error) {
 	key := cfg.Endpoint + ":" + cfg.ServerCertSHA256 + ":" + hex.EncodeToString(a.sign([]byte(cfg.Token)))
 	if cached, ok := a.agentClients.Load(key); ok {
 		return cached.(*http.Client), cfg.Endpoint, nil
@@ -213,6 +221,10 @@ func (a *App) agentConditional(ctx context.Context, nodeID uint64, method, path 
 	if e != nil {
 		return nil, "", e
 	}
+	return requestAgent(ctx, client, origin, method, path, body, etag)
+}
+
+func requestAgent(ctx context.Context, client *http.Client, origin, method, path string, body any, etag string) (map[string]any, string, error) {
 	var reader io.Reader
 	if body != nil {
 		b, e := json.Marshal(body)

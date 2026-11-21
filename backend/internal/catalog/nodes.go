@@ -216,8 +216,10 @@ func registerNodes(a *platform.App, admin *gin.RouterGroup) {
 		if err != nil {
 			return nil, err
 		}
-		if err = platform.DB(c, a).Table("node_gpu_load_snapshots").Where("node_id=?", id).Delete(&platform.Row{}).Error; err != nil {
-			return nil, platform.WrapDB(err)
+		for _, table := range []string{"node_gpu_load_snapshots", "metric_gpu_high_windows"} {
+			if err = platform.DB(c, a).Table(table).Where("node_id=?", id).Delete(&platform.Row{}).Error; err != nil {
+				return nil, platform.WrapDB(err)
+			}
 		}
 		platform.SetETag(c, saved)
 		return nodeDTO(saved), nil

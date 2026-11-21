@@ -109,13 +109,14 @@ func TestMySQLNodeInventoryPolling(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := get(1)
-	if !platform.Stamp(second["resources_sampled_at"]).After(platform.Stamp(first["resources_sampled_at"])) || platform.Uint(second["revision"]) != platform.Uint(first["revision"]) {
-		t.Fatal("periodic refresh must advance observation without invalidating edit ETag")
+	if platform.Stamp(second["resources_sampled_at"]).Before(platform.Stamp(first["resources_sampled_at"])) || !platform.Stamp(second["last_heartbeat_at"]).After(platform.Stamp(first["last_heartbeat_at"])) || platform.Uint(second["revision"]) != platform.Uint(first["revision"]) {
+		t.Fatal("periodic refresh must renew health without regressing inventory or invalidating edit ETag")
 	}
 	for _, failedMode := range []int32{1, 2, 3} {
 		mode.Store(failedMode)
 		before := get(1)
-		if err := refreshNodeInventory(ctx, a, 1); err == nil {
+		// Isolate the failure modes without waiting out the shared cooldown.
+		if err := refreshNodeInventory(ctx, platform.New(db, a.Config), 1); err == nil {
 			t.Fatal("failed observation succeeded")
 		}
 		after := get(1)
@@ -125,9 +126,12 @@ func TestMySQLNodeInventoryPolling(t *testing.T) {
 		if failedMode == 1 && (platform.Text(after["health"]) != "offline" || !platform.Stamp(after["last_heartbeat_at"]).Equal(platform.Stamp(before["last_heartbeat_at"]))) {
 			t.Fatal("failed health check renewed heartbeat or stayed online")
 		}
+		if failedMode != 1 && (platform.Text(after["health"]) != "online" || !platform.Stamp(after["last_heartbeat_at"]).After(platform.Stamp(before["last_heartbeat_at"]))) {
+			t.Fatal("resource failure was mistaken for a failed health check")
+		}
 	}
 	mode.Store(0)
-	if err := refreshNodeInventory(ctx, a, 1); err != nil {
+	if err := refreshNodeInventory(ctx, platform.New(db, a.Config), 1); err != nil {
 		t.Fatal(err)
 	}
 	if platform.Text(get(1)["health"]) != "online" {
@@ -138,7 +142,7 @@ func TestMySQLNodeInventoryPolling(t *testing.T) {
 		mode.Store(4)
 		release = make(chan struct{})
 		finished := make(chan error, 1)
-		go func() { finished <- refreshNodeInventory(ctx, a, 1) }()
+		go func() { finished <- refreshNodeInventory(ctx, platform.New(db, a.Config), 1) }()
 		select {
 		case <-entered:
 		case <-ctx.Done():
